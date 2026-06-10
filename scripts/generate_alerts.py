@@ -182,6 +182,8 @@ def recommended_action(alert: dict[str, str]) -> str | None:
     if title == "Alarm.com sensor-triggered media is missing":
         return "Trip Entry Door or Sideyard Gate once, wait 1-2 minutes, then refresh Alarm.com activity/media and confirm a new clip or image event."
     if title == "Alarm.com Sideyard Gate media validation failed":
+        if "Video Device - Not Responding" in detail:
+            return "Power-cycle Sideyard and Backyard cameras, verify they clear Alarm.com camera trouble, then run one fresh Sideyard Gate close/open media test."
         if "current portal state: `Open`" in detail:
             return "Close the Sideyard Gate and wait until Alarm.com shows Closed, then open it once to create a fresh open edge for the recording rule."
         return "Open the Sideyard Gate once, wait 1-2 minutes, then refresh Alarm.com activity/media and confirm a new Sideyard or Backyard clip event."
@@ -203,6 +205,10 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         return "Refresh Alarm.com with the Homebridge cookie, then rerun the monitor so energy, activity, and media health are recaptured."
     if title == "Alarm.com device issue":
         return "Open Alarm.com device status, resolve the listed device trouble, then recapture Alarm.com."
+    if title == "Alarm.com trouble conditions active":
+        if "Video Device - Not Responding" in detail:
+            return "Power-cycle the named Alarm.com camera(s), verify Wi-Fi/network connectivity, then recapture Alarm.com after the portal clears the camera trouble."
+        return "Open Alarm.com Issues, resolve the listed trouble condition, then recapture Alarm.com."
     if title == "SCE interval data is stale":
         return "Run Refresh SCE/UtilityAPI or import a fresh Green Button interval export, then rerun energy reconciliation."
     if title in {"Alarm.com energy is stale", "Alarm.com energy totals disagree"}:
@@ -714,6 +720,20 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
                     "severity": "warning",
                     "title": "Alarm.com device issue",
                     "detail": f"`{len(issues)}` Alarm.com device issues; first is `{first.get('description') or first.get('id')}` state `{first.get('state') or 'n/a'}`.",
+                }
+            )
+        trouble = alarm_com.get("troubleConditions") or {}
+        trouble_rows = trouble.get("rows") or []
+        if trouble.get("ok") and trouble_rows:
+            examples = ", ".join(
+                f"{item.get('description') or item.get('id')} ({item.get('emberDeviceId') or item.get('deviceId') or 'n/a'})"
+                for item in trouble_rows[:4]
+            )
+            alerts.append(
+                {
+                    "severity": "warning",
+                    "title": "Alarm.com trouble conditions active",
+                    "detail": f"`{len(trouble_rows)}` Alarm.com trouble conditions: {examples}.",
                 }
             )
         if alarm_comparison:
