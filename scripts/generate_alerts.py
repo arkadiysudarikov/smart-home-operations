@@ -379,11 +379,15 @@ def write_alarm_state_comparison_report(comparison: dict[str, Any]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     ALARM_STATE_COMPARISON_PATH.write_text(json.dumps(comparison, indent=2, sort_keys=True) + "\n")
+    portal_age = age_label(comparison.get("portalGeneratedAt"), comparison.get("generatedAt"))
+    comparison_age = age_label(comparison.get("generatedAt"))
     lines = [
         "# Alarm.com vs Homebridge State",
         "",
         f"- Generated: `{comparison.get('generatedAt')}`",
+        f"- Comparison age: `{comparison_age}`",
         f"- Alarm.com portal capture: `{comparison.get('portalGeneratedAt') or 'n/a'}`",
+        f"- Alarm.com portal capture age: `{portal_age}`",
         "- Source of truth for Alarm.com current-state reporting: `Alarm.com portal state`",
         f"- Compared devices: `{comparison.get('homebridgeComparedCount')}`",
         f"- Stale Homebridge cached states: `{comparison.get('staleCount')}`",
@@ -444,6 +448,43 @@ def parse_captured_at(raw: str | None) -> datetime:
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=LOCAL_TZ)
     return parsed.astimezone(LOCAL_TZ)
+
+
+def parse_report_time(raw: Any) -> datetime | None:
+    if not raw:
+        return None
+    text = str(raw).strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=LOCAL_TZ)
+    return parsed.astimezone(LOCAL_TZ)
+
+
+def age_label(start_raw: Any, end_raw: Any = None) -> str:
+    start = parse_report_time(start_raw)
+    if start is None:
+        return "n/a"
+    end = parse_report_time(end_raw) if end_raw else datetime.now(timezone.utc).astimezone(LOCAL_TZ)
+    if end is None:
+        end = datetime.now(timezone.utc).astimezone(LOCAL_TZ)
+    seconds = max(0, int((end - start).total_seconds()))
+    if seconds < 120:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 120:
+        return f"{minutes}m"
+    hours = minutes // 60
+    if hours < 48:
+        return f"{hours}h {minutes % 60}m"
+    days = hours // 24
+    return f"{days}d {hours % 24}h"
 
 
 def minutes_since(start_raw: str | None, end_raw: str | None) -> float | None:
@@ -641,13 +682,14 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
                 }
             )
         elif activity.get("refreshOk") is False:
+            activity_source = activity.get("source") or "cached activity history from the last good capture"
             alerts.append(
                 {
                     "severity": "warning",
                     "title": "Alarm.com activity history is degraded",
                     "detail": (
                         f"The Alarm.com activity endpoint returned `{activity.get('refreshStatus') or 'n/a'}`; "
-                        "using cached activity history from the last good capture."
+                        f"using `{activity_source}`."
                     ),
                 }
             )
@@ -908,8 +950,24 @@ def update_homekit_virtual_sensors(config: dict[str, Any], alerts: list[dict[str
 
 def write_homekit_report(updates: list[dict[str, Any]]) -> None:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    alarm_com = load_alarm_com()
+    comparison = {}
+    if ALARM_STATE_COMPARISON_PATH.exists():
+        try:
+            comparison = json.loads(ALARM_STATE_COMPARISON_PATH.read_text())
+        except json.JSONDecodeError:
+            comparison = {}
+    generated_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    freshness = {
+        "alarmPortalGeneratedAt": alarm_com.get("generatedAt"),
+        "alarmPortalAge": age_label(alarm_com.get("generatedAt"), generated_at),
+        "alarmCacheComparedAt": comparison.get("generatedAt"),
+        "alarmCacheComparisonAge": age_label(comparison.get("generatedAt"), generated_at),
+        "alarmCacheStaleCount": comparison.get("staleCount"),
+    }
     payload = {
-        "generatedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "generatedAt": generated_at,
+        "freshness": freshness,
         "updates": updates,
     }
     (DATA_DIR / "latest_homekit_virtual_sensors.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
@@ -917,6 +975,13 @@ def write_homekit_report(updates: list[dict[str, Any]]) -> None:
         "# HomeKit Virtual Sensors",
         "",
         f"- Generated: `{payload['generatedAt']}`",
+        "",
+        "## Freshness",
+        "",
+        f"- Alarm.com portal capture: `{freshness['alarmPortalGeneratedAt'] or 'n/a'}` age=`{freshness['alarmPortalAge']}`",
+        f"- Alarm.com/Homebridge cache comparison: `{freshness['alarmCacheComparedAt'] or 'n/a'}` age=`{freshness['alarmCacheComparisonAge']}` stale=`{freshness['alarmCacheStaleCount'] if freshness['alarmCacheStaleCount'] is not None else 'n/a'}`",
+        "",
+        "## Tiles",
         "",
     ]
     if not updates:

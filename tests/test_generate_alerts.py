@@ -166,6 +166,12 @@ class GenerateAlertsTest(unittest.TestCase):
         titles = {item["title"] for item in alerts}
         self.assertIn("Alarm.com Homebridge cache is stale", titles)
 
+    def test_age_label_handles_alarm_com_utc_timestamps(self) -> None:
+        self.assertEqual(
+            generate_alerts.age_label("2026-06-10T20:00:00.000Z", "2026-06-10T13:05:30-07:00"),
+            "5m",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

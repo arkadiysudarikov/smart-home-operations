@@ -185,14 +185,19 @@ health without storing the token, and can run a safe GET-only portal crawl with
 `./scripts/capture_alarm_com.js --crawl`. The scheduled monitor runs the energy,
 device-state, activity, and websocket-health refresh path only. It also writes
 normalized device and activity files, including device-state changes and newly
-seen activity since the previous capture. `reports/alarm_homebridge_state.md`
-compares the fresh Alarm.com portal device state against cached Homebridge
-Alarm.com characteristics; Alarm.com portal state is treated as the current
-source of truth when the cache disagrees. Activity-history capture degradation
-is surfaced separately from physical Alarm state through the `Alarm Activity`
-virtual sensor. The Alarm.com report also validates the recorded Flex IO /
-gate-control hardware against Sideyard Gate state, the Sideyard Gate Video rule,
-and recent activity/media evidence when activity history is available.
+seen activity since the previous capture. When the primary
+`/web/api/activity/historyEvents` endpoint is degraded, the capture can reuse
+the page-backed media/activity audit as a stale-but-usable activity source.
+`reports/alarm_homebridge_state.md` compares the fresh Alarm.com portal device
+state against cached Homebridge Alarm.com characteristics; Alarm.com portal
+state is treated as the current source of truth when the cache disagrees.
+`reports/homekit_virtual_sensors.md` shows Alarm.com portal-capture and
+Homebridge-cache comparison age so the Home-facing tile state can be judged
+against source freshness. Activity-history capture degradation is surfaced
+separately from physical Alarm state through the `Alarm Activity` virtual
+sensor. The Alarm.com report also validates the recorded Flex IO / gate-control
+hardware against Sideyard Gate state, the Sideyard Gate Video rule, and recent
+activity/media evidence when activity history is available.
 
 `scripts/fetch_chargepoint_sessions.py` refreshes
 `data/chargepoint_sessions.json` before the ChargePoint pairing report runs.
