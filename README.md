@@ -1,0 +1,175 @@
+# Smart Home Operations
+
+This repo is the local operations layer for the house. It collects read-only
+signals from Homebridge, installed smart-home apps, local services, and logs,
+then stores snapshots for pattern analysis.
+
+## Current Shape
+
+- Homebridge is the integration hub.
+- Apple Home remains the user-facing control surface.
+- UniFi provides network and occupancy context.
+- Enphase, Sense, Alarm.com, SmartHQ, TaHoma, Mopar, Dyson, Calendar, and
+  Delay Switch signals are treated as telemetry sources.
+
+## Principles
+
+- Preserve existing Homebridge bridge identities, ports, pairing data, rooms,
+  and automations.
+- Prefer read-only monitoring before action automation.
+- Separate core runtime health from integration-specific warnings.
+- Store local telemetry in this repo so patterns can be reviewed before any
+  automation changes are made.
+
+## Commands
+
+Run one snapshot:
+
+```sh
+./scripts/smart_home_snapshot.py
+```
+
+Analyze collected history:
+
+```sh
+./scripts/analyze_patterns.py
+./scripts/analyze_energy_pairing.py
+./scripts/analyze_chargepoint_pairing.py
+./scripts/extract_sce_bills.py
+./scripts/analyze_all_energy_readings.py
+./scripts/analyze_bill_home_pairing.py
+./scripts/analyze_energy_costs.py
+./scripts/analyze_meter_reconciliation.py
+./scripts/analyze_combined_energy_monitor.py
+```
+
+Run storage maintenance and alerts:
+
+```sh
+./scripts/maintain_storage.py
+./scripts/generate_alerts.py
+```
+
+Capture a one-shot Sense Now packet and pair it with nearby Envoy readings:
+
+```sh
+./scripts/capture_sense_now.js
+./scripts/pair_sense_now.py
+```
+
+Refresh Alarm.com through the Homebridge Alarm.com plugin credentials and MFA
+cookie:
+
+```sh
+./scripts/capture_alarm_com.js
+./scripts/capture_alarm_com.js --crawl
+```
+
+Install HomeKit virtual alert sensors:
+
+```sh
+./scripts/install_homekit_virtual_sensors.py
+```
+
+HomeKit action switches call the local action service. `Refresh SCE` first
+checks the API path, then re-scans local SCE bill PDFs and Green Button
+interval exports and regenerates the energy reports and HomeKit alert states.
+The API path supports either UtilityAPI JSON API credentials
+(`utilityapi_api_token` plus `utilityapi_meter_uids` or
+`utilityapi_authorization_uids`) or a direct SCE Green Button Connect
+`resource_url`/`access_token`. Until one of those credential sets is configured,
+the status is written to `data/latest_sce_api.json`. `Reconcile Energy` runs a
+full local energy refresh: current snapshot, storage cleanup, pattern analysis,
+SCE/Envoy/Sense/ChargePoint/Alarm.com reconciliation, combined energy report,
+alerts, and HomeKit virtual sensor updates.
+
+Install the periodic local monitor:
+
+```sh
+./scripts/install_monitor.sh
+```
+
+The monitor writes:
+
+- `data/latest.json`
+- `data/latest_events.json`
+- `data/latest_characteristics.json`
+- `data/latest_alarm_com.json`
+- `data/alarm_com_devices.json`
+- `data/alarm_com_activity.json`
+- `data/snapshots/*.json`
+- `data/smart_home.sqlite`
+- `reports/latest.md`
+- `reports/patterns.md`
+- `reports/energy_pairing.md`
+- `reports/chargepoint_pairing.md`
+- `reports/sce_bill_readings.md`
+- `reports/all_energy_pairing.md`
+- `reports/bill_home_pairing.md`
+- `reports/energy_costs.md`
+- `reports/meter_reconciliation.md`
+- `reports/combined_energy_monitor.md`
+- `reports/sense_now_pairing.md`
+- `reports/alarm_com.md`
+- `reports/alerts.md`
+- `reports/homekit_virtual_sensors.md`
+
+`reports/latest.md` includes Homebridge event activity, deduplicated event
+counts, and sensor/accessory characteristic changes since the previous
+snapshot. The SQLite database stores those rows in `home_events`.
+
+`reports/sce_bill_readings.md` extracts billing-period SCE import/export totals
+from local SCE bill PDFs named `ViewBill*.pdf` in `~/Downloads` and
+`~/Documents`, then writes `data/sce_bill_readings.csv`.
+
+`reports/all_energy_pairing.md` compares local SCE Green Button interval
+exports, SCE bill-level readings, Sense readings, and Enphase/Envoy readings.
+Fresh SCE interval files can be pulled by the `Refresh SCE` HomeKit switch after
+UtilityAPI or SCE Green Button Connect credentials are configured in
+`config/sce_green_button_connect.json` or equivalent environment variables:
+`UTILITYAPI_API_TOKEN`, `UTILITYAPI_METER_UIDS`,
+`UTILITYAPI_AUTHORIZATION_UIDS`, `UTILITYAPI_INTERVAL_START`,
+`UTILITYAPI_INTERVAL_END`, `SCE_GBC_RESOURCE_URL`, and
+`SCE_GBC_ACCESS_TOKEN`. Manual Green Button CSV/XML downloads placed in
+`~/Downloads`, `~/Documents`, or iCloud Drive are still imported by the same
+pipeline.
+
+`reports/bill_home_pairing.md` compares SCE bill-period import/export totals
+with the currently available home-side readings from Envoy, Sense, and
+Alarm.com. It reports strict overlap separately from rough scale checks so
+closed bills are not confused with live monitor windows.
+
+`reports/energy_costs.md` turns SCE bills into cost rates, including latest
+import cost, export-credit value, net-bill equivalent cost, ChargePoint actual
+rates, and rough cost equivalents for Envoy, Alarm.com, and SCE interval
+coverage.
+
+`reports/alarm_com.md` is the Alarm.com portal layer. It logs in through the
+same Homebridge Alarm.com plugin credentials and MFA cookie, refreshes
+`config/alarm_energy_readings.json`, captures read-only device state from the
+Alarm.com JSON API, captures sanitized activity history, checks websocket-token
+health without storing the token, and can run a safe GET-only portal crawl with
+`./scripts/capture_alarm_com.js --crawl`. The scheduled monitor runs the energy,
+device-state, activity, and websocket-health refresh path only. It also writes
+normalized device and activity files, including device-state changes and newly
+seen activity since the previous capture.
+
+`reports/meter_reconciliation.md` adds Alarm.com energy readings to the
+Envoy/Sense/SCE view. Alarm.com readings live in
+`config/alarm_energy_readings.json`.
+
+`reports/combined_energy_monitor.md` rolls Envoy, Sense, SCE, ChargePoint, and
+Alarm.com into one operational energy view. Its alerts and state titles feed the
+HomeKit virtual energy sensors.
+
+Retention is configured in `config/sources.json`. By default, raw snapshot files
+are kept for 2 days, database snapshot rows are kept for 14 days, Home event
+rows are kept for 7 days, and older heavy snapshot payloads are compacted.
+
+HomeKit virtual alert sensors are backed by the existing `Homebridge Dummy`
+platform. The monitor updates those accessories through the dummy plugin's
+local webhook after each alert pass.
+
+When installed as a LaunchAgent, the runtime copy lives at
+`~/Library/Application Support/SmartHomeMonitor` because macOS privacy controls
+can block background agents from opening files under `Documents`.
