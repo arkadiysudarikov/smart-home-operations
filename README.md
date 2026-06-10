@@ -71,6 +71,13 @@ Reapply the local SmartHQ HomeKit duration clamp after a SmartHQ plugin update:
 ./scripts/patch_smarthq_remaining_duration.js
 ```
 
+Detect and optionally update the Office TaHoma local IP when the gateway moves:
+
+```sh
+./scripts/update_office_tahoma_ip.js
+./scripts/update_office_tahoma_ip.js --apply
+```
+
 Refresh Alarm.com through the Homebridge Alarm.com plugin credentials and MFA
 cookie:
 
