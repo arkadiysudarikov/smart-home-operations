@@ -107,7 +107,7 @@ def warning_category(message: str) -> str:
         return "Sense live websocket auth"
     if "sense energy meter" in lower or "sense" in lower:
         return "Sense other"
-    if "[office]" in lower or "tahoma" in lower or "192.168.0.164:8443" in lower:
+    if "[office]" in lower or "tahoma" in lower or "192.168.0.164:8443" in lower or "192.168.0.90:8443" in lower:
         return "Office TaHoma"
     if "unifi" in lower or "occupancy" in lower:
         return "UniFi occupancy"
@@ -184,7 +184,7 @@ def recommended_action(alert: dict[str, str]) -> str | None:
     if title == "Alarm.com video recording rules are missing":
         return "Recreate the missing Alarm.com Recording Rules for Entry Door, Sideyard Gate, and related cameras; then run a post-rule door or gate trip test."
     if title == "Office TaHoma child bridge is unreachable":
-        return "Check TaHoma power, Wi-Fi, and IP reservation for 192.168.0.164; then rerun the Office child bridge check or restart."
+        return "Check the Office TaHoma power, Wi-Fi, and IP reservation; then rerun the Office child bridge check or restart."
     if title == "Recent Homebridge warning volume is high":
         return "Use the Warning Trend section below and fix the top non-dedicated category first; if Alarm.com dominates, refresh the portal cookie and websocket path."
     if title == "Alarm.com websocket is unreliable":
@@ -614,7 +614,7 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
             }
         )
 
-    office_endpoint = str(config["network"].get("known_tahoma_office", "192.168.0.164:8443"))
+    office_endpoint = str(config["network"].get("known_tahoma_office", "192.168.0.90:8443"))
     office_unreachable_signals = ("ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ECONNREFUSED")
     if (
         "[Office]" in recent_warnings
