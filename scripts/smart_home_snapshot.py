@@ -246,9 +246,12 @@ def collect_log_signals(lines: list[str]) -> dict[str, Any]:
     unifi_status = {}
     for match in re.findall(r'Accessory status unchanged: "([^"]+)" (active|inactive)', joined):
         unifi_status[match[0]] = match[1]
+    first_timestamp = next((m.group(1) for line in lines if (m := TS_RE.search(line))), None)
+    latest_timestamp = next((m.group(1) for line in reversed(lines) if (m := TS_RE.search(line))), None)
     return {
         "lineCount": len(lines),
-        "latestTimestamp": next((m.group(1) for line in reversed(lines) if (m := TS_RE.search(line))), None),
+        "runStartedAt": parse_log_timestamp(first_timestamp) if first_timestamp else None,
+        "latestTimestamp": latest_timestamp,
         "alarmWebsocketEstablished": "WebSocket connection established" in joined,
         "moparLoginSuccessful": "Login successful" in joined and "[Mopar]" in joined,
         "unifiOccupancy": {
