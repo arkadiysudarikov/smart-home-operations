@@ -493,6 +493,57 @@ function loadPreviousCapture(root) {
   }
 }
 
+function loadActivityAuditFallback(root) {
+  const filePath = path.join(root, "data/alarm_com_media_activity_audit.json");
+  try {
+    const audit = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    if (!audit || !Number.isFinite(audit.totalEvents) || audit.totalEvents <= 0) {
+      return null;
+    }
+    const mediaRecent = audit.mediaEvents?.recent || [];
+    return {
+      ok: true,
+      stale: true,
+      status: audit.status,
+      generatedAt: audit.generatedAt,
+      totalEvents: audit.totalEvents,
+      latestEventAt: mediaRecent[0]?.localTime || audit.generatedAt || null,
+      recent: mediaRecent,
+      byDay: [],
+      byDevice: [],
+      byDescription: [],
+      mediaTriggerHealth: {
+        ok: true,
+        totalEvents: audit.totalEvents,
+        tripLikeSensorEvents: audit.sensorEvents?.tripLikeCount || 0,
+        validationTargets: ["Entry Door", "Sideyard Gate"],
+        validationTargetTripEvents: 0,
+        latestValidationTargetTripAt: null,
+        mediaEvents: audit.mediaEvents?.count || 0,
+        postDisarmMediaEvents: audit.mediaEvents?.byDescription?.find((item) => /post-disarm/i.test(item.name || ""))?.count || 0,
+        sensorTriggeredMediaEvents: Math.max(0, (audit.mediaEvents?.count || 0) - (audit.mediaEvents?.byDescription?.find((item) => /post-disarm/i.test(item.name || ""))?.count || 0)),
+        mediaByDay: audit.mediaEvents?.byDay || [],
+        sensorTripsByDay: audit.sensorEvents?.byDay || [],
+        validationTargetTripsByDay: [],
+        mediaByDescription: audit.mediaEvents?.byDescription || [],
+        mediaByDevice: audit.mediaEvents?.byDevice || [],
+        recentValidationTargetTrips: [],
+        recentMedia: mediaRecent,
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+function selectActivityFallback(root, previousCapture) {
+  const previousActivity = previousCapture.activity || null;
+  if (previousActivity?.ok || (previousActivity?.recent || []).length) {
+    return previousActivity;
+  }
+  return loadActivityAuditFallback(root);
+}
+
 function writeAlarmReadings(root, readings) {
   writeJson(path.join(root, "config/alarm_energy_readings.json"), readings);
   const src = sourceRootDir();
@@ -1351,7 +1402,7 @@ async function main() {
       payload.errors.push(`Device state capture failed: ${error.message || error}`);
     }
     try {
-      payload.activity = await fetchActivityHistory(auth, previousCapture.activity);
+      payload.activity = await fetchActivityHistory(auth, selectActivityFallback(root, previousCapture));
     } catch (error) {
       payload.errors.push(`Activity history capture failed: ${error.message || error}`);
     }
