@@ -446,6 +446,32 @@ def parse_captured_at(raw: str | None) -> datetime:
     return parsed.astimezone(LOCAL_TZ)
 
 
+def minutes_since(start_raw: str | None, end_raw: str | None) -> float | None:
+    if not start_raw or not end_raw:
+        return None
+    try:
+        start = datetime.fromisoformat(start_raw)
+        end = datetime.fromisoformat(end_raw)
+    except ValueError:
+        return None
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=LOCAL_TZ)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=LOCAL_TZ)
+    return (end.astimezone(LOCAL_TZ) - start.astimezone(LOCAL_TZ)).total_seconds() / 60
+
+
+def homebridge_restart_grace_active(config: dict[str, Any], latest: dict[str, Any]) -> bool:
+    grace_minutes = float(config["alerts"].get("energy_stale_restart_grace_minutes", 0))
+    if grace_minutes <= 0:
+        return False
+    elapsed = minutes_since(
+        latest.get("homebridge", {}).get("logs", {}).get("runStartedAt"),
+        latest.get("captured_at"),
+    )
+    return elapsed is not None and 0 <= elapsed <= grace_minutes
+
+
 def battery_cycle_alert(config: dict[str, Any], battery: float, captured_at: datetime) -> dict[str, str] | None:
     alerts_config = config["alerts"]
     if alerts_config.get("battery_alert_mode") != "solar_peak_cycle":
@@ -760,7 +786,7 @@ def active_state_titles(config: dict[str, Any], latest: dict[str, Any]) -> set[s
     net_kw = metrics.get("enphase_consumption_net_kw")
     total_kw = metrics.get("enphase_consumption_total_kw")
 
-    if not any(isinstance(value, (int, float)) for value in (production_kw, net_kw, total_kw)):
+    if not any(isinstance(value, (int, float)) for value in (production_kw, net_kw, total_kw)) and not homebridge_restart_grace_active(config, latest):
         states.add("Energy data stale")
 
     if isinstance(net_kw, (int, float)):
