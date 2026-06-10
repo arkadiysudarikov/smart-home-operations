@@ -34,6 +34,7 @@ Analyze collected history:
 ```sh
 ./scripts/analyze_patterns.py
 ./scripts/analyze_energy_pairing.py
+./scripts/fetch_chargepoint_sessions.py
 ./scripts/analyze_chargepoint_pairing.py
 ./scripts/extract_sce_bills.py
 ./scripts/analyze_all_energy_readings.py
@@ -63,6 +64,13 @@ cookie:
 ```sh
 ./scripts/capture_alarm_com.js
 ./scripts/capture_alarm_com.js --crawl
+```
+
+Refresh ChargePoint sessions before pairing them against home energy sources:
+
+```sh
+./scripts/fetch_chargepoint_sessions.py
+./scripts/analyze_chargepoint_pairing.py
 ```
 
 Install HomeKit virtual alert sensors:
@@ -95,6 +103,7 @@ The monitor writes:
 - `data/latest_events.json`
 - `data/latest_characteristics.json`
 - `data/latest_alarm_com.json`
+- `data/latest_chargepoint_refresh.json`
 - `data/alarm_com_devices.json`
 - `data/alarm_com_activity.json`
 - `data/snapshots/*.json`
@@ -153,6 +162,16 @@ health without storing the token, and can run a safe GET-only portal crawl with
 device-state, activity, and websocket-health refresh path only. It also writes
 normalized device and activity files, including device-state changes and newly
 seen activity since the previous capture.
+
+`scripts/fetch_chargepoint_sessions.py` refreshes
+`data/chargepoint_sessions.json` before the ChargePoint pairing report runs.
+By default it uses ChargePoint's station-owner Web Services API
+(`getChargingSessionData`) with credentials from `config/chargepoint.json` or
+`CHARGEPOINT_WS_USERNAME`, `CHARGEPOINT_WS_PASSWORD`,
+`CHARGEPOINT_STATION_ID`, and `CHARGEPOINT_LOOKBACK_DAYS`. It writes status to
+`data/latest_chargepoint_refresh.json`. If credentials are missing, stale, or
+the API returns no sessions, the script keeps the last good local
+`chargepoint_sessions.json` file so the rest of the monitor can continue.
 
 `reports/meter_reconciliation.md` adds Alarm.com energy readings to the
 Envoy/Sense/SCE view. Alarm.com readings live in

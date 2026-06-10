@@ -97,7 +97,7 @@ def monitor_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        "./scripts/smart_home_snapshot.py && ./scripts/maintain_storage.py && ./scripts/analyze_patterns.py && ./scripts/analyze_energy_pairing.py && ./scripts/analyze_all_energy_readings.py && ./scripts/analyze_chargepoint_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py",
+        "./scripts/smart_home_snapshot.py && ./scripts/maintain_storage.py && ./scripts/analyze_patterns.py && ./scripts/analyze_energy_pairing.py && ./scripts/analyze_all_energy_readings.py && ./scripts/fetch_chargepoint_sessions.py && ./scripts/analyze_chargepoint_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py",
     ]
 
 
@@ -113,7 +113,7 @@ def energy_reconcile_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        "./scripts/smart_home_snapshot.py && ./scripts/maintain_storage.py && ./scripts/analyze_patterns.py && ./scripts/analyze_energy_pairing.py && ./scripts/analyze_all_energy_readings.py && ./scripts/analyze_chargepoint_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py && ./scripts/install_homekit_virtual_sensors.py",
+        "./scripts/smart_home_snapshot.py && ./scripts/maintain_storage.py && ./scripts/analyze_patterns.py && ./scripts/analyze_energy_pairing.py && ./scripts/analyze_all_energy_readings.py && ./scripts/fetch_chargepoint_sessions.py && ./scripts/analyze_chargepoint_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py && ./scripts/install_homekit_virtual_sensors.py",
     ]
 
 
@@ -178,6 +178,7 @@ def run_energy_reconcile_background(started_at: str) -> None:
                 "billHomePairing": str(REPORT_DIR / "bill_home_pairing.md"),
                 "energyCosts": str(REPORT_DIR / "energy_costs.md"),
                 "chargepointPairing": str(REPORT_DIR / "chargepoint_pairing.md"),
+                "chargepointRefresh": str(DATA_DIR / "latest_chargepoint_refresh.json"),
                 "combinedEnergy": str(REPORT_DIR / "combined_energy_monitor.md"),
                 "alerts": str(REPORT_DIR / "alerts.md"),
                 "homekitVirtualSensors": str(REPORT_DIR / "homekit_virtual_sensors.md"),

@@ -1,0 +1,9 @@
+{
+  "notes": "Copy to config/chargepoint.json after ChargePoint API setup. Keep the real file out of git.",
+  "mode": "webservices",
+  "username": "replace-with-chargepoint-webservices-username",
+  "password": "replace-with-chargepoint-webservices-password",
+  "station_id": "optional-station-id",
+  "lookback_days": 120,
+  "station_type": "Home"
+}
