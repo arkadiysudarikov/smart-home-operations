@@ -55,6 +55,8 @@
     "alarm_daily_dashboard_mismatch_kwh": 25,
     "alarm_media_sensor_trip_min_events": 10,
     "chargepoint_alarm_7d_share_high": 0.35,
+    "chargepoint_refresh_stale_hours": 24,
+    "source_status_stale_hours": 24,
     "sense_envoy_adjusted_gap_kw": 0.75
   },
   "actions": {

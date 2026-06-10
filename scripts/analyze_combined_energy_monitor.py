@@ -82,6 +82,92 @@ def latest_charge_session(chargepoint: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def age_hours(now: datetime, raw: str | None) -> float | None:
+    parsed = parse_dt(raw)
+    if not parsed:
+        return None
+    return (now - parsed).total_seconds() / 3600
+
+
+def status_label(age: float | None, stale_hours: float) -> str:
+    if age is None:
+        return "missing"
+    if age >= stale_hours:
+        return "stale"
+    return "fresh"
+
+
+def build_source_status(
+    now: datetime,
+    thresholds: dict[str, Any],
+    all_energy: dict[str, Any],
+    bill_home: dict[str, Any],
+    chargepoint_sessions: dict[str, Any],
+    chargepoint_refresh: dict[str, Any],
+    alarm: dict[str, Any],
+    energy_costs: dict[str, Any],
+) -> list[dict[str, Any]]:
+    stale_hours = float(thresholds.get("source_status_stale_hours", 24))
+    chargepoint_stale_hours = float(thresholds.get("chargepoint_refresh_stale_hours", 24))
+    sce_summary = (all_energy.get("sceGreenButton") or {}).get("summary", {})
+    sce_end = parse_dt(sce_summary.get("coverageEnd"))
+    sce_age_days = (now - sce_end).days if sce_end else None
+    sce_status = "missing" if sce_age_days is None else ("stale" if sce_age_days > int(thresholds.get("sce_interval_stale_days", 30)) else "fresh")
+
+    cp_refresh_status = str(chargepoint_refresh.get("status") or "missing")
+    if chargepoint_refresh.get("ok") is True:
+        cp_status = status_label(age_hours(now, chargepoint_sessions.get("capturedAt")), chargepoint_stale_hours)
+    elif cp_refresh_status in {"fresh_enough", "downloaded"} and chargepoint_sessions.get("capturedAt"):
+        cp_status = status_label(age_hours(now, chargepoint_sessions.get("capturedAt")), chargepoint_stale_hours)
+    elif chargepoint_sessions.get("capturedAt"):
+        cp_status = "fallback"
+    else:
+        cp_status = "missing"
+
+    rows = [
+        {
+            "source": "Envoy",
+            "status": "fresh" if (bill_home.get("envoy") or {}).get("coverage", {}).get("end") else "missing",
+            "ageHours": age_hours(now, (bill_home.get("envoy") or {}).get("coverage", {}).get("end")),
+            "detail": (bill_home.get("envoy") or {}).get("coverage", {}).get("end"),
+        },
+        {
+            "source": "Sense",
+            "status": "fresh" if (bill_home.get("sense") or {}).get("end") else "missing",
+            "ageHours": age_hours(now, (bill_home.get("sense") or {}).get("end")),
+            "detail": (bill_home.get("sense") or {}).get("end"),
+        },
+        {
+            "source": "SCE",
+            "status": sce_status,
+            "ageDays": sce_age_days,
+            "detail": sce_summary.get("coverageEnd"),
+        },
+        {
+            "source": "ChargePoint",
+            "status": cp_status,
+            "ageHours": age_hours(now, chargepoint_sessions.get("capturedAt")),
+            "detail": cp_refresh_status,
+        },
+        {
+            "source": "Alarm.com",
+            "status": status_label(age_hours(now, alarm.get("capturedAtLocal")), stale_hours),
+            "ageHours": age_hours(now, alarm.get("capturedAtLocal")),
+            "detail": alarm.get("capturedAtLocal"),
+        },
+        {
+            "source": "Energy costs",
+            "status": status_label(age_hours(now, energy_costs.get("generatedAt")), stale_hours),
+            "ageHours": age_hours(now, energy_costs.get("generatedAt")),
+            "detail": energy_costs.get("generatedAt"),
+        },
+    ]
+    for row in rows:
+        if row["source"] in {"Envoy", "Sense"} and row.get("ageHours") is not None:
+            row["status"] = status_label(row.get("ageHours"), stale_hours)
+    return rows
+
+
 def add_sum(target: dict[str, Any], key: str, value: Any) -> None:
     value = num(value)
     if value is None:
@@ -159,6 +245,8 @@ def build_payload() -> dict[str, Any]:
     energy_costs = load_json(DATA_DIR / "latest_energy_costs.json")
     meter = load_json(DATA_DIR / "latest_meter_reconciliation.json")
     chargepoint = load_json(DATA_DIR / "latest_chargepoint_pairs.json")
+    chargepoint_sessions = load_json(DATA_DIR / "chargepoint_sessions.json")
+    chargepoint_refresh = load_json(DATA_DIR / "latest_chargepoint_refresh.json")
     latest = load_json(DATA_DIR / "latest.json")
 
     now = datetime.now(timezone.utc).astimezone(LOCAL_TZ)
@@ -253,6 +341,7 @@ def build_payload() -> dict[str, Any]:
     cost_model = (energy_costs.get("model") or {}).get("latestClosedBill") or {}
     envoy_meters = (bill_home.get("envoy") or {}).get("meters", {})
     daily_summary = build_daily_summary(all_energy, chargepoint, meter, alarm)
+    source_status = build_source_status(now, thresholds, all_energy, bill_home, chargepoint_sessions, chargepoint_refresh, alarm, energy_costs)
     alarm_capture_dt = parse_dt(alarm.get("capturedAtLocal"))
     alarm_capture_age_hours = (now - alarm_capture_dt).total_seconds() / 3600 if alarm_capture_dt else None
     alarm_capture_stale_hours = float(thresholds.get("alarm_energy_capture_stale_hours", 24))
@@ -320,8 +409,9 @@ def build_payload() -> dict[str, Any]:
             "sce": sce_summary,
             "chargepoint": {
                 "generatedAt": chargepoint.get("generatedAt"),
-                "visibleTotalKwh": load_json(DATA_DIR / "chargepoint_sessions.json").get("visibleTotals", {}).get("energyKwh"),
+                "visibleTotalKwh": chargepoint_sessions.get("visibleTotals", {}).get("energyKwh"),
                 "latestSession": latest_session,
+                "refresh": chargepoint_refresh,
             },
             "alarm": alarm,
             "energyCosts": {
@@ -333,6 +423,7 @@ def build_payload() -> dict[str, Any]:
                 "latestSelfConsumptionValueUsdPerKwh": cost_model.get("selfConsumptionValueUsdPerKwh"),
             },
         },
+        "sourceStatus": source_status,
         "dailySummary": daily_summary,
         "alarmEnergyStatus": {
             "capturedAtLocal": alarm.get("capturedAtLocal"),
@@ -371,9 +462,32 @@ def write_report(payload: dict[str, Any]) -> None:
         f"- Alarm.com captured: `{(sources.get('alarm') or {}).get('capturedAtLocal') or 'n/a'}`",
         f"- Energy costs: `{(sources.get('energyCosts') or {}).get('generatedAt') or 'n/a'}`",
         "",
+        "## Source Status",
+        "",
+        "| Source | Status | Age | Detail |",
+        "|---|---|---:|---|",
+    ]
+    for item in payload.get("sourceStatus") or []:
+        age = f"{fmt(item.get('ageHours'), 1)} h" if item.get("ageHours") is not None else (f"{item.get('ageDays')} d" if item.get("ageDays") is not None else "n/a")
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(item.get("source") or "n/a"),
+                    f"`{item.get('status') or 'n/a'}`",
+                    age,
+                    f"`{item.get('detail') or 'n/a'}`",
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
+        "",
         "## Alerts",
         "",
-    ]
+        ]
+    )
     if payload.get("alerts"):
         for item in payload["alerts"]:
             lines.append(f"- `{item['severity']}` {item['title']}: {item['detail']}")
