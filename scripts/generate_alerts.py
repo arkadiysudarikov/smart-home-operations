@@ -137,6 +137,14 @@ def summarize_warning_trend(trend: dict[str, Any], max_items: int = 3) -> str:
     return ", ".join(parts)
 
 
+def warning_count_excluding(trend: dict[str, Any], excluded_categories: set[str]) -> int:
+    return sum(
+        int(item.get("count") or 0)
+        for item in trend.get("leaders") or []
+        if item.get("category") not in excluded_categories
+    )
+
+
 def severity_rank(severity: str) -> int:
     return {"critical": 0, "warning": 1, "info": 2}.get(severity, 3)
 
@@ -379,13 +387,19 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
     warning_total = sum(int(row["warning_count"]) for row in warning_window)
     if current_warning_count > 0 and warning_total >= int(config["alerts"]["warning_high_count"]):
         trend = warning_trend(warning_window)
-        alerts.append(
-            {
-                "severity": "warning",
-                "title": "Recent Homebridge warning volume is high",
-                "detail": f"`{warning_total}` warnings across the latest `{len(warning_window)}` snapshots; dominated by {summarize_warning_trend(trend)}.",
-            }
-        )
+        non_office_total = warning_count_excluding(trend, {"Office TaHoma"})
+        threshold = int(config["alerts"]["warning_high_count"])
+        if non_office_total >= threshold:
+            alerts.append(
+                {
+                    "severity": "warning",
+                    "title": "Recent Homebridge warning volume is high",
+                    "detail": (
+                        f"`{warning_total}` warnings across the latest `{len(warning_window)}` snapshots; "
+                        f"`{non_office_total}` are outside the dedicated Office TaHoma alert; dominated by {summarize_warning_trend(trend)}."
+                    ),
+                }
+            )
 
     for item in load_combined_energy().get("alerts", []):
         title = item.get("title")
