@@ -139,9 +139,12 @@ def load_bill_rates() -> list[dict[str, Any]]:
             }
             import_rate = bill["importRateUsdPerKwh"]
             export_rate = bill["exportCreditRateUsdPerKwh"]
-            bill["selfConsumptionValueUsdPerKwh"] = (
+            avoided_export_value = (
                 import_rate - export_rate if import_rate is not None and export_rate is not None else None
             )
+            bill["solarSelfConsumptionValueUsdPerKwh"] = avoided_export_value
+            bill["batterySelfConsumptionValueUsdPerKwh"] = avoided_export_value
+            bill["selfConsumptionValueUsdPerKwh"] = avoided_export_value
             bills.append(bill)
     return sorted(bills, key=lambda item: item.get("periodStart") or "")
 
@@ -152,6 +155,9 @@ def weighted_rates(bills: list[dict[str, Any]]) -> dict[str, Any]:
     net_kwh = sum(num(item.get("netImportKwh")) or 0 for item in bills)
     energy_charge = sum(num(item.get("energyChargeUsd")) or 0 for item in bills)
     export_credit = sum(num(item.get("exportCreditUsd")) or 0 for item in bills)
+    import_rate = safe_div(energy_charge, import_kwh)
+    export_rate = safe_div(export_credit, export_kwh)
+    avoided_export_value = import_rate - export_rate if import_rate is not None and export_rate is not None else None
     return {
         "billCount": len(bills),
         "importKwh": import_kwh,
@@ -159,12 +165,12 @@ def weighted_rates(bills: list[dict[str, Any]]) -> dict[str, Any]:
         "netImportKwh": net_kwh,
         "energyChargeUsd": energy_charge,
         "exportCreditUsd": export_credit,
-        "importRateUsdPerKwh": safe_div(energy_charge, import_kwh),
+        "importRateUsdPerKwh": import_rate,
         "netImportRateUsdPerKwh": safe_div(energy_charge, net_kwh),
-        "exportCreditRateUsdPerKwh": safe_div(export_credit, export_kwh),
-        "selfConsumptionValueUsdPerKwh": safe_div(energy_charge, import_kwh) - safe_div(export_credit, export_kwh)
-        if import_kwh and export_kwh
-        else None,
+        "exportCreditRateUsdPerKwh": export_rate,
+        "solarSelfConsumptionValueUsdPerKwh": avoided_export_value,
+        "batterySelfConsumptionValueUsdPerKwh": avoided_export_value,
+        "selfConsumptionValueUsdPerKwh": avoided_export_value,
     }
 
 
@@ -329,7 +335,8 @@ def write_report(payload: dict[str, Any]) -> None:
         f"- Export: `{fmt(latest.get('exportKwh'), 0)}` kWh credited at `{rate(latest.get('exportCreditRateUsdPerKwh'))}`",
         f"- Net import: `{fmt(latest.get('netImportKwh'), 0)}` kWh at bill-equivalent `{rate(latest.get('netImportRateUsdPerKwh'))}`",
         f"- Energy charge: `{money(latest.get('energyChargeUsd'))}`; export credits: `{money(latest.get('exportCreditUsd'))}`",
-        f"- Self-consumption value: `{rate(latest.get('selfConsumptionValueUsdPerKwh'))}`",
+        f"- Direct solar self-consumption value: `{rate(latest.get('solarSelfConsumptionValueUsdPerKwh'))}`",
+        f"- Battery-backed self-consumption value: `{rate(latest.get('batterySelfConsumptionValueUsdPerKwh'))}`",
         f"- Weighted bill import rate across `{weighted.get('billCount') or 0}` parsed bills: `{rate(weighted.get('importRateUsdPerKwh'))}`",
         "",
         "## SCE Interval Cost Pairing",
@@ -374,8 +381,8 @@ def write_report(payload: dict[str, Any]) -> None:
             "",
             "## Bill Period Rates",
             "",
-            "| Period | Import | Export | Net import | Energy charge | Import rate | Export credit rate | Self-consumption value |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|",
+            "| Period | Import | Export | Net import | Energy charge | Import rate | Export credit rate | Solar self-consumption value | Battery self-consumption value |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for bill in payload.get("billRates") or []:
@@ -390,7 +397,8 @@ def write_report(payload: dict[str, Any]) -> None:
                     money(bill.get("energyChargeUsd")),
                     rate(bill.get("importRateUsdPerKwh")),
                     rate(bill.get("exportCreditRateUsdPerKwh")),
-                    rate(bill.get("selfConsumptionValueUsdPerKwh")),
+                    rate(bill.get("solarSelfConsumptionValueUsdPerKwh")),
+                    rate(bill.get("batterySelfConsumptionValueUsdPerKwh")),
                 ]
             )
             + " |"

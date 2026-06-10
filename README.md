@@ -150,8 +150,8 @@ closed bills are not confused with live monitor windows.
 
 `reports/energy_costs.md` turns SCE bills into cost rates, including latest
 import cost, export-credit value, net-bill equivalent cost, ChargePoint actual
-rates, and rough cost equivalents for Envoy, Alarm.com, and SCE interval
-coverage.
+rates, separate solar and battery self-consumption values, and rough cost
+equivalents for Envoy, Alarm.com, and SCE interval coverage.
 
 `reports/alarm_com.md` is the Alarm.com portal layer. It logs in through the
 same Homebridge Alarm.com plugin credentials and MFA cookie, refreshes
