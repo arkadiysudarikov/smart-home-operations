@@ -569,12 +569,17 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
         )
 
     office_endpoint = str(config["network"].get("known_tahoma_office", "192.168.0.164:8443"))
-    if "[Office]" in recent_warnings and office_endpoint in recent_warnings and "ETIMEDOUT" in recent_warnings:
+    office_unreachable_signals = ("ETIMEDOUT", "EHOSTUNREACH", "ENETUNREACH", "ECONNREFUSED")
+    if (
+        "[Office]" in recent_warnings
+        and office_endpoint in recent_warnings
+        and any(signal in recent_warnings for signal in office_unreachable_signals)
+    ):
         alerts.append(
             {
                 "severity": "warning",
                 "title": "Office TaHoma child bridge is unreachable",
-                "detail": f"The Office TaHoma child bridge is timing out at `{office_endpoint}`.",
+                "detail": f"The Office TaHoma child bridge cannot reach `{office_endpoint}`.",
             }
         )
 
