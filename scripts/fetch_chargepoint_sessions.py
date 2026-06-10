@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import base64
 import json
 import os
 import urllib.error
@@ -137,11 +136,18 @@ def session_from_soap(row: ET.Element, config: dict[str, Any]) -> dict[str, Any]
     return {key: value for key, value in session.items() if value is not None}
 
 
-def soap_envelope(query: dict[str, Any]) -> bytes:
+def soap_envelope(query: dict[str, Any], username: str, password: str) -> bytes:
     fields = "\n".join(f"          <{key}>{escape_xml(str(value))}</{key}>" for key, value in query.items() if value)
     body = f"""<?xml version="1.0" encoding="UTF-8"?>
-<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:dictionary:com.chargepoint.webservices">
-  <soapenv:Header/>
+<soapenv:Envelope xmlns:soapenv="http://schemas.xmlsoap.org/soap/envelope/" xmlns:urn="urn:dictionary:com.chargepoint.webservices" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd">
+  <soapenv:Header>
+    <wsse:Security soapenv:mustUnderstand="1">
+      <wsse:UsernameToken>
+        <wsse:Username>{escape_xml(username)}</wsse:Username>
+        <wsse:Password>{escape_xml(password)}</wsse:Password>
+      </wsse:UsernameToken>
+    </wsse:Security>
+  </soapenv:Header>
   <soapenv:Body>
     <urn:getChargingSessionData>
       <searchQuery>
@@ -190,12 +196,10 @@ def configured_webservices(config: dict[str, Any]) -> dict[str, Any]:
 
 
 def request_soap(endpoint: str, username: str, password: str, query: dict[str, Any]) -> ET.Element:
-    auth = base64.b64encode(f"{username}:{password}".encode("utf-8")).decode("ascii")
     request = urllib.request.Request(
         endpoint,
-        data=soap_envelope(query),
+        data=soap_envelope(query, username, password),
         headers={
-            "Authorization": f"Basic {auth}",
             "Content-Type": "text/xml; charset=utf-8",
             "SOAPAction": SOAP_ACTION,
             "User-Agent": "SmartHomeMonitor/1.0",

@@ -250,19 +250,30 @@ def build_payload() -> dict[str, Any]:
     alarm_capture_dt = parse_dt(alarm.get("capturedAtLocal"))
     alarm_capture_age_hours = (now - alarm_capture_dt).total_seconds() / 3600 if alarm_capture_dt else None
     alarm_capture_stale_hours = float(thresholds.get("alarm_energy_capture_stale_hours", 24))
-    alarm_needs_recapture = (
-        alarm_mismatch is not None
-        and abs(num(alarm_mismatch) or 0) >= alarm_mismatch_threshold
-    ) or alarm_capture_age_hours is None or alarm_capture_age_hours >= alarm_capture_stale_hours
-    if alarm_needs_recapture:
-        states.append("Alarm.com energy needs recapture")
+    alarm_capture_stale = alarm_capture_age_hours is None or alarm_capture_age_hours >= alarm_capture_stale_hours
+    alarm_totals_inconsistent = alarm_mismatch is not None and abs(num(alarm_mismatch) or 0) >= alarm_mismatch_threshold
+    alarm_recapture_reasons: list[str] = []
+    if alarm_capture_stale:
+        alarm_recapture_reasons.append("stale capture")
+        states.append("Alarm.com energy stale")
         alerts.append(
             alert(
                 "warning",
-                "Alarm.com energy needs recapture",
-                f"Captured `{alarm.get('capturedAtLocal') or 'n/a'}`; daily rows vs dashboard current period differ by `{fmt(alarm_mismatch, 1)}` kWh.",
+                "Alarm.com energy is stale",
+                f"Last captured `{alarm.get('capturedAtLocal') or 'n/a'}`; capture age is `{fmt(alarm_capture_age_hours, 1)}` hours.",
             )
         )
+    if alarm_totals_inconsistent:
+        alarm_recapture_reasons.append("inconsistent totals")
+        states.append("Alarm.com energy inconsistent")
+        alerts.append(
+            alert(
+                "warning",
+                "Alarm.com energy totals disagree",
+                f"Daily rows differ from the dashboard current period by `{fmt(alarm_mismatch, 1)}` kWh.",
+            )
+        )
+    alarm_needs_recapture = bool(alarm_recapture_reasons)
     insights.append(
         "SCE is utility grid exchange, while Envoy Consumption Total, Alarm.com Energy Clamp, and ChargePoint are site-load views."
     )
@@ -313,7 +324,10 @@ def build_payload() -> dict[str, Any]:
             "capturedAtLocal": alarm.get("capturedAtLocal"),
             "captureAgeHours": alarm_capture_age_hours,
             "dailyTotalMinusDashboardMtdKwh": alarm_mismatch,
+            "isStale": alarm_capture_stale,
+            "isInconsistent": alarm_totals_inconsistent,
             "needsRecapture": alarm_needs_recapture,
+            "recaptureReasons": alarm_recapture_reasons,
         },
         "states": sorted(set(states)),
         "alerts": alerts,
@@ -360,7 +374,10 @@ def write_report(payload: dict[str, Any]) -> None:
             f"- Captured: `{alarm_status.get('capturedAtLocal') or 'n/a'}`",
             f"- Capture age: `{fmt(alarm_status.get('captureAgeHours'), 1)}` hours",
             f"- Daily rows minus dashboard current period: `{fmt(alarm_status.get('dailyTotalMinusDashboardMtdKwh'), 1)}` kWh",
+            f"- Stale capture: `{alarm_status.get('isStale')}`",
+            f"- Inconsistent totals: `{alarm_status.get('isInconsistent')}`",
             f"- Needs recapture: `{alarm_status.get('needsRecapture')}`",
+            f"- Recapture reasons: `{', '.join(alarm_status.get('recaptureReasons') or []) or 'none'}`",
             "",
             "## Cost Summary",
             "",

@@ -136,15 +136,20 @@
         "id": "smart_home_energy_check",
         "name": "Energy Check",
         "alert_titles": [
-          "Energy readings need reconciliation",
-          "Alarm.com energy totals disagree"
+          "Energy readings need reconciliation"
         ]
       },
       {
         "id": "smart_home_alarm_energy_recapture",
         "name": "Alarm Energy",
-        "alert_titles": ["Alarm.com energy needs recapture"],
-        "state_titles": ["Alarm.com energy needs recapture"]
+        "alert_titles": [
+          "Alarm.com energy is stale",
+          "Alarm.com energy totals disagree"
+        ],
+        "state_titles": [
+          "Alarm.com energy stale",
+          "Alarm.com energy inconsistent"
+        ]
       },
       {
         "id": "smart_home_alarm_media_missing",

@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
+import hashlib
 import json
+import os
 import re
 import sqlite3
 import xml.etree.ElementTree as ET
@@ -84,23 +87,66 @@ def interval_key(start: datetime, end: datetime) -> tuple[str, str]:
     )
 
 
+def walk_sce_candidates(root: Path, max_depth: int | None, skip_dirs: set[str]) -> list[Path]:
+    candidates: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        current = Path(dirpath)
+        try:
+            relative = current.relative_to(root)
+        except ValueError:
+            continue
+        depth = 0 if str(relative) == "." else len(relative.parts)
+        dirnames[:] = [
+            name
+            for name in dirnames
+            if name not in skip_dirs and (max_depth is None or depth < max_depth)
+        ]
+        for filename in filenames:
+            if SCE_FILE_RE.search(filename):
+                candidates.append(current / filename)
+    return candidates
+
+
+def file_fingerprint(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def discover_sce_files(extra_files: list[Path]) -> list[Path]:
-    roots = [
-        DATA_DIR,
-        Path.home() / "Downloads",
-        Path.home() / "Documents",
-        Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs",
-    ]
+    roots = {
+        DATA_DIR: None,
+        Path.home() / "Downloads": 2,
+        Path.home() / "Documents": 3,
+        Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs": 4,
+    }
+    skip_dirs = {
+        ".cache",
+        ".git",
+        ".venv",
+        "__pycache__",
+        "Library",
+        "node_modules",
+    }
     found: dict[str, Path] = {}
+    seen_content: set[str] = set()
     for path in extra_files:
         if path.exists() and path.is_file():
             found[str(path)] = path
-    for root in roots:
+            seen_content.add(file_fingerprint(path))
+    for root, max_depth in roots.items():
         if not root.exists():
             continue
-        for path in root.rglob("*"):
-            if path.is_file() and SCE_FILE_RE.search(path.name):
-                found[str(path)] = path
+        for path in walk_sce_candidates(root, max_depth, skip_dirs):
+            if not path.is_file():
+                continue
+            fingerprint = file_fingerprint(path)
+            if fingerprint in seen_content:
+                continue
+            seen_content.add(fingerprint)
+            found[str(path)] = path
     return sorted(found.values(), key=lambda item: (item.name, str(item)))
 
 
@@ -275,19 +321,36 @@ def load_monitor_samples() -> dict[str, list[dict[str, Any]]]:
     return samples
 
 
-def estimate_interval_kwh(samples: list[dict[str, Any]], start: datetime, end: datetime) -> float | None:
-    values = [item["kw"] for item in samples if start <= item["capturedAt"] < end]
-    if not values:
+def build_sample_index(samples: list[dict[str, Any]]) -> dict[str, list[float]]:
+    ordered = sorted(samples, key=lambda item: item["capturedAt"])
+    timestamps: list[float] = []
+    prefix_kw: list[float] = [0.0]
+    for item in ordered:
+        timestamps.append(item["capturedAt"].timestamp())
+        prefix_kw.append(prefix_kw[-1] + float(item["kw"]))
+    return {"timestamps": timestamps, "prefixKw": prefix_kw}
+
+
+def estimate_interval_kwh(index: dict[str, list[float]], start: datetime, end: datetime) -> float | None:
+    timestamps = index["timestamps"]
+    if not timestamps:
         return None
-    return mean(values) * ((end - start).total_seconds() / 3600.0)
+    left = bisect.bisect_left(timestamps, start.timestamp())
+    right = bisect.bisect_left(timestamps, end.timestamp())
+    count = right - left
+    if count <= 0:
+        return None
+    prefix_kw = index["prefixKw"]
+    average_kw = (prefix_kw[right] - prefix_kw[left]) / count
+    return average_kw * ((end - start).total_seconds() / 3600.0)
 
 
 def build_overlap_pairs(intervals: list[SceInterval], samples: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
     pairs: list[dict[str, Any]] = []
-    envoy_total = samples.get("envoy:Consumption Total", [])
-    envoy_net = samples.get("envoy:Consumption Net", [])
-    envoy_production = samples.get("envoy:Production", [])
-    sense = samples.get("sense", [])
+    envoy_total = build_sample_index(samples.get("envoy:Consumption Total", []))
+    envoy_net = build_sample_index(samples.get("envoy:Consumption Net", []))
+    envoy_production = build_sample_index(samples.get("envoy:Production", []))
+    sense = build_sample_index(samples.get("sense", []))
     for interval in intervals:
         envoy_total_kwh = estimate_interval_kwh(envoy_total, interval.start, interval.end)
         envoy_net_kwh = estimate_interval_kwh(envoy_net, interval.start, interval.end)
