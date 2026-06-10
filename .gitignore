@@ -1,6 +1,7 @@
 data/
 logs/
 reports/
+work/
 config/sce_green_button_connect.json
 config/chargepoint.json
 config/alarm_energy_readings.json
