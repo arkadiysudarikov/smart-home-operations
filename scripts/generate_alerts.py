@@ -520,6 +520,11 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
     hb = latest.get("homebridge", {})
     logs = hb.get("logs", {})
     metrics = logs.get("latestMetrics", {})
+    alarm_com = load_alarm_com()
+    alarm_comparison: dict[str, Any] = {}
+    if (alarm_com.get("alarmState") or {}).get("ok"):
+        alarm_comparison = compare_alarm_portal_to_homebridge(alarm_com, latest)
+    alarm_portal_state_clean = bool(alarm_comparison) and not (alarm_comparison.get("stale") or [])
     launchd_state = hb.get("launchd", {}).get("state")
     permissions = hb.get("security", {}).get("homebridgePermissions", {})
     if launchd_state != "running":
@@ -596,7 +601,11 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
     alarm_window = [row for row in rows if row_alarm_websocket_enabled(row)][:alarm_window_size]
     if alarm_websocket_enabled and alarm_window:
         successes = sum(int(row["alarm_websocket"]) for row in alarm_window)
-        if len(alarm_window) >= alarm_window_size and successes < int(config["alerts"]["alarm_websocket_min_successes"]):
+        if (
+            len(alarm_window) >= alarm_window_size
+            and successes < int(config["alerts"]["alarm_websocket_min_successes"])
+            and not alarm_portal_state_clean
+        ):
             alerts.append(
                 {
                     "severity": "warning",
@@ -605,7 +614,6 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
                 }
             )
 
-    alarm_com = load_alarm_com()
     if alarm_com:
         if not (alarm_com.get("login") or {}).get("ok"):
             alerts.append(
@@ -662,9 +670,8 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
                     "detail": f"`{len(issues)}` Alarm.com device issues; first is `{first.get('description') or first.get('id')}` state `{first.get('state') or 'n/a'}`.",
                 }
             )
-        if (alarm_com.get("alarmState") or {}).get("ok"):
-            comparison = compare_alarm_portal_to_homebridge(alarm_com, latest)
-            stale = comparison.get("stale") or []
+        if alarm_comparison:
+            stale = alarm_comparison.get("stale") or []
             if stale:
                 examples = ", ".join(
                     f"{item.get('device')} portal `{item.get('portalState')}` vs Homebridge cache `{item.get('homebridgeCachedState')}`"
@@ -747,6 +754,8 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
     warning_total = sum(int(row["warning_count"]) for row in warning_window)
     if current_warning_count > 0 and warning_total >= int(config["alerts"]["warning_high_count"]):
         dedicated_categories = {"Office TaHoma", "Sense live websocket auth", "SmartHQ remaining duration"}
+        if alarm_portal_state_clean:
+            dedicated_categories.add("Alarm.com auth/websocket")
         non_dedicated_total = warning_count_excluding(
             trend,
             dedicated_categories,
