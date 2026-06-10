@@ -83,8 +83,18 @@ def warning_category(message: str) -> str:
     lower = message.lower()
     if "security system" in lower or "alarm.com" in lower or "websocket token fetch returned 403" in lower:
         return "Alarm.com auth/websocket"
+    if "smarthq" in lower and "remaining duration" in lower and "exceeded maximum of 3600" in lower:
+        return "SmartHQ remaining duration"
+    if ("sense energy meter" in lower or "sense" in lower) and (
+        "401" in lower
+        or "unauthorized" in lower
+        or "unexpected server response" in lower
+        or "re-auth failed" in lower
+        or "authentication error" in lower
+    ):
+        return "Sense live websocket auth"
     if "sense energy meter" in lower or "sense" in lower:
-        return "Sense"
+        return "Sense other"
     if "[office]" in lower or "tahoma" in lower or "192.168.0.164:8443" in lower:
         return "Office TaHoma"
     if "unifi" in lower or "occupancy" in lower:
@@ -124,11 +134,16 @@ def warning_trend(rows: list[sqlite3.Row]) -> dict[str, Any]:
     }
 
 
-def summarize_warning_trend(trend: dict[str, Any], max_items: int = 3) -> str:
-    leaders = trend.get("leaders") or []
+def summarize_warning_trend(
+    trend: dict[str, Any],
+    max_items: int = 3,
+    excluded_categories: set[str] | None = None,
+) -> str:
+    excluded_categories = excluded_categories or set()
+    leaders = [item for item in trend.get("leaders") or [] if item.get("category") not in excluded_categories]
     if not leaders:
         return "no classified warning leader"
-    total = int(trend.get("warningMentions") or 0)
+    total = sum(int(item.get("count") or 0) for item in leaders)
     parts = []
     for item in leaders[:max_items]:
         count = int(item.get("count") or 0)
@@ -147,6 +162,57 @@ def warning_count_excluding(trend: dict[str, Any], excluded_categories: set[str]
 
 def severity_rank(severity: str) -> int:
     return {"critical": 0, "warning": 1, "info": 2}.get(severity, 3)
+
+
+def recommended_action(alert: dict[str, str]) -> str | None:
+    title = alert.get("title", "")
+    detail = alert.get("detail", "")
+    if title == "Alarm.com sensor-triggered media is missing":
+        return "Trip Entry Door or Sideyard Gate once, wait 1-2 minutes, then refresh Alarm.com activity/media and confirm a new clip or image event."
+    if title == "Office TaHoma child bridge is unreachable":
+        return "Check TaHoma power, Wi-Fi, and IP reservation for 192.168.0.164; then rerun the Office child bridge check or restart."
+    if title == "Recent Homebridge warning volume is high":
+        return "Use the Warning Trend section below and fix the top non-dedicated category first; if Alarm.com dominates, refresh the portal cookie and websocket path."
+    if title == "Alarm.com websocket is unreliable":
+        return "Refresh the Alarm.com portal capture; if 403 reauth churn continues, consider disabling Alarm.com websockets again."
+    if title == "Alarm.com portal websocket token failed":
+        return "Refresh Alarm.com with the Homebridge cookie and verify the portal websocket token endpoint still returns a token."
+    if title == "Alarm.com portal capture failed":
+        return "Refresh Alarm.com with the Homebridge cookie, then rerun the monitor so energy, activity, and media health are recaptured."
+    if title == "Alarm.com device issue":
+        return "Open Alarm.com device status, resolve the listed device trouble, then recapture Alarm.com."
+    if title == "SCE interval data is stale":
+        return "Run Refresh SCE/UtilityAPI or import a fresh Green Button interval export, then rerun energy reconciliation."
+    if title in {"Alarm.com energy is stale", "Alarm.com energy totals disagree"}:
+        return "Recapture Alarm.com energy and compare the updated Energy Clamp totals against Envoy and SCE in the combined report."
+    if title == "Energy readings need reconciliation":
+        return "Open the combined energy report, check Source Status and daily source gaps, then refresh the stale source named there."
+    if title == "Homebridge is not running":
+        return "Restart Homebridge, then run the smart-home check again after accessories reconnect."
+    if title == "Homebridge storage permissions are too open":
+        return "Run the Homebridge permission hardening step and rerun the monitor to verify storage paths."
+    if title == "UniFi occupancy authentication is failing":
+        return "Refresh the UniFi occupancy credentials/session and verify the Homebridge UniFi plugin can load clients."
+    if title == "House load is high":
+        return "Check the current large loads in Home/Envoy, then compare against Sense live load and ChargePoint charging state."
+    if title == "Sense live websocket auth is noisy":
+        return "Leave daily Sense trend capture alone; it is working. Restart or reauth the Homebridge Sense live meter only if live 401s keep recurring after the next Homebridge restart."
+    if title in {"Battery failed to recharge before peak", "Battery reserve is low before peak", "Battery backup is critically low", "Battery backup is low"}:
+        return "Check Enphase battery status and operating mode, then verify solar production can recharge before peak pricing."
+    if "source gap" in detail.lower() or "missing" in detail.lower():
+        return "Refresh the named source, then rerun energy reconciliation so unresolved source gaps clear from the daily summary."
+    return None
+
+
+def enrich_alerts(alerts: list[dict[str, str]]) -> list[dict[str, str]]:
+    enriched: list[dict[str, str]] = []
+    for alert in alerts:
+        item = dict(alert)
+        action = recommended_action(item)
+        if action:
+            item["recommendedAction"] = action
+        enriched.append(item)
+    return enriched
 
 
 def active_warning_silence() -> datetime | None:
@@ -370,6 +436,8 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
             and int(media.get("tripLikeSensorEvents") or 0) >= media_min_sensor_trips
             and int(media.get("sensorTriggeredMediaEvents") or 0) == 0
         ):
+            validation_trips = int(media.get("validationTargetTripEvents") or 0)
+            latest_validation = media.get("latestValidationTargetTripAt") or "none"
             alerts.append(
                 {
                     "severity": "warning",
@@ -377,26 +445,47 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
                     "detail": (
                         f"`{media.get('tripLikeSensorEvents')}` trip-like sensor events but "
                         f"`0` sensor-triggered media events in the Alarm.com activity window; "
-                        f"post-disarm media events: `{media.get('postDisarmMediaEvents') or 0}`."
+                        f"post-disarm media events: `{media.get('postDisarmMediaEvents') or 0}`; "
+                        f"validation target trips: `{validation_trips}` "
+                        f"(latest Entry Door/Sideyard Gate trip: `{latest_validation}`)."
                     ),
                 }
             )
 
     warning_window = rows[: int(config["alerts"]["warning_recent_window"])]
+    trend = warning_trend(warning_window)
+    trend_counts = {item.get("category"): int(item.get("count") or 0) for item in trend.get("leaders") or []}
+    sense_live_401_count = trend_counts.get("Sense live websocket auth", 0)
+    if sense_live_401_count >= int(config["alerts"].get("sense_live_401_warning_min", 3)):
+        alerts.append(
+            {
+                "severity": "warning",
+                "title": "Sense live websocket auth is noisy",
+                "detail": (
+                    f"`{sense_live_401_count}` recent Sense live-websocket auth warnings; "
+                    "daily Sense trend capture is tracked separately and may still be healthy."
+                ),
+            }
+        )
+
     current_warning_count = int(latest.get("homebridge", {}).get("logs", {}).get("warningCount", 0))
     warning_total = sum(int(row["warning_count"]) for row in warning_window)
     if current_warning_count > 0 and warning_total >= int(config["alerts"]["warning_high_count"]):
-        trend = warning_trend(warning_window)
-        non_office_total = warning_count_excluding(trend, {"Office TaHoma"})
+        dedicated_categories = {"Office TaHoma", "Sense live websocket auth", "SmartHQ remaining duration"}
+        non_dedicated_total = warning_count_excluding(
+            trend,
+            dedicated_categories,
+        )
         threshold = int(config["alerts"]["warning_high_count"])
-        if non_office_total >= threshold:
+        if non_dedicated_total >= threshold:
             alerts.append(
                 {
                     "severity": "warning",
                     "title": "Recent Homebridge warning volume is high",
                     "detail": (
                         f"`{warning_total}` warnings across the latest `{len(warning_window)}` snapshots; "
-                        f"`{non_office_total}` are outside the dedicated Office TaHoma alert; dominated by {summarize_warning_trend(trend)}."
+                        f"`{non_dedicated_total}` are outside dedicated Office TaHoma, Sense live auth, and SmartHQ duration checks; "
+                        f"dominated by {summarize_warning_trend(trend, excluded_categories=dedicated_categories)}."
                     ),
                 }
             )
@@ -447,6 +536,7 @@ def active_state_titles(config: dict[str, Any], latest: dict[str, Any]) -> set[s
 
 def write_reports(alerts: list[dict[str, str]], latest: dict[str, Any]) -> None:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    alerts = enrich_alerts(alerts)
     config = load_config()
     warning_rows = recent_rows(int(config["alerts"]["warning_recent_window"]))
     trend = warning_trend(warning_rows)
@@ -466,6 +556,8 @@ def write_reports(alerts: list[dict[str, str]], latest: dict[str, Any]) -> None:
     ]
     for alert in alerts:
         lines.append(f"- `{alert['severity']}` {alert['title']}: {alert['detail']}")
+        if alert.get("recommendedAction"):
+            lines.append(f"  - Recommended action: {alert['recommendedAction']}")
     lines.extend(["", "## Warning Trend", ""])
     if trend.get("leaders"):
         lines.append(

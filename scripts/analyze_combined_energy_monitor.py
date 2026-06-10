@@ -168,6 +168,35 @@ def build_source_status(
     return rows
 
 
+SOURCE_ROLES = [
+    {
+        "source": "SCE",
+        "role": "Utility grid import/export and billing truth",
+        "useFor": "Delivered/received kWh, bill reconciliation, rates",
+    },
+    {
+        "source": "Envoy",
+        "role": "Primary site energy model",
+        "useFor": "Site load, solar production, grid net, storage",
+    },
+    {
+        "source": "Sense",
+        "role": "Secondary non-battery load and solar cross-check",
+        "useFor": "House load excluding Enphase storage effects, Sense solar trend checks",
+    },
+    {
+        "source": "Alarm.com",
+        "role": "Broad load/budget context",
+        "useFor": "Energy Clamp budget and daily/monthly usage sanity checks",
+    },
+    {
+        "source": "ChargePoint",
+        "role": "EV session truth",
+        "useFor": "Charging sessions, EV kWh, cost allocation",
+    },
+]
+
+
 def add_sum(target: dict[str, Any], key: str, value: Any) -> None:
     value = num(value)
     if value is None:
@@ -175,7 +204,13 @@ def add_sum(target: dict[str, Any], key: str, value: Any) -> None:
     target[key] = target.get(key, 0.0) + value
 
 
-def build_daily_summary(all_energy: dict[str, Any], chargepoint: dict[str, Any], meter: dict[str, Any], alarm: dict[str, Any]) -> list[dict[str, Any]]:
+def build_daily_summary(
+    all_energy: dict[str, Any],
+    chargepoint: dict[str, Any],
+    meter: dict[str, Any],
+    alarm: dict[str, Any],
+    sense_trends: dict[str, Any],
+) -> list[dict[str, Any]]:
     days: dict[str, dict[str, Any]] = {}
     for row in all_energy.get("overlapPairs") or []:
         day = str(row.get("start") or "")[:10]
@@ -213,12 +248,25 @@ def build_daily_summary(all_energy: dict[str, Any], chargepoint: dict[str, Any],
         item = days.setdefault(day, {"date": day})
         add_sum(item, "alarmEnergyClampKwh", row.get("kwh"))
 
+    for raw_day, row in (sense_trends.get("trends") or {}).items():
+        day = str(raw_day or "")[:10]
+        if not day:
+            continue
+        item = days.setdefault(day, {"date": day})
+        add_sum(item, "senseLoadKwh", (row.get("consumption") or {}).get("total"))
+        add_sum(item, "senseSolarProductionKwh", (row.get("production") or {}).get("total"))
+
     out: list[dict[str, Any]] = []
     for day in sorted(days):
         item = days[day]
         cp = num(item.get("chargepointKwh"))
         site = num(item.get("envoySiteLoadKwh")) or num(item.get("alarmEnergyClampKwh"))
         item["chargepointShareOfSiteLoad"] = cp / site if cp is not None and site else None
+        envoy_solar = num(item.get("envoySolarProductionKwh"))
+        sense_solar = num(item.get("senseSolarProductionKwh"))
+        item["envoyMinusSenseSolarKwh"] = (
+            envoy_solar - sense_solar if envoy_solar is not None and sense_solar is not None else None
+        )
         gaps: list[str] = []
         if item.get("sceDeliveredKwh") is None and item.get("sceReceivedKwh") is None:
             gaps.append("SCE interval")
@@ -226,6 +274,8 @@ def build_daily_summary(all_energy: dict[str, Any], chargepoint: dict[str, Any],
             gaps.append("Envoy site load")
         if item.get("envoySolarProductionKwh") is None:
             gaps.append("Envoy solar production")
+        if item.get("senseSolarProductionKwh") is None:
+            gaps.append("Sense solar production")
         if item.get("chargepointKwh") is None:
             gaps.append("ChargePoint")
         if item.get("alarmEnergyClampKwh") is None:
@@ -247,6 +297,7 @@ def build_payload() -> dict[str, Any]:
     chargepoint = load_json(DATA_DIR / "latest_chargepoint_pairs.json")
     chargepoint_sessions = load_json(DATA_DIR / "chargepoint_sessions.json")
     chargepoint_refresh = load_json(DATA_DIR / "latest_chargepoint_refresh.json")
+    sense_trends = load_json(DATA_DIR / "sense_trends_latest.json")
     latest = load_json(DATA_DIR / "latest.json")
 
     now = datetime.now(timezone.utc).astimezone(LOCAL_TZ)
@@ -340,7 +391,7 @@ def build_payload() -> dict[str, Any]:
     latest_bill = bill_home.get("latestClosedBill") or {}
     cost_model = (energy_costs.get("model") or {}).get("latestClosedBill") or {}
     envoy_meters = (bill_home.get("envoy") or {}).get("meters", {})
-    daily_summary = build_daily_summary(all_energy, chargepoint, meter, alarm)
+    daily_summary = build_daily_summary(all_energy, chargepoint, meter, alarm, sense_trends)
     source_status = build_source_status(now, thresholds, all_energy, bill_home, chargepoint_sessions, chargepoint_refresh, alarm, energy_costs)
     alarm_capture_dt = parse_dt(alarm.get("capturedAtLocal"))
     alarm_capture_age_hours = (now - alarm_capture_dt).total_seconds() / 3600 if alarm_capture_dt else None
@@ -396,6 +447,18 @@ def build_payload() -> dict[str, Any]:
         insights.append(
             f"After removing Enphase storage charge/discharge from Envoy total, Envoy non-battery load minus Sense is {fmt(sense_envoy_non_battery_gap, 3)} kW."
         )
+    latest_solar_pair = next(
+        (
+            item
+            for item in reversed(daily_summary)
+            if item.get("envoyMinusSenseSolarKwh") is not None
+        ),
+        None,
+    )
+    if latest_solar_pair:
+        insights.append(
+            f"Latest daily solar cross-check: Envoy minus Sense solar is {fmt(latest_solar_pair.get('envoyMinusSenseSolarKwh'), 1)} kWh on {latest_solar_pair.get('date')}."
+        )
     if alarm_mismatch is not None and abs(num(alarm_mismatch) or 0) >= alarm_mismatch_threshold:
         insights.append(f"Alarm.com dashboard current period and copied daily rows disagree by {fmt(alarm_mismatch, 1)} kWh, so it needs a fresh capture.")
     elif alarm_mismatch is not None:
@@ -424,6 +487,7 @@ def build_payload() -> dict[str, Any]:
             },
         },
         "sourceStatus": source_status,
+        "sourceRoles": SOURCE_ROLES,
         "dailySummary": daily_summary,
         "alarmEnergyStatus": {
             "capturedAtLocal": alarm.get("capturedAtLocal"),
@@ -483,6 +547,27 @@ def write_report(payload: dict[str, Any]) -> None:
         )
     lines.extend(
         [
+            "",
+            "## Source Roles",
+            "",
+            "| Source | Role | Use for |",
+            "|---|---|---|",
+        ]
+    )
+    for item in payload.get("sourceRoles") or []:
+        lines.append(
+            "| "
+            + " | ".join(
+                [
+                    str(item.get("source") or "n/a"),
+                    str(item.get("role") or "n/a"),
+                    str(item.get("useFor") or "n/a"),
+                ]
+            )
+            + " |"
+        )
+    lines.extend(
+        [
         "",
         "## Alerts",
         "",
@@ -516,8 +601,8 @@ def write_report(payload: dict[str, Any]) -> None:
             "",
             "## Daily Energy Summary",
             "",
-            "| Date | SCE delivered | SCE received | SCE net import | Envoy site load | Solar production | ChargePoint | CP share | Unresolved gaps |",
-            "|---|---:|---:|---:|---:|---:|---:|---:|---|",
+            "| Date | SCE delivered | SCE received | SCE net import | Envoy site load | Sense load | Envoy solar | Sense solar | Solar gap | ChargePoint | CP share | Unresolved gaps |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
         ]
     )
     for item in payload.get("dailySummary") or []:
@@ -530,7 +615,10 @@ def write_report(payload: dict[str, Any]) -> None:
                     fmt(item.get("sceReceivedKwh")),
                     fmt(item.get("sceNetImportKwh")),
                     fmt(item.get("envoySiteLoadKwh")),
+                    fmt(item.get("senseLoadKwh")),
                     fmt(item.get("envoySolarProductionKwh")),
+                    fmt(item.get("senseSolarProductionKwh")),
+                    fmt(item.get("envoyMinusSenseSolarKwh")),
                     fmt(item.get("chargepointKwh")),
                     pct(item.get("chargepointShareOfSiteLoad")),
                     ", ".join(item.get("unresolvedGaps") or []) or "none",

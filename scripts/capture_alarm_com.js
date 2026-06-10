@@ -717,22 +717,35 @@ function isSensorTripLikeEvent(event) {
   );
 }
 
+function isMediaValidationTargetEvent(event) {
+  return (
+    /entry door|sideyard gate/i.test(`${event.deviceDescription || ""}`) &&
+    /Activated|Opened|Alarm|Tamper/i.test(`${event.description || ""}`)
+  );
+}
+
 function mediaTriggerHealth(events) {
   const media = events.filter(isMediaEvent);
   const sensorTrips = events.filter(isSensorTripLikeEvent);
+  const validationTargetTrips = events.filter(isMediaValidationTargetEvent);
   const postDisarm = media.filter(isPostDisarmMediaEvent);
   const sensorTriggeredMedia = media.filter((event) => !isPostDisarmMediaEvent(event));
   return {
     ok: true,
     totalEvents: events.length,
     tripLikeSensorEvents: sensorTrips.length,
+    validationTargets: ["Entry Door", "Sideyard Gate"],
+    validationTargetTripEvents: validationTargetTrips.length,
+    latestValidationTargetTripAt: validationTargetTrips[0]?.localTime || null,
     mediaEvents: media.length,
     postDisarmMediaEvents: postDisarm.length,
     sensorTriggeredMediaEvents: sensorTriggeredMedia.length,
     mediaByDay: topCounts(countBy(media, (event) => String(event.localTime).slice(0, 10)), 14),
     sensorTripsByDay: topCounts(countBy(sensorTrips, (event) => String(event.localTime).slice(0, 10)), 14),
+    validationTargetTripsByDay: topCounts(countBy(validationTargetTrips, (event) => String(event.localTime).slice(0, 10)), 14),
     mediaByDescription: topCounts(countBy(media, (event) => event.description), 12),
     mediaByDevice: topCounts(countBy(media, (event) => event.deviceDescription), 12),
+    recentValidationTargetTrips: validationTargetTrips.slice(0, 12),
     recentMedia: media.slice(0, 12),
   };
 }
@@ -996,10 +1009,17 @@ function addActivityTables(lines, activity) {
   if (media?.ok) {
     lines.push("", "### Media Trigger Health", "");
     lines.push(`- Trip-like sensor events: \`${media.tripLikeSensorEvents}\``);
+    lines.push(`- Validation target trips: \`${media.validationTargetTripEvents || 0}\` (${(media.validationTargets || []).join(", ") || "none"})`);
+    lines.push(`- Latest validation target trip: \`${media.latestValidationTargetTripAt || "none"}\``);
     lines.push(`- Media/image/video events: \`${media.mediaEvents}\``);
     lines.push(`- Post-disarm media events: \`${media.postDisarmMediaEvents}\``);
     lines.push(`- Sensor-triggered media events: \`${media.sensorTriggeredMediaEvents}\``);
     table(lines, ["Media event", "Count"], (media.mediaByDescription || []).map((item) => [item.name, item.count]));
+    table(
+      lines,
+      ["Validation time", "Device", "Event"],
+      (media.recentValidationTargetTrips || []).slice(0, 8).map((event) => [event.localTime, event.deviceDescription, event.description])
+    );
     table(
       lines,
       ["Time", "Device", "Event"],

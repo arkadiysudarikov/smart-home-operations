@@ -38,6 +38,7 @@ Analyze collected history:
 ./scripts/analyze_chargepoint_pairing.py
 ./scripts/extract_sce_bills.py
 ./scripts/analyze_all_energy_readings.py
+./scripts/capture_sense_trends.js
 ./scripts/analyze_bill_home_pairing.py
 ./scripts/analyze_energy_costs.py
 ./scripts/analyze_meter_reconciliation.py
@@ -56,6 +57,18 @@ Capture a one-shot Sense Now packet and pair it with nearby Envoy readings:
 ```sh
 ./scripts/capture_sense_now.js
 ./scripts/pair_sense_now.py
+```
+
+Refresh daily Sense trend rows for the combined energy cross-check:
+
+```sh
+./scripts/capture_sense_trends.js
+```
+
+Reapply the local SmartHQ HomeKit duration clamp after a SmartHQ plugin update:
+
+```sh
+./scripts/patch_smarthq_remaining_duration.js
 ```
 
 Refresh Alarm.com through the Homebridge Alarm.com plugin credentials and MFA
@@ -191,7 +204,8 @@ Envoy/Sense/SCE view. Alarm.com readings live in
 
 `reports/combined_energy_monitor.md` rolls Envoy, Sense, SCE, ChargePoint, and
 Alarm.com into one operational energy view. Its alerts and state titles feed the
-HomeKit virtual energy sensors.
+HomeKit virtual energy sensors. Daily Sense trend data is cached in
+`data/sense_trends_latest.json`.
 
 Retention is configured in `config/sources.json`. By default, raw snapshot files
 are kept for 2 days, database snapshot rows are kept for 14 days, Home event
