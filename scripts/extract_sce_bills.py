@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 REPORT_DIR = ROOT / "reports"
 LEGACY_EXTRACT = Path.home() / "Documents" / "sce_enphase_reconciliation" / "sce_bill_extract.csv"
+SKIP_DISCOVERY_DIRS = {"Codex", ".git", "node_modules"}
 
 
 @dataclass
@@ -166,8 +168,12 @@ def discover_pdfs() -> list[Path]:
     for root in roots:
         if not root.exists():
             continue
-        for path in root.rglob("ViewBill*.pdf"):
-            found[str(path)] = path
+        for dirpath, dirnames, filenames in os.walk(root, topdown=True, onerror=lambda _exc: None):
+            dirnames[:] = [name for name in dirnames if name not in SKIP_DISCOVERY_DIRS]
+            for filename in filenames:
+                if filename.startswith("ViewBill") and filename.endswith(".pdf"):
+                    path = Path(dirpath) / filename
+                    found[str(path)] = path
     return sorted(found.values())
 
 
