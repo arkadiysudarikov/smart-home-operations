@@ -8,6 +8,10 @@
   "driver_retry_minutes": 360,
   "lookback_days": 120,
   "station_type": "Home",
+  "browser_csv_example": {
+    "mode": "browser_csv",
+    "csv_path": "data/chargepoint-downloads/ChargePoint_Charging_Activity_YYYY-MM-DD.csv"
+  },
   "webservices_example": {
     "mode": "webservices",
     "username": "replace-with-chargepoint-webservices-username",

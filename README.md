@@ -171,14 +171,16 @@ macOS Keychain and referenced from `config/chargepoint.json` by
 CSV button is generated in the browser from loaded table data; the script uses
 the underlying `charging_activity_monthly` POST to ChargePoint's map-cache API
 instead. Because ChargePoint may trigger DataDome/CAPTCHA on repeated password
-logins, driver-portal mode has a freshness gate and retry backoff and keeps the
-last good local `chargepoint_sessions.json` file when auth is blocked.
+logins, driver-portal mode has a freshness gate and retry backoff. When auth is
+blocked, it can fall back to the newest browser-exported CSV in
+`data/chargepoint-downloads` or a configured `csv_path`, then keeps the last good
+local `chargepoint_sessions.json` file if no CSV is available.
 
 The same script can also use ChargePoint's station-owner Web Services API
 (`getChargingSessionData`) with credentials from `config/chargepoint.json` or
 `CHARGEPOINT_WS_USERNAME`, `CHARGEPOINT_WS_PASSWORD`,
 `CHARGEPOINT_STATION_ID`, and `CHARGEPOINT_LOOKBACK_DAYS`, or a generic JSON
-endpoint via `mode=json`. It writes status to
+endpoint via `mode=json`, or a browser CSV export via `mode=browser_csv`. It writes status to
 `data/latest_chargepoint_refresh.json`. If credentials are missing, stale, or
 the API returns no sessions, the script keeps the last good local
 `chargepoint_sessions.json` file so the rest of the monitor can continue.

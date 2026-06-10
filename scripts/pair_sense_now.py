@@ -86,9 +86,9 @@ def main() -> int:
     if total:
         result["envoyMinusSenseKw"] = total["kw"] - sense_kw
     if total and storage:
-        result["envoyHouseLoadKw"] = total["kw"] + storage["kw"]
-        result["envoyHouseLoadMinusSenseKw"] = result["envoyHouseLoadKw"] - sense_kw
-        result["envoyTotalMinusStorageAbsMinusSenseKw"] = total["kw"] - abs(storage["kw"]) - sense_kw
+        result["envoyNonBatteryLoadKw"] = total["kw"] - abs(storage["kw"])
+        result["envoyNonBatteryLoadMinusSenseKw"] = result["envoyNonBatteryLoadKw"] - sense_kw
+        result["envoyTotalMinusStorageAbsMinusSenseKw"] = result["envoyNonBatteryLoadMinusSenseKw"]
     production = envoy.get("Production")
     if production and storage:
         result["envoySolarAfterStorageKw"] = production["kw"] + storage["kw"]
@@ -116,16 +116,16 @@ def main() -> int:
                 f"({sample['gapSeconds']:.0f}s away)"
             )
     if "envoyMinusSenseKw" in result:
-        lines.extend(["", f"- Envoy total minus Sense: `{result['envoyMinusSenseKw']:.3f} kW`"])
-    if "envoyHouseLoadKw" in result:
-        lines.append(f"- Envoy house load estimate (`total + storage`): `{result['envoyHouseLoadKw']:.3f} kW`")
-    if "envoyHouseLoadMinusSenseKw" in result:
-        lines.append(f"- Envoy house load estimate minus Sense: `{result['envoyHouseLoadMinusSenseKw']:.3f} kW`")
+        lines.extend(["", f"- Raw Envoy total minus Sense: `{result['envoyMinusSenseKw']:.3f} kW`"])
+    if "envoyNonBatteryLoadKw" in result:
+        lines.append(f"- Envoy non-battery load estimate (`total - abs(storage)`): `{result['envoyNonBatteryLoadKw']:.3f} kW`")
+    if "envoyNonBatteryLoadMinusSenseKw" in result:
+        lines.append(f"- Envoy non-battery load estimate minus Sense: `{result['envoyNonBatteryLoadMinusSenseKw']:.3f} kW`")
     if "envoySolarAfterStorageKw" in result:
         lines.append(f"- Envoy solar after battery charge/discharge: `{result['envoySolarAfterStorageKw']:.3f} kW`")
     if "envoyTotalMinusStorageAbsMinusSenseKw" in result:
         lines.append(
-            "- Envoy total minus battery-charge magnitude minus Sense: "
+            "- Envoy total minus battery charge/discharge magnitude minus Sense: "
             f"`{result['envoyTotalMinusStorageAbsMinusSenseKw']:.3f} kW`"
         )
     PAIRING_REPORT_PATH.write_text("\n".join(lines) + "\n")
