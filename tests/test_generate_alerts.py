@@ -188,6 +188,27 @@ class GenerateAlertsTest(unittest.TestCase):
         self.assertIn("current portal state: `Open`", alert["detail"])
         self.assertIn("Close the Sideyard Gate", generate_alerts.recommended_action(alert) or "")
 
+    def test_alarm_com_trouble_conditions_alert_names_camera_trouble(self) -> None:
+        alarm = alarm_com_payload(activity_ok=True)
+        alarm["troubleConditions"] = {
+            "ok": True,
+            "rows": [
+                {
+                    "description": "Video Device - Not Responding (Sideyard)",
+                    "emberDeviceId": "104430779-2052",
+                }
+            ],
+        }
+        self.patch_module(
+            load_alarm_com=lambda: alarm,
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+        )
+        alerts = generate_alerts.build_alerts(base_config(), latest_snapshot(), [])
+        alert = next(item for item in alerts if item["title"] == "Alarm.com trouble conditions active")
+        self.assertIn("Video Device - Not Responding (Sideyard)", alert["detail"])
+        self.assertIn("Power-cycle", generate_alerts.recommended_action(alert) or "")
+
     def test_age_label_handles_alarm_com_utc_timestamps(self) -> None:
         self.assertEqual(
             generate_alerts.age_label("2026-06-10T20:00:00.000Z", "2026-06-10T13:05:30-07:00"),

@@ -918,6 +918,9 @@ function buildGateValidation(payload, alarmHardware) {
     /sideyard gate/i.test(`${event.deviceDescription || ""}`)
   );
   const sideyardMedia = (media?.recentMedia || []).filter((event) => /sideyard/i.test(`${event.deviceDescription || ""} ${event.description || ""}`));
+  const gateCameraTrouble = (payload.troubleConditions?.rows || []).filter((item) =>
+    /sideyard|backyard/i.test(`${item.description || ""} ${item.emberDeviceId || ""}`)
+  );
   const blockers = [];
   if (!hardware.length) blockers.push("Flex IO / gate-control hardware not recorded in config");
   if (!sideyardGate) blockers.push("Sideyard Gate device not visible in Alarm.com state");
@@ -954,10 +957,12 @@ function buildGateValidation(payload, alarmHardware) {
     latestSideyardTripAt: sideyardTrips[0]?.localTime || null,
     recentSideyardTrips: sideyardTrips.slice(0, 8),
     recentSideyardMedia: sideyardMedia.slice(0, 8),
-    diagnosis:
-      currentGateState === "open"
+    diagnosis: gateCameraTrouble.length
+      ? `Alarm.com reports camera trouble for ${gateCameraTrouble.map((item) => item.description).join("; ")}.`
+      : currentGateState === "open"
         ? "Sideyard Gate is currently Open; another open test will not create a fresh Alarm.com open event until Alarm.com first sees it Closed."
         : null,
+    cameraTrouble: gateCameraTrouble,
   };
 }
 
@@ -1199,6 +1204,39 @@ async function fetchRecordingRules(auth) {
     missingExpected: EXPECTED_VIDEO_RULES.filter((name) => !names.has(name)),
     pausedExpected: rules.filter((rule) => EXPECTED_VIDEO_RULES.includes(rule.name) && rule.isPaused).map((rule) => rule.name),
     rules,
+  };
+}
+
+function summarizeTroubleCondition(item) {
+  const attrs = item.attributes || item;
+  const detail = String(attrs.extraData?.description || attrs.description || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  return {
+    id: attrs.id || item.id || "",
+    description: attrs.description || "",
+    deviceId: attrs.deviceId ?? attrs.extraData?.deviceId ?? null,
+    emberDeviceId: attrs.emberDeviceId || "",
+    severity: attrs.severity ?? null,
+    troubleConditionType: attrs.troubleConditionType ?? null,
+    detail: detail.slice(0, 500),
+  };
+}
+
+async function fetchTroubleConditions(auth) {
+  const result = await fetchJson(`${BASE}/web/api/troubleConditions/troubleConditions?forceRefresh=true`, auth);
+  const rawRows = Array.isArray(result.body?.data)
+    ? result.body.data
+    : Array.isArray(result.body?.value)
+      ? result.body.value
+      : [];
+  const rows = result.ok ? rawRows.map(summarizeTroubleCondition) : [];
+  return {
+    ok: result.ok,
+    status: result.status,
+    checkedAt: new Date().toISOString(),
+    count: rows.length,
+    rows,
   };
 }
 
@@ -1464,6 +1502,7 @@ function writeReport(root, payload) {
       payload.activity?.ok ? (payload.activity?.refreshOk === false ? "cached" : "ok") : "failed"
     }\``,
     `- Video recording rules: \`${payload.videoRules?.ok ? `${payload.videoRules.ruleCount} found` : "failed"}\``,
+    `- Trouble conditions: \`${payload.troubleConditions?.ok ? `${payload.troubleConditions.count} found` : "failed"}\``,
     `- Websocket token check: \`${payload.websocketToken?.ok ? "ok" : "failed"}\``,
   ];
   if (payload.energy.ok) {
@@ -1490,6 +1529,19 @@ function writeReport(root, payload) {
       lines,
       ["Rule", "Paused", "Trigger", "Action", "Timeframe"],
       payload.videoRules.rules.map((rule) => [rule.name, rule.isPaused, rule.trigger, rule.action, rule.timeframe])
+    );
+  }
+  if (payload.troubleConditions?.ok) {
+    lines.push("", "## Trouble Conditions", "");
+    table(
+      lines,
+      ["Issue", "Device ID", "Severity", "Detail"],
+      (payload.troubleConditions.rows || []).map((item) => [
+        item.description || item.id,
+        item.emberDeviceId || item.deviceId || "n/a",
+        item.severity ?? "n/a",
+        item.detail || "",
+      ])
     );
   }
   if (payload.gateValidation) {
@@ -1569,6 +1621,7 @@ async function main() {
     alarmState: { ok: false },
     activity: { ok: false },
     videoRules: { ok: false },
+    troubleConditions: { ok: false },
     websocketToken: { ok: false },
     portal: null,
     changes: null,
@@ -1598,6 +1651,11 @@ async function main() {
       payload.videoRules = await fetchRecordingRules(auth);
     } catch (error) {
       payload.errors.push(`Video recording rule capture failed: ${error.message || error}`);
+    }
+    try {
+      payload.troubleConditions = await fetchTroubleConditions(auth);
+    } catch (error) {
+      payload.errors.push(`Trouble condition capture failed: ${error.message || error}`);
     }
     payload.websocketToken = await checkWebsocketToken(alarm, auth);
     try {
