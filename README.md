@@ -165,10 +165,20 @@ seen activity since the previous capture.
 
 `scripts/fetch_chargepoint_sessions.py` refreshes
 `data/chargepoint_sessions.json` before the ChargePoint pairing report runs.
-By default it uses ChargePoint's station-owner Web Services API
+It supports the driver portal charging-activity path with a password stored in
+macOS Keychain and referenced from `config/chargepoint.json` by
+`password_keychain_service` and `password_keychain_account`. The portal page's
+CSV button is generated in the browser from loaded table data; the script uses
+the underlying `charging_activity_monthly` POST to ChargePoint's map-cache API
+instead. Because ChargePoint may trigger DataDome/CAPTCHA on repeated password
+logins, driver-portal mode has a freshness gate and retry backoff and keeps the
+last good local `chargepoint_sessions.json` file when auth is blocked.
+
+The same script can also use ChargePoint's station-owner Web Services API
 (`getChargingSessionData`) with credentials from `config/chargepoint.json` or
 `CHARGEPOINT_WS_USERNAME`, `CHARGEPOINT_WS_PASSWORD`,
-`CHARGEPOINT_STATION_ID`, and `CHARGEPOINT_LOOKBACK_DAYS`. It writes status to
+`CHARGEPOINT_STATION_ID`, and `CHARGEPOINT_LOOKBACK_DAYS`, or a generic JSON
+endpoint via `mode=json`. It writes status to
 `data/latest_chargepoint_refresh.json`. If credentials are missing, stale, or
 the API returns no sessions, the script keeps the last good local
 `chargepoint_sessions.json` file so the rest of the monitor can continue.

@@ -1,9 +1,17 @@
 {
-  "notes": "Copy to config/chargepoint.json after ChargePoint API setup. Keep the real file out of git.",
-  "mode": "webservices",
-  "username": "replace-with-chargepoint-webservices-username",
-  "password": "replace-with-chargepoint-webservices-password",
-  "station_id": "optional-station-id",
+  "notes": "Copy to config/chargepoint.json after ChargePoint setup. Keep the real file out of git. Prefer Keychain references over plaintext passwords.",
+  "mode": "driver_portal",
+  "username": "replace-with-chargepoint-driver-email",
+  "password_keychain_service": "SmartHomeMonitor ChargePoint Driver Portal",
+  "password_keychain_account": "replace-with-chargepoint-driver-email",
+  "driver_min_refresh_minutes": 180,
+  "driver_retry_minutes": 360,
   "lookback_days": 120,
-  "station_type": "Home"
+  "station_type": "Home",
+  "webservices_example": {
+    "mode": "webservices",
+    "username": "replace-with-chargepoint-webservices-username",
+    "password": "replace-with-chargepoint-webservices-password",
+    "station_id": "optional-station-id"
+  }
 }
