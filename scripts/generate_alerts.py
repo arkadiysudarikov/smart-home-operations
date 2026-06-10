@@ -169,6 +169,8 @@ def recommended_action(alert: dict[str, str]) -> str | None:
     detail = alert.get("detail", "")
     if title == "Alarm.com sensor-triggered media is missing":
         return "Trip Entry Door or Sideyard Gate once, wait 1-2 minutes, then refresh Alarm.com activity/media and confirm a new clip or image event."
+    if title == "Alarm.com video recording rules are missing":
+        return "Recreate the missing Alarm.com Recording Rules for Entry Door, Sideyard Gate, and related cameras; then run a post-rule door or gate trip test."
     if title == "Office TaHoma child bridge is unreachable":
         return "Check TaHoma power, Wi-Fi, and IP reservation for 192.168.0.164; then rerun the Office child bridge check or restart."
     if title == "Recent Homebridge warning volume is high":
@@ -402,12 +404,24 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
                     "detail": "The Alarm.com portal capture logged in but did not refresh energy data.",
                 }
             )
-        if alarm_com.get("activity") and not (alarm_com.get("activity") or {}).get("ok"):
+        activity = alarm_com.get("activity") or {}
+        if alarm_com.get("activity") and not activity.get("ok"):
             alerts.append(
                 {
                     "severity": "warning",
                     "title": "Alarm.com portal capture failed",
                     "detail": "The Alarm.com portal capture logged in but did not refresh activity history.",
+                }
+            )
+        elif activity.get("refreshOk") is False:
+            alerts.append(
+                {
+                    "severity": "warning",
+                    "title": "Alarm.com portal capture failed",
+                    "detail": (
+                        f"The Alarm.com activity endpoint returned `{activity.get('refreshStatus') or 'n/a'}`; "
+                        "using cached activity history from the last good capture."
+                    ),
                 }
             )
         websocket = alarm_com.get("websocketToken") or {}
@@ -429,6 +443,26 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
                     "detail": f"`{len(issues)}` Alarm.com device issues; first is `{first.get('description') or first.get('id')}` state `{first.get('state') or 'n/a'}`.",
                 }
             )
+        video_rules = alarm_com.get("videoRules") or {}
+        missing_video_rules = video_rules.get("missingExpected") or []
+        paused_video_rules = video_rules.get("pausedExpected") or []
+        if video_rules.get("ok") and (missing_video_rules or paused_video_rules):
+            parts = []
+            if missing_video_rules:
+                parts.append(f"missing: `{', '.join(str(item) for item in missing_video_rules)}`")
+            if paused_video_rules:
+                parts.append(f"paused: `{', '.join(str(item) for item in paused_video_rules)}`")
+            alerts.append(
+                {
+                    "severity": "warning",
+                    "title": "Alarm.com video recording rules are missing",
+                    "detail": (
+                        f"Recording rule check found `{video_rules.get('ruleCount')}` rules; "
+                        + "; ".join(parts)
+                        + "."
+                    ),
+                }
+            )
         media = ((alarm_com.get("activity") or {}).get("mediaTriggerHealth") or {})
         media_min_sensor_trips = int(config["alerts"].get("alarm_media_sensor_trip_min_events", 10))
         if (
@@ -438,6 +472,9 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
         ):
             validation_trips = int(media.get("validationTargetTripEvents") or 0)
             latest_validation = media.get("latestValidationTargetTripAt") or "none"
+            rule_state = ""
+            if video_rules.get("ok") and missing_video_rules:
+                rule_state = " Expected video recording rules are currently missing, so media cannot be validated until they are recreated."
             alerts.append(
                 {
                     "severity": "warning",
@@ -448,6 +485,7 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
                         f"post-disarm media events: `{media.get('postDisarmMediaEvents') or 0}`; "
                         f"validation target trips: `{validation_trips}` "
                         f"(latest Entry Door/Sideyard Gate trip: `{latest_validation}`)."
+                        f"{rule_state}"
                     ),
                 }
             )
