@@ -124,6 +124,7 @@ The monitor writes:
 - `data/latest_events.json`
 - `data/latest_characteristics.json`
 - `data/latest_alarm_com.json`
+- `data/latest_alarm_homebridge_state.json`
 - `data/latest_chargepoint_refresh.json`
 - `data/alarm_com_devices.json`
 - `data/alarm_com_activity.json`
@@ -141,6 +142,7 @@ The monitor writes:
 - `reports/combined_energy_monitor.md`
 - `reports/sense_now_pairing.md`
 - `reports/alarm_com.md`
+- `reports/alarm_homebridge_state.md`
 - `reports/alerts.md`
 - `reports/homekit_virtual_sensors.md`
 
@@ -182,7 +184,12 @@ health without storing the token, and can run a safe GET-only portal crawl with
 `./scripts/capture_alarm_com.js --crawl`. The scheduled monitor runs the energy,
 device-state, activity, and websocket-health refresh path only. It also writes
 normalized device and activity files, including device-state changes and newly
-seen activity since the previous capture.
+seen activity since the previous capture. `reports/alarm_homebridge_state.md`
+compares the fresh Alarm.com portal device state against cached Homebridge
+Alarm.com characteristics; Alarm.com portal state is treated as the current
+source of truth when the cache disagrees. Activity-history capture degradation
+is surfaced separately from physical Alarm state through the `Alarm Activity`
+virtual sensor.
 
 `scripts/fetch_chargepoint_sessions.py` refreshes
 `data/chargepoint_sessions.json` before the ChargePoint pairing report runs.

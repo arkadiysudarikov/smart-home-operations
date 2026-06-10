@@ -72,6 +72,18 @@ function ensureDirs(root) {
   fs.mkdirSync(path.join(root, "reports"), { recursive: true });
 }
 
+function loadSourcesConfig(root) {
+  const configPath = path.join(root, "config/sources.json");
+  if (!fs.existsSync(configPath)) {
+    return {};
+  }
+  try {
+    return JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
 function stripTags(html) {
   return String(html || "")
     .replace(/<script[\s\S]*?<\/script>/gi, " ")
@@ -1145,6 +1157,8 @@ function writeTelemetryArtifacts(root, payload) {
 }
 
 function writeReport(root, payload) {
+  const sourcesConfig = loadSourcesConfig(root);
+  const alarmHardware = sourcesConfig.installed_hardware?.alarm_com || [];
   const lines = [
     "# Alarm.com Portal Capture",
     "",
@@ -1166,6 +1180,12 @@ function writeReport(root, payload) {
       `- Energy daily rows vs dashboard gap: \`${payload.energy.dashboardDeltaKwh ?? "n/a"}\` kWh`,
       `- Energy meters: \`${(payload.energy.meters || []).map((meter) => meter.name).join(", ") || "n/a"}\``
     );
+  }
+  if (alarmHardware.length) {
+    lines.push("", "## Known Installed Hardware", "");
+    for (const item of alarmHardware) {
+      lines.push(`- ${item.name}: ${item.purpose || "installed"}`);
+    }
   }
   if (payload.videoRules?.ok) {
     lines.push("", "## Video Recording Rules", "");
