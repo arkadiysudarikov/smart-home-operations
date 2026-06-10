@@ -86,6 +86,14 @@ Refresh ChargePoint sessions before pairing them against home energy sources:
 ./scripts/analyze_chargepoint_pairing.py
 ```
 
+When ChargePoint blocks scripted driver-login refreshes, open
+`https://driver.chargepoint.com/charging-activity` in a browser, copy the
+`Download CSV` link target, and import it:
+
+```sh
+pbpaste | ./scripts/capture_chargepoint_browser_csv.js --import
+```
+
 Install HomeKit virtual alert sensors:
 
 ```sh
@@ -197,6 +205,10 @@ endpoint via `mode=json`, or a browser CSV export via `mode=browser_csv`. It wri
 `data/latest_chargepoint_refresh.json`. If credentials are missing, stale, or
 the API returns no sessions, the script keeps the last good local
 `chargepoint_sessions.json` file so the rest of the monitor can continue.
+`scripts/capture_chargepoint_browser_csv.js` turns a ChargePoint browser
+`Download CSV` data URL, clipboard value, or CSV file into a dated file under
+`data/chargepoint-downloads`, then optionally imports it immediately with
+`--import`.
 
 `reports/meter_reconciliation.md` adds Alarm.com energy readings to the
 Envoy/Sense/SCE view. Alarm.com readings live in
