@@ -145,8 +145,8 @@ def pair_sense_envoy(samples: list[Sample], max_seconds: int = 90) -> list[dict[
             row["envoyProductionKw"] = envoy_production.kw
         if envoy_storage:
             row["envoyStorageKw"] = envoy_storage.kw
-            row["envoyTotalMinusBatteryChargeAbsKw"] = envoy_total.kw - abs(envoy_storage.kw)
-            row["envoyMinusBatteryChargeAbsMinusSenseKw"] = row["envoyTotalMinusBatteryChargeAbsKw"] - sense.kw
+            row["envoyNonBatteryLoadKw"] = envoy_total.kw - abs(envoy_storage.kw)
+            row["envoyNonBatteryLoadMinusSenseKw"] = row["envoyNonBatteryLoadKw"] - sense.kw
         pairs.append(row)
     return sorted(pairs, key=lambda item: item["senseCapturedAt"], reverse=True)
 
@@ -164,12 +164,16 @@ def summarize_pairs(pairs: list[dict[str, Any]]) -> dict[str, Any]:
     def bucket(rows: list[dict[str, Any]]) -> dict[str, Any]:
         if not rows:
             return {"count": 0}
-        adjusted = [item["envoyMinusBatteryChargeAbsMinusSenseKw"] for item in rows if item.get("envoyMinusBatteryChargeAbsMinusSenseKw") is not None]
+        non_battery_adjusted = [
+            item["envoyNonBatteryLoadMinusSenseKw"]
+            for item in rows
+            if item.get("envoyNonBatteryLoadMinusSenseKw") is not None
+        ]
         return {
             "count": len(rows),
             "avgEnvoyMinusSenseKw": mean(item["envoyMinusSenseKw"] for item in rows),
             "avgSenseToEnvoyRatio": mean(item["senseToEnvoyRatio"] for item in rows if item.get("senseToEnvoyRatio") is not None),
-            "avgEnvoyMinusBatteryChargeAbsMinusSenseKw": mean(adjusted) if adjusted else None,
+            "avgEnvoyNonBatteryLoadMinusSenseKw": mean(non_battery_adjusted) if non_battery_adjusted else None,
         }
 
     return {
@@ -254,10 +258,9 @@ def build_reconciliation() -> dict[str, Any]:
             row["alarmToEnvoyRatio"] = alarm_kw / envoy_total.kw if envoy_total.kw else None
         if sense:
             row["alarmMinusSenseKw"] = alarm_kw - sense.kw
-        if envoy_total and envoy_storage:
-            adjusted = envoy_total.kw - abs(envoy_storage.kw)
-            row["envoyTotalMinusBatteryChargeAbsKw"] = adjusted
-            row["adjustedEnvoyMinusSenseKw"] = adjusted - sense.kw if sense else None
+        if envoy_total and envoy_storage and sense:
+            row["envoyNonBatteryLoadKw"] = envoy_total.kw - abs(envoy_storage.kw)
+            row["envoyNonBatteryLoadMinusSenseKw"] = row["envoyNonBatteryLoadKw"] - sense.kw
         instant_pairs.append(row)
 
     child_instants: list[dict[str, Any]] = []
@@ -415,7 +418,11 @@ def write_report(payload: dict[str, Any]) -> None:
             "",
             "## Sense / Envoy Regimes",
             "",
-            "| Regime | Pairs | Avg Envoy - Sense kW | Avg Sense / Envoy | Avg Envoy minus battery charge minus Sense kW |",
+            "- Sense `Watts` is treated as whole-home usage/load. Sense solar is a separate production device stream when available.",
+            "- Sense total appears to exclude Enphase battery charge/discharge, so the closest Envoy comparator is `Consumption Total - abs(Storage)`.",
+            "- Envoy `Consumption Net` is grid import/export after solar, not a Sense load comparator.",
+            "",
+            "| Regime | Pairs | Avg raw Envoy total - Sense kW | Avg Sense / raw Envoy total | Avg Envoy non-battery load - Sense kW |",
             "|---|---:|---:|---:|---:|",
         ]
     )
@@ -433,7 +440,7 @@ def write_report(payload: dict[str, Any]) -> None:
                     str(row.get("count", 0)),
                     fmt(row.get("avgEnvoyMinusSenseKw")),
                     pct(row.get("avgSenseToEnvoyRatio")),
-                    fmt(row.get("avgEnvoyMinusBatteryChargeAbsMinusSenseKw")),
+                    fmt(row.get("avgEnvoyNonBatteryLoadMinusSenseKw")),
                 ]
             )
             + " |"
@@ -454,7 +461,8 @@ def write_report(payload: dict[str, Any]) -> None:
                 f"- Sense total: `{fmt(sense_now.get('senseKw'))}` kW at `{sense_now.get('senseCapturedAtLocal')}`.",
                 f"- Sense device list: Solar `{fmt((solar.get('watts') or 0) / 1000.0)}` kW, Other `{fmt((other.get('watts') or 0) / 1000.0)}` kW, Always On `{fmt((always_on.get('watts') or 0) / 1000.0)}` kW.",
                 f"- Envoy at nearest sample: Total `{fmt((envoy.get('Consumption Total') or {}).get('kw'))}` kW, Production `{fmt((envoy.get('Production') or {}).get('kw'))}` kW, Net `{fmt((envoy.get('Consumption Net') or {}).get('kw'))}` kW, Storage `{fmt((envoy.get('Storage') or {}).get('kw'))}` kW.",
-                f"- After subtracting absolute battery charging from Envoy total, remaining Envoy-vs-Sense gap is `{fmt(sense_now.get('envoyTotalMinusStorageAbsMinusSenseKw'))}` kW.",
+                f"- Envoy non-battery load estimate (`total - abs(storage)`) minus Sense: `{fmt(sense_now.get('envoyTotalMinusStorageAbsMinusSenseKw'))}` kW.",
+                "- The Sense device list shows Solar separately from the Sense total load reading, so Sense solar should be reconciled to Envoy Production rather than added to grid import.",
             ]
         )
 
@@ -543,8 +551,10 @@ def write_report(payload: dict[str, Any]) -> None:
             "- Envoy Consumption Total is the best whole-home site-load reference currently available.",
             "- Alarm.com Energy Clamp tracks Envoy Consumption Total closely for the 10:59 local instant.",
             "- Envoy Consumption Net is grid import/export after solar, not house load.",
-            "- Sense is much lower during the same solar/battery window, so Sense is not currently acting as a whole-home total comparable to Envoy or Alarm.com.",
-            "- The current Sense gap shrinks substantially after removing battery charging from Envoy total, which points to battery/solar boundary differences as the main mismatch.",
+            "- Sense `Watts` is also a whole-home usage/load stream, not grid import/export.",
+            "- Sense total appears to exclude Enphase battery charge/discharge. Compare it first to Envoy non-battery load (`Consumption Total - abs(Storage)`), then to raw Envoy Consumption Total for battery-inclusive site load.",
+            "- Sense Solar is a separate production stream. Compare it to Envoy Production when the Sense device list is available.",
+            "- Recent battery-adjusted Sense/Envoy load pairs are close enough to use Sense as a secondary non-battery load signal, but Envoy remains the stronger source of truth because it also exposes production, net grid, and storage consistently.",
             "- Alarm.com child meters explain only a tiny share of Energy Clamp consumption; most usage remains unclassified under the parent clamp.",
             "- SCE is the utility-bill truth source for grid import/export where Green Button intervals overlap the monitor window.",
         ]

@@ -185,36 +185,34 @@ def write_report(pairs: list[dict[str, Any]]) -> None:
     if recent:
         for item in recent:
             storage = item["envoyStorageKw"]
-            item["envoyHouseLoadKw"] = (
-                item["envoyConsumptionTotalKw"] + storage if storage is not None else None
+            item["envoyNonBatteryLoadKw"] = (
+                item["envoyConsumptionTotalKw"] - abs(storage) if storage is not None else None
             )
-            item["houseLoadMinusSenseKw"] = (
-                item["envoyHouseLoadKw"] - item["senseKw"] if item["envoyHouseLoadKw"] is not None else None
+            item["envoyNonBatteryLoadMinusSenseKw"] = (
+                item["envoyNonBatteryLoadKw"] - item["senseKw"] if item["envoyNonBatteryLoadKw"] is not None else None
             )
         avg_delta = sum(item["deltaKw"] for item in recent) / len(recent)
         avg_ratio = sum(item["ratioSenseToEnvoyTotal"] for item in recent if item["ratioSenseToEnvoyTotal"] is not None) / len(recent)
-        house_load_gaps = [
-            item["houseLoadMinusSenseKw"]
+        non_battery_gaps = [
+            item["envoyNonBatteryLoadMinusSenseKw"]
             for item in recent
-            if item["houseLoadMinusSenseKw"] is not None
+            if item["envoyNonBatteryLoadMinusSenseKw"] is not None
         ]
-        charging = [item for item in recent if (item["envoyStorageKw"] or 0) < -0.1]
-        discharging_or_idle = [item for item in recent if (item["envoyStorageKw"] or 0) >= -0.1]
         lines.extend(
             [
                 "## Recent Summary",
                 "",
                 f"- Recent pairs summarized: `{len(recent)}`",
-                f"- Average Envoy minus Sense: `{avg_delta:.3f} kW`",
-                f"- Average Sense / Envoy total ratio: `{avg_ratio:.1%}`",
-                "- Battery-adjusted formula: `Envoy house load = Consumption Total + Storage`.",
-                f"- Battery-adjusted Envoy house load minus Sense: {fmt_summary(summarize(house_load_gaps))}",
-                f"- Battery charging pairs in recent window: `{len(charging)}`",
-                f"- Battery idle/discharging pairs in recent window: `{len(discharging_or_idle)}`",
+                "- Sense `Watts` is treated as Sense whole-home usage/load, not grid import/export.",
+                "- Sense total appears to exclude Enphase battery charge/discharge; the closest Envoy comparator is `Consumption Total - abs(Storage)`.",
+                "- Envoy `Consumption Net` is grid import/export after solar, not a Sense load comparator.",
+                f"- Average raw Envoy total minus Sense: `{avg_delta:.3f} kW`",
+                f"- Average Sense / raw Envoy total ratio: `{avg_ratio:.1%}`",
+                f"- Envoy non-battery load minus Sense: {fmt_summary(summarize(non_battery_gaps))}",
                 "",
                 "## Recent Pairs",
                 "",
-                "| Sense time | Gap | Sense kW | Envoy total kW | Storage kW | Envoy house load kW | House minus Sense kW | Envoy net kW | Production kW |",
+                "| Sense time | Gap | Sense load kW | Envoy total kW | Storage kW | Envoy non-battery kW | Non-battery - Sense kW | Envoy net grid kW | Production kW |",
                 "|---|---:|---:|---:|---:|---:|---:|---:|---:|",
             ]
         )
@@ -228,8 +226,8 @@ def write_report(pairs: list[dict[str, Any]]) -> None:
                         fmt_kw(item["senseKw"]),
                         fmt_kw(item["envoyConsumptionTotalKw"]),
                         fmt_kw(item["envoyStorageKw"]),
-                        fmt_kw(item["envoyHouseLoadKw"]),
-                        fmt_kw(item["houseLoadMinusSenseKw"]),
+                        fmt_kw(item["envoyNonBatteryLoadKw"]),
+                        fmt_kw(item["envoyNonBatteryLoadMinusSenseKw"]),
                         fmt_kw(item["envoyConsumptionNetKw"]),
                         fmt_kw(item["envoyProductionKw"]),
                     ]

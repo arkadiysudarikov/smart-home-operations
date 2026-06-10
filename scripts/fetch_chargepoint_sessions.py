@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import csv
 import json
 import os
 import subprocess
@@ -10,6 +11,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -17,11 +19,13 @@ CONFIG_PATH = ROOT / "config" / "chargepoint.json"
 DATA_DIR = ROOT / "data"
 SOURCE_PATH = DATA_DIR / "chargepoint_sessions.json"
 STATUS_PATH = DATA_DIR / "latest_chargepoint_refresh.json"
+CSV_DOWNLOAD_DIR = DATA_DIR / "chargepoint-downloads"
 WEBSERVICES_URL = "https://webservices.chargepoint.com/webservices/chargepoint/services/5.0"
 SOAP_ACTION = "urn:provider/interface/chargepointservices/getChargingSessionData"
 DISCOVERY_URL = "https://discovery.chargepoint.com/discovery/v3/globalconfig"
 DEFAULT_DRIVER_REFRESH_MINUTES = 180
 DEFAULT_DRIVER_RETRY_MINUTES = 360
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
 
 class ChargePointConfigMissing(RuntimeError):
@@ -124,6 +128,74 @@ def duration_label_from_ms(value: Any) -> str | None:
     hours, rem = divmod(total, 3600)
     minutes, seconds = divmod(rem, 60)
     return f"{hours}h {minutes}m {seconds}s"
+
+
+def parse_driver_csv_time(value: str | None) -> str | None:
+    if not value:
+        return None
+    cleaned = " ".join(value.replace("\xa0", " ").split())
+    for suffix in (" PDT", " PST"):
+        if cleaned.endswith(suffix):
+            cleaned = cleaned[: -len(suffix)]
+            break
+    for fmt in ("%m/%d/%Y, %I:%M %p", "%m/%d/%Y %I:%M %p"):
+        try:
+            return datetime.strptime(cleaned, fmt).replace(tzinfo=LOCAL_TZ).isoformat(timespec="seconds")
+        except ValueError:
+            continue
+    return None
+
+
+def newest_csv_export(config: dict[str, Any]) -> Path | None:
+    configured = env_or_config(config, "CHARGEPOINT_CSV_PATH", "csv_path")
+    if configured:
+        path = Path(str(configured)).expanduser()
+        return path if path.exists() else None
+    candidates = sorted(CSV_DOWNLOAD_DIR.glob("*.csv"), key=lambda item: item.stat().st_mtime, reverse=True)
+    return candidates[0] if candidates else None
+
+
+def session_from_csv(row: dict[str, str], config: dict[str, Any]) -> dict[str, Any] | None:
+    start_at = parse_driver_csv_time(row.get("Start"))
+    end_at = parse_driver_csv_time(row.get("End"))
+    energy_kwh = parse_float(row.get("Energy (kWh)"))
+    if not start_at or energy_kwh is None:
+        return None
+    address = ", ".join(part for part in [row.get("Address"), row.get("City")] if part)
+    cost_text = (row.get("Cost") or "").replace("$", "")
+    session = {
+        "startAt": start_at,
+        "endAt": end_at,
+        "duration": row.get("Duration") or duration_label(start_at, end_at),
+        "stationType": row.get("Station Type") or config.get("station_type") or "Home",
+        "station": row.get("Station"),
+        "address": address or None,
+        "energyKwh": energy_kwh,
+        "costUsd": parse_float(cost_text),
+        "sourcePrecision": "minute",
+    }
+    company = row.get("Company Name")
+    payment_type = row.get("Payment Type")
+    if company:
+        session["companyName"] = company
+    if payment_type:
+        session["paymentType"] = payment_type
+    return {key: value for key, value in session.items() if value not in (None, "")}
+
+
+def fetch_csv_export(config: dict[str, Any]) -> dict[str, Any]:
+    path = newest_csv_export(config)
+    if not path:
+        raise ChargePointConfigMissing("Place a ChargePoint browser CSV export in data/chargepoint-downloads, or set CHARGEPOINT_CSV_PATH/csv_path.")
+    with path.open(newline="") as handle:
+        rows = list(csv.DictReader(handle))
+    sessions = [session for row in rows for session in [session_from_csv(row, config)] if session]
+    return {
+        "mode": "browser_csv",
+        "sessions": sessions,
+        "responseRows": len(rows),
+        "sourcePath": str(path),
+    }
 
 
 def keychain_password(service: str, account: str) -> str | None:
@@ -623,9 +695,15 @@ def merge_payload(fetch_result: dict[str, Any], config: dict[str, Any]) -> dict[
     sessions = sorted(fetch_result["sessions"], key=lambda item: item["startAt"], reverse=True)
     energy_total = round(sum(float(session.get("energyKwh") or 0) for session in sessions), 3)
     costs = [float(session["costUsd"]) for session in sessions if session.get("costUsd") is not None]
+    if fetch_result["mode"] == "driver_portal":
+        source = "ChargePoint driver portal charging-activity API"
+    elif fetch_result["mode"] == "browser_csv":
+        source = "ChargePoint browser charging-activity CSV"
+    else:
+        source = f"ChargePoint {fetch_result['mode']} API"
     payload = {
         "capturedAt": now(),
-        "source": "ChargePoint driver portal charging-activity API" if fetch_result["mode"] == "driver_portal" else f"ChargePoint {fetch_result['mode']} API",
+        "source": source,
         "sessions": sessions,
         "senseEvEvents": previous.get("senseEvEvents", []),
         "visibleTotals": {
@@ -639,6 +717,36 @@ def merge_payload(fetch_result: dict[str, Any], config: dict[str, Any]) -> dict[
     return payload
 
 
+def write_success(started_at: str, result: dict[str, Any], config: dict[str, Any]) -> None:
+    payload = merge_payload(result, config)
+    write_json(SOURCE_PATH, payload)
+    status = {
+        "ok": True,
+        "status": "downloaded",
+        "startedAt": started_at,
+        "finishedAt": now(),
+        "mode": result["mode"],
+        "sessions": len(payload["sessions"]),
+        "energyKwh": payload["visibleTotals"]["energyKwh"],
+        "sourceFile": str(SOURCE_PATH),
+    }
+    if result.get("sourcePath"):
+        status["sourceCsv"] = result["sourcePath"]
+    write_status(status)
+
+
+def try_csv_fallback(started_at: str, config: dict[str, Any], reason: str) -> bool:
+    try:
+        result = fetch_csv_export(config)
+    except Exception:
+        return False
+    write_success(started_at, result, config)
+    status = json.loads(STATUS_PATH.read_text())
+    status["fallbackReason"] = reason
+    write_status(status)
+    return True
+
+
 def main() -> int:
     started_at = now()
     config = load_config()
@@ -650,6 +758,8 @@ def main() -> int:
             result = fetch_json_api(config)
         elif mode in {"driver_portal", "portal", "driver"}:
             result = fetch_driver_portal(config)
+        elif mode in {"browser_csv", "csv"}:
+            result = fetch_csv_export(config)
         else:
             raise RuntimeError(f"Unsupported ChargePoint mode: {mode}")
     except ChargePointConfigMissing as exc:
@@ -665,12 +775,15 @@ def main() -> int:
                     "mode=webservices with username/password and optional station_id",
                     "or mode=json with json_url/json_headers/json_sessions_path/json_field_map",
                     "or mode=driver_portal with username and password_keychain_service/password_keychain_account",
+                    "or mode=browser_csv with csv_path or data/chargepoint-downloads/*.csv",
                 ],
                 "existingSource": str(SOURCE_PATH) if SOURCE_PATH.exists() else None,
             }
         )
         return 0
     except ChargePointDriverLoginBlocked as exc:
+        if try_csv_fallback(started_at, config, "driver_login_blocked"):
+            return 0
         write_status(
             {
                 "ok": None,
@@ -685,6 +798,8 @@ def main() -> int:
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         if exc.code == 403 and ("datadome" in body.lower() or "captcha" in body.lower()):
+            if try_csv_fallback(started_at, config, "driver_login_blocked"):
+                return 0
             write_status(
                 {
                     "ok": None,
@@ -746,20 +861,7 @@ def main() -> int:
         )
         return 0
 
-    payload = merge_payload(result, config)
-    write_json(SOURCE_PATH, payload)
-    write_status(
-        {
-            "ok": True,
-            "status": "downloaded",
-            "startedAt": started_at,
-            "finishedAt": now(),
-            "mode": result["mode"],
-            "sessions": len(payload["sessions"]),
-            "energyKwh": payload["visibleTotals"]["energyKwh"],
-            "sourceFile": str(SOURCE_PATH),
-        }
-    )
+    write_success(started_at, result, config)
     print(SOURCE_PATH)
     return 0
 

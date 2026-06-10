@@ -220,13 +220,19 @@ def build_payload() -> dict[str, Any]:
         states.append("EV charging")
 
     sense_all = (meter.get("senseEnvoySummary") or {}).get("all") or {}
-    adjusted_gap = sense_all.get("avgEnvoyMinusBatteryChargeAbsMinusSenseKw")
-    if adjusted_gap is not None and abs(adjusted_gap) >= float(thresholds.get("sense_envoy_adjusted_gap_kw", 0.75)):
+    sense_envoy_raw_load_gap = sense_all.get("avgEnvoyMinusSenseKw")
+    sense_envoy_non_battery_gap = sense_all.get("avgEnvoyNonBatteryLoadMinusSenseKw")
+    sense_gap_for_alert = (
+        sense_envoy_non_battery_gap
+        if sense_envoy_non_battery_gap is not None
+        else sense_envoy_raw_load_gap
+    )
+    if sense_gap_for_alert is not None and abs(sense_gap_for_alert) >= float(thresholds.get("sense_envoy_adjusted_gap_kw", 0.75)):
         alerts.append(
             alert(
                 "warning",
                 "Energy readings need reconciliation",
-                f"Battery-adjusted Envoy/Sense gap is `{fmt(adjusted_gap, 3)}` kW.",
+                f"Envoy non-battery load minus Sense load is `{fmt(sense_gap_for_alert, 3)}` kW.",
             )
         )
 
@@ -293,8 +299,14 @@ def build_payload() -> dict[str, Any]:
         )
     if cp_share is not None:
         insights.append(f"ChargePoint accounts for {pct(cp_share)} of the available Alarm.com 7-day Energy Clamp window.")
-    if adjusted_gap is not None:
-        insights.append(f"Battery-adjusted Envoy/Sense average gap is {fmt(adjusted_gap, 3)} kW, much better than raw Sense/Envoy comparison.")
+    if sense_envoy_raw_load_gap is not None:
+        insights.append(
+            f"Sense Watts is a whole-home load signal, not grid import/export; raw Envoy total minus Sense load is {fmt(sense_envoy_raw_load_gap, 3)} kW."
+        )
+    if sense_envoy_non_battery_gap is not None:
+        insights.append(
+            f"After removing Enphase storage charge/discharge from Envoy total, Envoy non-battery load minus Sense is {fmt(sense_envoy_non_battery_gap, 3)} kW."
+        )
     if alarm_mismatch is not None and abs(num(alarm_mismatch) or 0) >= alarm_mismatch_threshold:
         insights.append(f"Alarm.com dashboard current period and copied daily rows disagree by {fmt(alarm_mismatch, 1)} kWh, so it needs a fresh capture.")
     elif alarm_mismatch is not None:
