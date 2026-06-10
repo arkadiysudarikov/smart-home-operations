@@ -1,0 +1,171 @@
+{
+  "homebridge": {
+    "storage_path": "/Users/arkadiysudarikov/.homebridge",
+    "launchd_service": "system/com.homebridge.server",
+    "ui_port": 8581,
+    "main_bridge_port": 51179
+  },
+  "local_apps": [
+    "Home",
+    "UniFi",
+    "Enlighten",
+    "ChargePoint",
+    "Sense",
+    "Alarm"
+  ],
+  "network": {
+    "unifi_gateway": "192.168.0.1",
+    "att_gateway": "192.168.1.254",
+    "envoy_candidates": [
+      "192.168.1.71",
+      "envoy.local",
+      "envoy.localdomain"
+    ],
+    "known_tahoma_office": "192.168.0.164:8443"
+  },
+  "monitoring": {
+    "snapshot_interval_seconds": 300,
+    "log_tail_lines": 6000,
+    "home_event_tail_limit": 500,
+    "warning_lookback_lines": 6000
+  },
+  "retention": {
+    "snapshot_files_days": 2,
+    "snapshot_db_days": 14,
+    "home_event_days": 7,
+    "keep_recent_snapshot_raw_json_rows": 24,
+    "vacuum_after_cleanup": true
+  },
+  "alerts": {
+    "alarm_websocket_recent_window": 12,
+    "alarm_websocket_min_successes": 3,
+    "battery_low_percent": 20,
+    "battery_critical_percent": 10,
+    "battery_alert_mode": "solar_peak_cycle",
+    "battery_recharge_check_start_hour": 14,
+    "battery_recharge_check_end_hour": 16,
+    "high_load_kw": 8,
+    "grid_import_kw": 0.05,
+    "grid_export_kw": -0.05,
+    "solar_surplus_margin_kw": 0.2,
+    "warning_recent_window": 12,
+    "warning_high_count": 10,
+    "sce_interval_stale_days": 30,
+    "alarm_energy_capture_stale_hours": 24,
+    "alarm_daily_dashboard_mismatch_kwh": 25,
+    "alarm_media_sensor_trip_min_events": 10,
+    "chargepoint_alarm_7d_share_high": 0.35,
+    "sense_envoy_adjusted_gap_kw": 0.75
+  },
+  "actions": {
+    "bind_host": "127.0.0.1",
+    "port": 18765,
+    "silence_warning_minutes": 120,
+    "office_tahoma_child_bridge_port": 35854
+  },
+  "homekit_virtual_sensors": {
+    "enabled": true,
+    "webhook_url": "http://127.0.0.1:63743",
+    "accessories": [
+      {
+        "id": "smart_home_battery_critical",
+        "name": "Battery Crit",
+        "alert_titles": ["Battery failed to recharge before peak"]
+      },
+      {
+        "id": "smart_home_battery_low",
+        "name": "Battery Low",
+        "alert_titles": ["Battery reserve is low before peak"]
+      },
+      {
+        "id": "smart_home_alarm_degraded",
+        "name": "Alarm",
+        "alert_titles": [
+          "Alarm.com websocket is unreliable",
+          "Alarm.com portal capture failed",
+          "Alarm.com portal websocket token failed",
+          "Alarm.com device issue"
+        ]
+      },
+      {
+        "id": "smart_home_unifi_auth_failed",
+        "name": "UniFi Auth",
+        "alert_titles": ["UniFi occupancy authentication is failing"]
+      },
+      {
+        "id": "smart_home_office_tahoma_offline",
+        "name": "Office",
+        "alert_titles": ["Office TaHoma child bridge is unreachable"]
+      },
+      {
+        "id": "smart_home_high_load",
+        "name": "Load High",
+        "alert_titles": ["House load is high"]
+      },
+      {
+        "id": "smart_home_warnings_high",
+        "name": "Warnings",
+        "alert_titles": ["Recent Homebridge warning volume is high"]
+      },
+      {
+        "id": "smart_home_grid_importing",
+        "name": "Grid In",
+        "state_titles": ["Grid importing"]
+      },
+      {
+        "id": "smart_home_grid_exporting",
+        "name": "Grid Out",
+        "state_titles": ["Grid exporting"]
+      },
+      {
+        "id": "smart_home_solar_surplus",
+        "name": "Solar",
+        "state_titles": ["Solar surplus"]
+      },
+      {
+        "id": "smart_home_energy_data_stale",
+        "name": "Energy Stale",
+        "state_titles": ["Energy data stale"]
+      },
+      {
+        "id": "smart_home_sce_data_stale",
+        "name": "SCE Stale",
+        "alert_titles": ["SCE interval data is stale"]
+      },
+      {
+        "id": "smart_home_energy_check",
+        "name": "Energy Check",
+        "alert_titles": [
+          "Energy readings need reconciliation"
+        ]
+      },
+      {
+        "id": "smart_home_alarm_energy_recapture",
+        "name": "Alarm Energy",
+        "alert_titles": [
+          "Alarm.com energy is stale",
+          "Alarm.com energy totals disagree"
+        ],
+        "state_titles": [
+          "Alarm.com energy stale",
+          "Alarm.com energy inconsistent"
+        ]
+      },
+      {
+        "id": "smart_home_alarm_media_missing",
+        "name": "Alarm Media",
+        "alert_titles": ["Alarm.com sensor-triggered media is missing"]
+      },
+      {
+        "id": "smart_home_ev_charging",
+        "name": "EV Charging",
+        "state_titles": ["EV charging"]
+      },
+      {
+        "id": "smart_home_ev_heavy",
+        "name": "EV Heavy",
+        "alert_titles": ["Recent EV charging share is high"]
+      }
+    ]
+  }
+}
