@@ -20,6 +20,8 @@ REPORT_DIR = ROOT / "reports"
 SILENCE_PATH = DATA_DIR / "alerts_silenced_until.json"
 COMBINED_ENERGY_PATH = DATA_DIR / "latest_combined_energy_monitor.json"
 ALARM_COM_PATH = DATA_DIR / "latest_alarm_com.json"
+LATEST_CHARACTERISTICS_PATH = DATA_DIR / "latest_characteristics.json"
+ALARM_STATE_COMPARISON_PATH = DATA_DIR / "latest_alarm_homebridge_state.json"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
 
@@ -48,6 +50,16 @@ def load_alarm_com() -> dict[str, Any]:
         return json.loads(ALARM_COM_PATH.read_text())
     except json.JSONDecodeError:
         return {}
+
+
+def load_latest_characteristics() -> dict[str, Any]:
+    if not LATEST_CHARACTERISTICS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(LATEST_CHARACTERISTICS_PATH.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def recent_rows(limit: int) -> list[sqlite3.Row]:
@@ -179,6 +191,10 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         return "Refresh the Alarm.com portal capture; if 403 reauth churn continues, consider disabling Alarm.com websockets again."
     if title == "Alarm.com portal websocket token failed":
         return "Refresh Alarm.com with the Homebridge cookie and verify the portal websocket token endpoint still returns a token."
+    if title == "Alarm.com activity history is degraded":
+        return "Refresh Alarm.com with the Homebridge cookie, then rerun the monitor so activity history and media validation recapture cleanly."
+    if title == "Alarm.com Homebridge cache is stale":
+        return "Use Alarm.com portal state as current truth; restart or refresh the Alarm child bridge if these cached Homebridge values remain stale after the next monitor run."
     if title == "Alarm.com portal capture failed":
         return "Refresh Alarm.com with the Homebridge cookie, then rerun the monitor so energy, activity, and media health are recaptured."
     if title == "Alarm.com device issue":
@@ -215,6 +231,178 @@ def enrich_alerts(alerts: list[dict[str, str]]) -> list[dict[str, str]]:
             item["recommendedAction"] = action
         enriched.append(item)
     return enriched
+
+
+def alarm_device_aliases(latest: dict[str, Any]) -> dict[str, str]:
+    alarm_platform = next(
+        (
+            item
+            for item in latest.get("homebridge", {}).get("config", {}).get("platforms", [])
+            if item.get("platform") == "Alarmdotcom"
+        ),
+        {},
+    )
+    aliases: dict[str, str] = {}
+    for item in alarm_platform.get("deviceAliases") or []:
+        if item.get("id") and item.get("name"):
+            aliases[str(item["id"])] = str(item["name"])
+    return aliases
+
+
+def portal_alarm_states(alarm_com: dict[str, Any], latest: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    alarm_state = alarm_com.get("alarmState") or {}
+    components = ((alarm_state.get("systems") or [{}])[0].get("components") or {}) if alarm_state.get("ok") else {}
+    aliases = alarm_device_aliases(latest)
+    portal: dict[str, dict[str, Any]] = {}
+    for group, items in components.items():
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            name = str(aliases.get(str(item.get("id"))) or item.get("description") or "").strip()
+            state = item.get("stateText") or item.get("displayStateText")
+            if not name or state is None:
+                continue
+            portal[name] = {
+                "sourceName": item.get("description"),
+                "group": group,
+                "state": str(state),
+                "id": item.get("id"),
+                "remoteCommandsEnabled": item.get("remoteCommandsEnabled"),
+                "isMonitoringEnabled": item.get("isMonitoringEnabled"),
+                "isBypassed": item.get("isBypassed"),
+            }
+    return portal
+
+
+def normalize_homebridge_alarm_value(characteristic: str, value: Any) -> str | None:
+    if characteristic == "SecuritySystemCurrentState":
+        return {0: "Armed stay", 1: "Armed away", 2: "Armed night", 3: "Disarmed", 4: "Alarm triggered"}.get(value)
+    if characteristic == "ContactSensorState":
+        return {0: "Closed", 1: "Open"}.get(value)
+    if characteristic == "MotionDetected":
+        return "Activated" if value is True else "Idle" if value is False else None
+    if characteristic == "LockCurrentState":
+        return {0: "Locked", 1: "Unlocked", 2: "Jammed", 3: "Unknown"}.get(value)
+    if characteristic == "CurrentDoorState":
+        return {0: "Open", 1: "Closed", 2: "Opening", 3: "Closing", 4: "Stopped"}.get(value)
+    if characteristic == "On":
+        return "On" if value is True else "Off" if value is False else None
+    if characteristic == "CurrentHeatingCoolingState":
+        return {0: "Off", 1: "Heating", 2: "Cooling"}.get(value)
+    return None
+
+
+def preferred_alarm_characteristics() -> set[str]:
+    return {
+        "SecuritySystemCurrentState",
+        "ContactSensorState",
+        "MotionDetected",
+        "LockCurrentState",
+        "CurrentDoorState",
+        "On",
+        "CurrentHeatingCoolingState",
+    }
+
+
+def homebridge_alarm_states() -> dict[str, dict[str, Any]]:
+    states: dict[str, dict[str, Any]] = {}
+    for item in load_latest_characteristics().values():
+        if not isinstance(item, dict):
+            continue
+        if item.get("plugin") != "homebridge-node-alarm-dot-com":
+            continue
+        characteristic = str(item.get("characteristic") or "")
+        if characteristic not in preferred_alarm_characteristics():
+            continue
+        normalized = normalize_homebridge_alarm_value(characteristic, item.get("value"))
+        if normalized is None:
+            continue
+        name = str(item.get("accessory") or "")
+        states[name] = {
+            "state": normalized,
+            "characteristic": characteristic,
+            "rawValue": item.get("value"),
+            "service": item.get("service"),
+            "cacheFile": item.get("cacheFile"),
+        }
+    return states
+
+
+def comparable_alarm_state(homebridge_state: str, portal_state: str) -> bool:
+    if homebridge_state == portal_state:
+        return True
+    equivalent = {
+        ("Idle", "Closed"),
+        ("Closed", "Idle"),
+    }
+    return (homebridge_state, portal_state) in equivalent
+
+
+def compare_alarm_portal_to_homebridge(alarm_com: dict[str, Any], latest: dict[str, Any]) -> dict[str, Any]:
+    portal = portal_alarm_states(alarm_com, latest)
+    homebridge = homebridge_alarm_states()
+    rows: list[dict[str, Any]] = []
+    stale: list[dict[str, Any]] = []
+    for name, portal_item in sorted(portal.items()):
+        hb_item = homebridge.get(name)
+        if not hb_item:
+            continue
+        matches = comparable_alarm_state(str(hb_item["state"]), str(portal_item["state"]))
+        row = {
+            "device": name,
+            "portalState": portal_item["state"],
+            "homebridgeCachedState": hb_item["state"],
+            "matches": matches,
+            "homebridgeCharacteristic": hb_item.get("characteristic"),
+            "homebridgeRawValue": hb_item.get("rawValue"),
+            "portalGroup": portal_item.get("group"),
+            "portalDeviceId": portal_item.get("id"),
+            "portalSourceName": portal_item.get("sourceName"),
+        }
+        rows.append(row)
+        if not matches:
+            stale.append(row)
+    return {
+        "generatedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "portalGeneratedAt": alarm_com.get("generatedAt"),
+        "portalDeviceCount": len(portal),
+        "homebridgeComparedCount": len(rows),
+        "staleCount": len(stale),
+        "states": rows,
+        "stale": stale,
+    }
+
+
+def write_alarm_state_comparison_report(comparison: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    ALARM_STATE_COMPARISON_PATH.write_text(json.dumps(comparison, indent=2, sort_keys=True) + "\n")
+    lines = [
+        "# Alarm.com vs Homebridge State",
+        "",
+        f"- Generated: `{comparison.get('generatedAt')}`",
+        f"- Alarm.com portal capture: `{comparison.get('portalGeneratedAt') or 'n/a'}`",
+        "- Source of truth for Alarm.com current-state reporting: `Alarm.com portal state`",
+        f"- Compared devices: `{comparison.get('homebridgeComparedCount')}`",
+        f"- Stale Homebridge cached states: `{comparison.get('staleCount')}`",
+        "",
+    ]
+    stale = comparison.get("stale") or []
+    if stale:
+        lines.extend(["## Stale Cached States", "", "| Device | Alarm.com portal | Homebridge cache | Characteristic |", "|---|---|---|---|"])
+        for row in stale:
+            lines.append(
+                f"| {row.get('device')} | {row.get('portalState')} | {row.get('homebridgeCachedState')} | {row.get('homebridgeCharacteristic')} |"
+            )
+        lines.append("")
+    lines.extend(["## Compared States", "", "| Device | Alarm.com portal | Homebridge cache | Match |", "|---|---|---|---|"])
+    for row in comparison.get("states") or []:
+        lines.append(
+            f"| {row.get('device')} | {row.get('portalState')} | {row.get('homebridgeCachedState')} | {row.get('matches')} |"
+        )
+    (REPORT_DIR / "alarm_homebridge_state.md").write_text("\n".join(lines) + "\n")
 
 
 def active_warning_silence() -> datetime | None:
@@ -409,7 +597,7 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
             alerts.append(
                 {
                     "severity": "warning",
-                    "title": "Alarm.com portal capture failed",
+                    "title": "Alarm.com activity history is degraded",
                     "detail": "The Alarm.com portal capture logged in but did not refresh activity history.",
                 }
             )
@@ -417,7 +605,7 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
             alerts.append(
                 {
                     "severity": "warning",
-                    "title": "Alarm.com portal capture failed",
+                    "title": "Alarm.com activity history is degraded",
                     "detail": (
                         f"The Alarm.com activity endpoint returned `{activity.get('refreshStatus') or 'n/a'}`; "
                         "using cached activity history from the last good capture."
@@ -443,6 +631,24 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
                     "detail": f"`{len(issues)}` Alarm.com device issues; first is `{first.get('description') or first.get('id')}` state `{first.get('state') or 'n/a'}`.",
                 }
             )
+        if (alarm_com.get("alarmState") or {}).get("ok"):
+            comparison = compare_alarm_portal_to_homebridge(alarm_com, latest)
+            stale = comparison.get("stale") or []
+            if stale:
+                examples = ", ".join(
+                    f"{item.get('device')} portal `{item.get('portalState')}` vs Homebridge cache `{item.get('homebridgeCachedState')}`"
+                    for item in stale[:4]
+                )
+                alerts.append(
+                    {
+                        "severity": "warning",
+                        "title": "Alarm.com Homebridge cache is stale",
+                        "detail": (
+                            f"`{len(stale)}` Alarm.com device states disagree with the cached Homebridge characteristics; "
+                            f"{examples}. Fresh Alarm.com portal state is preferred for current-state reporting."
+                        ),
+                    }
+                )
         video_rules = alarm_com.get("videoRules") or {}
         missing_video_rules = video_rules.get("missingExpected") or []
         paused_video_rules = video_rules.get("pausedExpected") or []
@@ -578,6 +784,9 @@ def write_reports(alerts: list[dict[str, str]], latest: dict[str, Any]) -> None:
     config = load_config()
     warning_rows = recent_rows(int(config["alerts"]["warning_recent_window"]))
     trend = warning_trend(warning_rows)
+    alarm_com = load_alarm_com()
+    if (alarm_com.get("alarmState") or {}).get("ok"):
+        write_alarm_state_comparison_report(compare_alarm_portal_to_homebridge(alarm_com, latest))
     payload = {
         "generatedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
         "latestSnapshotAt": latest.get("captured_at"),
