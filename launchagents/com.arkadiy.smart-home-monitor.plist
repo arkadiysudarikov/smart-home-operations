@@ -9,7 +9,7 @@
   <array>
     <string>/bin/zsh</string>
     <string>-lc</string>
-    <string>cd '/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor' &amp;&amp; ./scripts/smart_home_snapshot.py &amp;&amp; ./scripts/maintain_storage.py &amp;&amp; ./scripts/analyze_patterns.py &amp;&amp; ./scripts/analyze_energy_pairing.py &amp;&amp; ./scripts/analyze_all_energy_readings.py &amp;&amp; ./scripts/capture_alarm_com.js &amp;&amp; ./scripts/fetch_chargepoint_sessions.py &amp;&amp; ./scripts/analyze_chargepoint_pairing.py &amp;&amp; ./scripts/analyze_meter_reconciliation.py &amp;&amp; ./scripts/analyze_bill_home_pairing.py &amp;&amp; ./scripts/analyze_energy_costs.py &amp;&amp; ./scripts/analyze_combined_energy_monitor.py &amp;&amp; ./scripts/generate_alerts.py</string>
+    <string>export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; cd '/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor' &amp;&amp; ./scripts/smart_home_snapshot.py &amp;&amp; ./scripts/maintain_storage.py &amp;&amp; ./scripts/analyze_patterns.py &amp;&amp; ./scripts/analyze_energy_pairing.py &amp;&amp; ./scripts/analyze_all_energy_readings.py &amp;&amp; ./scripts/capture_sense_trends.js &amp;&amp; ./scripts/capture_alarm_com.js &amp;&amp; ./scripts/fetch_chargepoint_sessions.py &amp;&amp; ./scripts/analyze_chargepoint_pairing.py &amp;&amp; ./scripts/analyze_meter_reconciliation.py &amp;&amp; ./scripts/analyze_bill_home_pairing.py &amp;&amp; ./scripts/analyze_energy_costs.py &amp;&amp; ./scripts/analyze_combined_energy_monitor.py &amp;&amp; ./scripts/generate_alerts.py</string>
   </array>
   <key>WorkingDirectory</key>
   <string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor</string>

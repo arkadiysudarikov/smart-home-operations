@@ -97,7 +97,7 @@ def monitor_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        "./scripts/smart_home_snapshot.py && ./scripts/maintain_storage.py && ./scripts/analyze_patterns.py && ./scripts/analyze_energy_pairing.py && ./scripts/analyze_all_energy_readings.py && ./scripts/fetch_chargepoint_sessions.py && ./scripts/analyze_chargepoint_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py",
+        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/smart_home_snapshot.py && ./scripts/maintain_storage.py && ./scripts/analyze_patterns.py && ./scripts/analyze_energy_pairing.py && ./scripts/analyze_all_energy_readings.py && ./scripts/capture_sense_trends.js && ./scripts/fetch_chargepoint_sessions.py && ./scripts/analyze_chargepoint_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py',
     ]
 
 
@@ -105,7 +105,7 @@ def sce_refresh_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        './scripts/fetch_sce_green_button_connect.py && "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3" ./scripts/extract_sce_bills.py && ./scripts/analyze_all_energy_readings.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py',
+        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/fetch_sce_green_button_connect.py && "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3" ./scripts/extract_sce_bills.py && ./scripts/analyze_all_energy_readings.py && ./scripts/capture_sense_trends.js && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py',
     ]
 
 
@@ -113,7 +113,7 @@ def energy_reconcile_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        "./scripts/smart_home_snapshot.py && ./scripts/maintain_storage.py && ./scripts/analyze_patterns.py && ./scripts/analyze_energy_pairing.py && ./scripts/analyze_all_energy_readings.py && ./scripts/fetch_chargepoint_sessions.py && ./scripts/analyze_chargepoint_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py && ./scripts/install_homekit_virtual_sensors.py",
+        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/smart_home_snapshot.py && ./scripts/maintain_storage.py && ./scripts/analyze_patterns.py && ./scripts/analyze_energy_pairing.py && ./scripts/analyze_all_energy_readings.py && ./scripts/capture_sense_trends.js && ./scripts/fetch_chargepoint_sessions.py && ./scripts/analyze_chargepoint_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py && ./scripts/install_homekit_virtual_sensors.py',
     ]
 
 

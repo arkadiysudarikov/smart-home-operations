@@ -38,6 +38,7 @@ Analyze collected history:
 ./scripts/analyze_chargepoint_pairing.py
 ./scripts/extract_sce_bills.py
 ./scripts/analyze_all_energy_readings.py
+./scripts/capture_sense_trends.js
 ./scripts/analyze_bill_home_pairing.py
 ./scripts/analyze_energy_costs.py
 ./scripts/analyze_meter_reconciliation.py
@@ -58,6 +59,18 @@ Capture a one-shot Sense Now packet and pair it with nearby Envoy readings:
 ./scripts/pair_sense_now.py
 ```
 
+Refresh daily Sense trend rows for the combined energy cross-check:
+
+```sh
+./scripts/capture_sense_trends.js
+```
+
+Reapply the local SmartHQ HomeKit duration clamp after a SmartHQ plugin update:
+
+```sh
+./scripts/patch_smarthq_remaining_duration.js
+```
+
 Refresh Alarm.com through the Homebridge Alarm.com plugin credentials and MFA
 cookie:
 
@@ -71,6 +84,14 @@ Refresh ChargePoint sessions before pairing them against home energy sources:
 ```sh
 ./scripts/fetch_chargepoint_sessions.py
 ./scripts/analyze_chargepoint_pairing.py
+```
+
+When ChargePoint blocks scripted driver-login refreshes, open
+`https://driver.chargepoint.com/charging-activity` in a browser, copy the
+`Download CSV` link target, and import it:
+
+```sh
+pbpaste | ./scripts/capture_chargepoint_browser_csv.js --import
 ```
 
 Install HomeKit virtual alert sensors:
@@ -184,6 +205,10 @@ endpoint via `mode=json`, or a browser CSV export via `mode=browser_csv`. It wri
 `data/latest_chargepoint_refresh.json`. If credentials are missing, stale, or
 the API returns no sessions, the script keeps the last good local
 `chargepoint_sessions.json` file so the rest of the monitor can continue.
+`scripts/capture_chargepoint_browser_csv.js` turns a ChargePoint browser
+`Download CSV` data URL, clipboard value, or CSV file into a dated file under
+`data/chargepoint-downloads`, then optionally imports it immediately with
+`--import`.
 
 `reports/meter_reconciliation.md` adds Alarm.com energy readings to the
 Envoy/Sense/SCE view. Alarm.com readings live in
@@ -191,7 +216,8 @@ Envoy/Sense/SCE view. Alarm.com readings live in
 
 `reports/combined_energy_monitor.md` rolls Envoy, Sense, SCE, ChargePoint, and
 Alarm.com into one operational energy view. Its alerts and state titles feed the
-HomeKit virtual energy sensors.
+HomeKit virtual energy sensors. Daily Sense trend data is cached in
+`data/sense_trends_latest.json`.
 
 Retention is configured in `config/sources.json`. By default, raw snapshot files
 are kept for 2 days, database snapshot rows are kept for 14 days, Home event

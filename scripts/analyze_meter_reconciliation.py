@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+from bisect import bisect_left
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -121,16 +122,48 @@ def nearest(samples: list[Sample], source: str, meter: str, target: datetime, ma
     return best
 
 
-def pair_sense_envoy(samples: list[Sample], max_seconds: int = 90) -> list[dict[str, Any]]:
-    sense_samples = [item for item in samples if item.source == "Sense" and item.meter == "Whole Home"]
+def group_samples(samples: list[Sample]) -> dict[tuple[str, str], list[Sample]]:
+    grouped: dict[tuple[str, str], list[Sample]] = {}
+    for sample in samples:
+        grouped.setdefault((sample.source, sample.meter), []).append(sample)
+    for rows in grouped.values():
+        rows.sort(key=lambda item: item.captured_at)
+    return grouped
+
+
+def nearest_grouped(
+    grouped: dict[tuple[str, str], list[Sample]],
+    source: str,
+    meter: str,
+    target: datetime,
+    max_seconds: int = 600,
+) -> Sample | None:
+    candidates = grouped.get((source, meter), [])
+    if not candidates:
+        return None
+    times = [item.captured_at for item in candidates]
+    index = bisect_left(times, target)
+    nearby: list[Sample] = []
+    if index < len(candidates):
+        nearby.append(candidates[index])
+    if index > 0:
+        nearby.append(candidates[index - 1])
+    best = min(nearby, key=lambda item: abs((item.captured_at - target).total_seconds()))
+    if abs((best.captured_at - target).total_seconds()) > max_seconds:
+        return None
+    return best
+
+
+def pair_sense_envoy(grouped: dict[tuple[str, str], list[Sample]], max_seconds: int = 90) -> list[dict[str, Any]]:
+    sense_samples = grouped.get(("Sense", "Whole Home"), [])
     pairs: list[dict[str, Any]] = []
     for sense in sense_samples:
-        envoy_total = nearest(samples, "Envoy", "Consumption Total", sense.captured_at, max_seconds)
+        envoy_total = nearest_grouped(grouped, "Envoy", "Consumption Total", sense.captured_at, max_seconds)
         if not envoy_total:
             continue
-        envoy_net = nearest(samples, "Envoy", "Consumption Net", sense.captured_at, max_seconds)
-        envoy_production = nearest(samples, "Envoy", "Production", sense.captured_at, max_seconds)
-        envoy_storage = nearest(samples, "Envoy", "Storage", sense.captured_at, max_seconds)
+        envoy_net = nearest_grouped(grouped, "Envoy", "Consumption Net", sense.captured_at, max_seconds)
+        envoy_production = nearest_grouped(grouped, "Envoy", "Production", sense.captured_at, max_seconds)
+        envoy_storage = nearest_grouped(grouped, "Envoy", "Storage", sense.captured_at, max_seconds)
         row: dict[str, Any] = {
             "senseCapturedAt": sense.captured_at.isoformat(timespec="seconds"),
             "gapSeconds": abs((envoy_total.captured_at - sense.captured_at).total_seconds()),
@@ -223,18 +256,19 @@ def load_sce_overlap_count() -> int:
 def build_reconciliation() -> dict[str, Any]:
     alarm = load_alarm()
     samples, envoy_today = load_monitor_samples()
-    sense_envoy_pairs = pair_sense_envoy(samples)
+    grouped_samples = group_samples(samples)
+    sense_envoy_pairs = pair_sense_envoy(grouped_samples)
     instant_pairs: list[dict[str, Any]] = []
     for item in alarm.get("instantWatts", []):
         if item.get("meter") != "Energy Clamp":
             continue
         alarm_at = parse_alarm_time(item)
         alarm_kw = float(item["watts"]) / 1000.0
-        envoy_total = nearest(samples, "Envoy", "Consumption Total", alarm_at)
-        envoy_net = nearest(samples, "Envoy", "Consumption Net", alarm_at)
-        envoy_production = nearest(samples, "Envoy", "Production", alarm_at)
-        envoy_storage = nearest(samples, "Envoy", "Storage", alarm_at)
-        sense = nearest(samples, "Sense", "Whole Home", alarm_at)
+        envoy_total = nearest_grouped(grouped_samples, "Envoy", "Consumption Total", alarm_at)
+        envoy_net = nearest_grouped(grouped_samples, "Envoy", "Consumption Net", alarm_at)
+        envoy_production = nearest_grouped(grouped_samples, "Envoy", "Production", alarm_at)
+        envoy_storage = nearest_grouped(grouped_samples, "Envoy", "Storage", alarm_at)
+        sense = nearest_grouped(grouped_samples, "Sense", "Whole Home", alarm_at)
         row: dict[str, Any] = {
             "alarmCapturedAtLocal": alarm_at.isoformat(timespec="seconds"),
             "alarmKw": alarm_kw,

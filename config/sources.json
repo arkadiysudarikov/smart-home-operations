@@ -54,6 +54,7 @@
     "alarm_energy_capture_stale_hours": 24,
     "alarm_daily_dashboard_mismatch_kwh": 25,
     "alarm_media_sensor_trip_min_events": 10,
+    "sense_live_401_warning_min": 3,
     "chargepoint_alarm_7d_share_high": 0.35,
     "chargepoint_refresh_stale_hours": 24,
     "source_status_stale_hours": 24,

@@ -10,6 +10,14 @@ const BASE = "https://www.alarm.com";
 const ENERGY_URL = `${BASE}/web/Energy/EnergyConsumption.aspx`;
 const MAX_PAGES = 160;
 const RANGES = ["24h", "7d", "21d", "6m", "12m"];
+const EXPECTED_VIDEO_RULES = [
+  "Alarm Video",
+  "Entry Delay Video",
+  "Entry Door Video",
+  "Family Slider Video",
+  "Garage Door Video",
+  "Sideyard Gate Video",
+];
 const STATE_NAMES = {
   partitions: { 0: "Unknown", 1: "Disarmed", 2: "Armed stay", 3: "Armed away", 4: "Armed night" },
   sensors: { 0: "Unknown", 1: "Closed", 2: "Open", 3: "Idle", 4: "Active", 5: "Dry", 6: "Wet" },
@@ -717,22 +725,35 @@ function isSensorTripLikeEvent(event) {
   );
 }
 
+function isMediaValidationTargetEvent(event) {
+  return (
+    /entry door|sideyard gate/i.test(`${event.deviceDescription || ""}`) &&
+    /Activated|Opened|Alarm|Tamper/i.test(`${event.description || ""}`)
+  );
+}
+
 function mediaTriggerHealth(events) {
   const media = events.filter(isMediaEvent);
   const sensorTrips = events.filter(isSensorTripLikeEvent);
+  const validationTargetTrips = events.filter(isMediaValidationTargetEvent);
   const postDisarm = media.filter(isPostDisarmMediaEvent);
   const sensorTriggeredMedia = media.filter((event) => !isPostDisarmMediaEvent(event));
   return {
     ok: true,
     totalEvents: events.length,
     tripLikeSensorEvents: sensorTrips.length,
+    validationTargets: ["Entry Door", "Sideyard Gate"],
+    validationTargetTripEvents: validationTargetTrips.length,
+    latestValidationTargetTripAt: validationTargetTrips[0]?.localTime || null,
     mediaEvents: media.length,
     postDisarmMediaEvents: postDisarm.length,
     sensorTriggeredMediaEvents: sensorTriggeredMedia.length,
     mediaByDay: topCounts(countBy(media, (event) => String(event.localTime).slice(0, 10)), 14),
     sensorTripsByDay: topCounts(countBy(sensorTrips, (event) => String(event.localTime).slice(0, 10)), 14),
+    validationTargetTripsByDay: topCounts(countBy(validationTargetTrips, (event) => String(event.localTime).slice(0, 10)), 14),
     mediaByDescription: topCounts(countBy(media, (event) => event.description), 12),
     mediaByDevice: topCounts(countBy(media, (event) => event.deviceDescription), 12),
+    recentValidationTargetTrips: validationTargetTrips.slice(0, 12),
     recentMedia: media.slice(0, 12),
   };
 }
@@ -817,12 +838,24 @@ function summarizeHistoryEvent(event) {
   };
 }
 
-async function fetchActivityHistory(auth) {
+async function fetchActivityHistory(auth, fallbackActivity = null) {
   const result = await fetchJson(`${BASE}/web/api/activity/historyEvents`, auth);
+  if (!result.ok && fallbackActivity?.ok) {
+    return {
+      ...fallbackActivity,
+      ok: true,
+      stale: true,
+      refreshOk: false,
+      refreshStatus: result.status,
+      refreshFailedAt: new Date().toISOString(),
+    };
+  }
   const rawEvents = Array.isArray(result.body?.value) ? result.body.value : [];
   const events = rawEvents.map(summarizeHistoryEvent).filter((event) => event.eventDate);
   return {
     ok: result.ok,
+    stale: false,
+    refreshOk: result.ok,
     status: result.status,
     totalEvents: events.length,
     latestEventAt: events[0]?.eventDate || null,
@@ -831,6 +864,40 @@ async function fetchActivityHistory(auth) {
     byDevice: topCounts(countBy(events, (event) => event.deviceDescription), 12),
     byDescription: topCounts(countBy(events, (event) => event.description), 12),
     mediaTriggerHealth: mediaTriggerHealth(events),
+  };
+}
+
+async function fetchRecordingRules(auth) {
+  const url = `${BASE}/web/api/automation/rules/rules?filter%5Bsearch%5D=&filter%5BdeviceType%5D=15&filter%5BfilterTags%5D%5B%5D=18`;
+  const result = await fetchJson(url, auth);
+  const rawRules = Array.isArray(result.body?.data)
+    ? result.body.data
+    : Array.isArray(result.body?.value)
+      ? result.body.value
+      : [];
+  const rules = rawRules.map((rule) => {
+    const attrs = rule.attributes || rule;
+    return {
+      id: rule.id || attrs.id || attrs.editPageQueryParameters?.selectedDisplay || attrs.editPageQueryParameters?.SelectedDisplay || "",
+      name: attrs.name || "",
+      isPaused: Boolean(attrs.isPaused),
+      canBeEdited: attrs.canBeEdited,
+      canBePaused: attrs.canBePaused,
+      trigger: attrs.triggerCondition?.description || "",
+      action: attrs.action?.description || "",
+      timeframe: attrs.timeframe?.description || "",
+    };
+  });
+  const names = new Set(rules.map((rule) => rule.name));
+  return {
+    ok: result.ok,
+    status: result.status,
+    checkedAt: new Date().toISOString(),
+    expected: EXPECTED_VIDEO_RULES,
+    ruleCount: rules.length,
+    missingExpected: EXPECTED_VIDEO_RULES.filter((name) => !names.has(name)),
+    pausedExpected: rules.filter((rule) => EXPECTED_VIDEO_RULES.includes(rule.name) && rule.isPaused).map((rule) => rule.name),
+    rules,
   };
 }
 
@@ -979,6 +1046,11 @@ function addActivityTables(lines, activity) {
     lines.push(`- Activity fetch failed with status \`${activity?.status || "n/a"}\`.`);
     return;
   }
+  if (activity.refreshOk === false) {
+    lines.push(
+      `- Live activity refresh failed with status \`${activity.refreshStatus || "n/a"}\`; using cached activity history from the last good capture.`
+    );
+  }
   lines.push(`- Events returned: \`${activity.totalEvents}\``);
   table(lines, ["Day", "Events"], (activity.byDay || []).map((item) => [item.name, item.count]));
   lines.push("", "### Busiest Devices", "");
@@ -996,10 +1068,17 @@ function addActivityTables(lines, activity) {
   if (media?.ok) {
     lines.push("", "### Media Trigger Health", "");
     lines.push(`- Trip-like sensor events: \`${media.tripLikeSensorEvents}\``);
+    lines.push(`- Validation target trips: \`${media.validationTargetTripEvents || 0}\` (${(media.validationTargets || []).join(", ") || "none"})`);
+    lines.push(`- Latest validation target trip: \`${media.latestValidationTargetTripAt || "none"}\``);
     lines.push(`- Media/image/video events: \`${media.mediaEvents}\``);
     lines.push(`- Post-disarm media events: \`${media.postDisarmMediaEvents}\``);
     lines.push(`- Sensor-triggered media events: \`${media.sensorTriggeredMediaEvents}\``);
     table(lines, ["Media event", "Count"], (media.mediaByDescription || []).map((item) => [item.name, item.count]));
+    table(
+      lines,
+      ["Validation time", "Device", "Event"],
+      (media.recentValidationTargetTrips || []).slice(0, 8).map((event) => [event.localTime, event.deviceDescription, event.description])
+    );
     table(
       lines,
       ["Time", "Device", "Event"],
@@ -1047,6 +1126,10 @@ function writeTelemetryArtifacts(root, payload) {
   const activity = {
     generatedAt: payload.generatedAt,
     ok: payload.activity?.ok || false,
+    stale: payload.activity?.stale || false,
+    refreshOk: payload.activity?.refreshOk,
+    refreshStatus: payload.activity?.refreshStatus,
+    refreshFailedAt: payload.activity?.refreshFailedAt,
     status: payload.activity?.status,
     totalEvents: payload.activity?.totalEvents || 0,
     latestEventAt: payload.activity?.latestEventAt || null,
@@ -1070,7 +1153,10 @@ function writeReport(root, payload) {
     `- Systems visible: \`${payload.login.systemCount || 0}\``,
     `- Energy capture: \`${payload.energy.ok ? "ok" : "failed"}\``,
     `- Device state capture: \`${payload.alarmState?.ok ? "ok" : "failed"}\``,
-    `- Activity history capture: \`${payload.activity?.ok ? "ok" : "failed"}\``,
+    `- Activity history capture: \`${
+      payload.activity?.ok ? (payload.activity?.refreshOk === false ? "cached" : "ok") : "failed"
+    }\``,
+    `- Video recording rules: \`${payload.videoRules?.ok ? `${payload.videoRules.ruleCount} found` : "failed"}\``,
     `- Websocket token check: \`${payload.websocketToken?.ok ? "ok" : "failed"}\``,
   ];
   if (payload.energy.ok) {
@@ -1079,6 +1165,18 @@ function writeReport(root, payload) {
       `- Energy dashboard current period: \`${dash.monthToDateKwh ?? "n/a"}\` kWh`,
       `- Energy daily rows vs dashboard gap: \`${payload.energy.dashboardDeltaKwh ?? "n/a"}\` kWh`,
       `- Energy meters: \`${(payload.energy.meters || []).map((meter) => meter.name).join(", ") || "n/a"}\``
+    );
+  }
+  if (payload.videoRules?.ok) {
+    lines.push("", "## Video Recording Rules", "");
+    lines.push(`- Checked: \`${payload.videoRules.checkedAt}\``);
+    lines.push(`- Rules found: \`${payload.videoRules.ruleCount}\``);
+    lines.push(`- Missing expected rules: \`${payload.videoRules.missingExpected.join(", ") || "none"}\``);
+    lines.push(`- Paused expected rules: \`${payload.videoRules.pausedExpected.join(", ") || "none"}\``);
+    table(
+      lines,
+      ["Rule", "Paused", "Trigger", "Action", "Timeframe"],
+      payload.videoRules.rules.map((rule) => [rule.name, rule.isPaused, rule.trigger, rule.action, rule.timeframe])
     );
   }
   if (payload.alarmState?.ok) {
@@ -1131,6 +1229,7 @@ async function main() {
     energy: { ok: false },
     alarmState: { ok: false },
     activity: { ok: false },
+    videoRules: { ok: false },
     websocketToken: { ok: false },
     portal: null,
     changes: null,
@@ -1152,9 +1251,14 @@ async function main() {
       payload.errors.push(`Device state capture failed: ${error.message || error}`);
     }
     try {
-      payload.activity = await fetchActivityHistory(auth);
+      payload.activity = await fetchActivityHistory(auth, previousCapture.activity);
     } catch (error) {
       payload.errors.push(`Activity history capture failed: ${error.message || error}`);
+    }
+    try {
+      payload.videoRules = await fetchRecordingRules(auth);
+    } catch (error) {
+      payload.errors.push(`Video recording rule capture failed: ${error.message || error}`);
     }
     payload.websocketToken = await checkWebsocketToken(alarm, auth);
     try {
