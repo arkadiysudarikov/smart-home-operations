@@ -241,6 +241,27 @@ async function fetchJson(url, auth, options = {}) {
   }
 }
 
+async function fetchBinary(url, auth, options = {}) {
+  const res = await fetch(url, {
+    method: "GET",
+    redirect: "manual",
+    headers: {
+      Cookie: auth.cookie,
+      "User-Agent": "Mozilla/5.0 SmartHomeMonitor/1.0",
+      Referer: options.referer || BASE,
+      ajaxrequestuniquekey: auth.ajaxKey,
+      Accept: options.accept || "*/*",
+    },
+  });
+  return {
+    url,
+    status: res.status,
+    contentType: res.headers.get("content-type") || "",
+    location: res.headers.get("location") || "",
+    buffer: Buffer.from(await res.arrayBuffer()),
+  };
+}
+
 async function fetchEnergyRange(auth, meterIds, range) {
   const url = new URL(`${BASE}/web/Energy/EnergyData.ashx`);
   url.searchParams.set("end", String(Date.now()));
@@ -767,6 +788,57 @@ function localDateTime(raw) {
   return `${map.year}-${map.month}-${map.day} ${map.hour}:${map.minute}:${map.second}`;
 }
 
+function localPartsInTimeZone(date, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  }).formatToParts(date);
+  return Object.fromEntries(parts.map((part) => [part.type, part.value]));
+}
+
+function zonedLocalDateToUtcDate(year, month, day, hour, minute, second) {
+  const desiredUtc = Date.UTC(year, month - 1, day, hour, minute, second);
+  const initial = new Date(desiredUtc);
+  const rendered = localPartsInTimeZone(initial, LOCAL_TZ);
+  const renderedUtc = Date.UTC(
+    Number(rendered.year),
+    Number(rendered.month) - 1,
+    Number(rendered.day),
+    Number(rendered.hour),
+    Number(rendered.minute),
+    Number(rendered.second)
+  );
+  return new Date(desiredUtc + (desiredUtc - renderedUtc));
+}
+
+function parseAlarmLocalDate(raw) {
+  const match = String(raw || "")
+    .trim()
+    .match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*([ap])m$/i);
+  if (!match) {
+    const fallback = new Date(raw);
+    return Number.isNaN(fallback.getTime()) ? null : fallback;
+  }
+  let hour = Number(match[4]);
+  const ampm = match[7].toLowerCase();
+  if (ampm === "p" && hour < 12) hour += 12;
+  if (ampm === "a" && hour === 12) hour = 0;
+  return zonedLocalDateToUtcDate(
+    Number(match[3]),
+    Number(match[1]),
+    Number(match[2]),
+    hour,
+    Number(match[5]),
+    Number(match[6] || 0)
+  );
+}
+
 function countBy(items, keyFn) {
   const counts = {};
   for (const item of items) {
@@ -964,27 +1036,14 @@ function summarizeHistoryEvent(event) {
   };
 }
 
-async function fetchActivityHistory(auth, fallbackActivity = null) {
-  const result = await fetchJson(`${BASE}/web/api/activity/historyEvents`, auth);
-  if (!result.ok && (fallbackActivity?.ok || (fallbackActivity?.recent || []).length)) {
-    return {
-      ...fallbackActivity,
-      ok: true,
-      stale: true,
-      refreshOk: false,
-      refreshStatus: result.status,
-      refreshFailedAt: new Date().toISOString(),
-      endpointError: `historyEvents returned ${result.status}`,
-    };
-  }
-  const rawEvents = Array.isArray(result.body?.value) ? result.body.value : [];
-  const events = rawEvents.map(summarizeHistoryEvent).filter((event) => event.eventDate);
+function activityResultFromEvents(events, options = {}) {
   return {
-    ok: result.ok,
+    ok: true,
     stale: false,
-    refreshOk: result.ok,
-    status: result.status,
-    endpointError: result.ok ? null : `historyEvents returned ${result.status}`,
+    refreshOk: true,
+    status: options.status || 200,
+    source: options.source || "historyEvents",
+    endpointError: options.endpointError || null,
     totalEvents: events.length,
     latestEventAt: events[0]?.eventDate || null,
     recent: events.slice(0, 50),
@@ -993,6 +1052,115 @@ async function fetchActivityHistory(auth, fallbackActivity = null) {
     byDescription: topCounts(countBy(events, (event) => event.description), 12),
     mediaTriggerHealth: mediaTriggerHealth(events),
   };
+}
+
+function decodeActivityExport(buffer) {
+  if (buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return buffer.subarray(2).toString("utf16le");
+  }
+  if (buffer[0] === 0xfe && buffer[1] === 0xff) {
+    return Buffer.from(buffer.subarray(2)).swap16().toString("utf16le");
+  }
+  return buffer.toString("utf8");
+}
+
+function parseActivityExport(text) {
+  const rows = String(text || "")
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.split("\t").map((field) => field.replace(/^"|"$/g, "").replace(/""/g, '"')));
+  const header = rows.shift() || [];
+  const indexes = {
+    device: header.findIndex((field) => /^device$/i.test(field)),
+    event: header.findIndex((field) => /^event$/i.test(field)),
+    time: header.findIndex((field) => /^time$/i.test(field)),
+  };
+  if (Object.values(indexes).some((index) => index < 0)) {
+    return [];
+  }
+  const events = [];
+  for (const row of rows) {
+    const deviceDescription = row[indexes.device] || "";
+    const description = sanitizeActivityDescription(row[indexes.event] || "");
+    const date = parseAlarmLocalDate(row[indexes.time] || "");
+    if (!date) {
+      continue;
+    }
+    const eventDate = date.toISOString();
+    events.push({
+      eventDate,
+      localTime: localDateTime(eventDate),
+      deviceDescription,
+      globalDeviceId: "",
+      description,
+      eventType: null,
+      deviceTypeFilter: [],
+      id: `E-${Buffer.from(`${deviceDescription}|${description}|${eventDate}`).toString("base64url").slice(0, 64)}`,
+    });
+  }
+  return events.sort((left, right) => String(right.eventDate).localeCompare(String(left.eventDate)));
+}
+
+async function fetchActivityHistoryExport(auth, endpointError) {
+  const urlResult = await fetchJson(`${BASE}/web/api/activity/historyEvents/getExportToCsvUrl`, auth, {
+    referer: `${BASE}/web/system/activity`,
+  });
+  const exportPath = urlResult.body?.value;
+  if (!urlResult.ok || !exportPath) {
+    return null;
+  }
+  const endDate = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const startDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+  const queryParams = { page: 1, pageSize: 500, startDate, endDate };
+  const exportUrl = new URL(exportPath, BASE);
+  exportUrl.searchParams.set("filterParameters", JSON.stringify(queryParams));
+  exportUrl.searchParams.set("startDate", JSON.stringify(startDate));
+  exportUrl.searchParams.set("endDate", JSON.stringify(endDate));
+  exportUrl.searchParams.set("exportFormat", "csv");
+  const exportResult = await fetchBinary(exportUrl.toString(), auth, {
+    referer: `${BASE}/web/system/activity`,
+    accept: "text/csv,application/text,*/*",
+  });
+  if (exportResult.status !== 200 || !exportResult.buffer.length) {
+    return null;
+  }
+  const events = parseActivityExport(decodeActivityExport(exportResult.buffer));
+  if (!events.length) {
+    return null;
+  }
+  return {
+    ...activityResultFromEvents(events, {
+      status: exportResult.status,
+      source: "Alarm.com activity export",
+      endpointError,
+    }),
+    exportContentType: exportResult.contentType,
+  };
+}
+
+async function fetchActivityHistory(auth, fallbackActivity = null) {
+  const result = await fetchJson(`${BASE}/web/api/activity/historyEvents`, auth);
+  const endpointError = result.ok ? null : `historyEvents returned ${result.status}`;
+  if (!result.ok) {
+    const exportActivity = await fetchActivityHistoryExport(auth, endpointError);
+    if (exportActivity) {
+      return exportActivity;
+    }
+  }
+  if (!result.ok && (fallbackActivity?.ok || (fallbackActivity?.recent || []).length)) {
+    return {
+      ...fallbackActivity,
+      ok: true,
+      stale: true,
+      refreshOk: false,
+      refreshStatus: result.status,
+      refreshFailedAt: new Date().toISOString(),
+      endpointError,
+    };
+  }
+  const rawEvents = Array.isArray(result.body?.value) ? result.body.value : [];
+  const events = rawEvents.map(summarizeHistoryEvent).filter((event) => event.eventDate);
+  return activityResultFromEvents(events, { status: result.status, source: "historyEvents", endpointError });
 }
 
 async function fetchRecordingRules(auth) {
