@@ -21,7 +21,7 @@
       "envoy.local",
       "envoy.localdomain"
     ],
-    "known_tahoma_office": "192.168.0.164:8443"
+    "known_tahoma_office": "192.168.0.90:8443"
   },
   "installed_hardware": {
     "alarm_com": [

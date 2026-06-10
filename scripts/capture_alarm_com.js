@@ -501,33 +501,39 @@ function loadActivityAuditFallback(root) {
       return null;
     }
     const mediaRecent = audit.mediaEvents?.recent || [];
+    const sensorRecent = audit.sensorEvents?.recent || [];
+    const validationTargetTrips = sensorRecent.filter(isMediaValidationTargetEvent);
+    const recent = [...mediaRecent, ...validationTargetTrips]
+      .sort((left, right) => String(right.localTime || "").localeCompare(String(left.localTime || "")))
+      .slice(0, 50);
     return {
       ok: true,
       stale: true,
       status: audit.status,
+      source: "Alarm.com media/activity audit",
       generatedAt: audit.generatedAt,
       totalEvents: audit.totalEvents,
-      latestEventAt: mediaRecent[0]?.localTime || audit.generatedAt || null,
-      recent: mediaRecent,
-      byDay: [],
-      byDevice: [],
-      byDescription: [],
+      latestEventAt: recent[0]?.localTime || mediaRecent[0]?.localTime || audit.generatedAt || null,
+      recent,
+      byDay: audit.sensorEvents?.byDay || audit.mediaEvents?.byDay || [],
+      byDevice: audit.sensorEvents?.byDevice || audit.mediaEvents?.byDevice || [],
+      byDescription: audit.sensorEvents?.byDescription || audit.mediaEvents?.byDescription || [],
       mediaTriggerHealth: {
         ok: true,
         totalEvents: audit.totalEvents,
         tripLikeSensorEvents: audit.sensorEvents?.tripLikeCount || 0,
         validationTargets: ["Entry Door", "Sideyard Gate"],
-        validationTargetTripEvents: 0,
-        latestValidationTargetTripAt: null,
+        validationTargetTripEvents: validationTargetTrips.length,
+        latestValidationTargetTripAt: validationTargetTrips[0]?.localTime || null,
         mediaEvents: audit.mediaEvents?.count || 0,
         postDisarmMediaEvents: audit.mediaEvents?.byDescription?.find((item) => /post-disarm/i.test(item.name || ""))?.count || 0,
         sensorTriggeredMediaEvents: Math.max(0, (audit.mediaEvents?.count || 0) - (audit.mediaEvents?.byDescription?.find((item) => /post-disarm/i.test(item.name || ""))?.count || 0)),
         mediaByDay: audit.mediaEvents?.byDay || [],
         sensorTripsByDay: audit.sensorEvents?.byDay || [],
-        validationTargetTripsByDay: [],
+        validationTargetTripsByDay: topCounts(countBy(validationTargetTrips, (event) => String(event.localTime).slice(0, 10)), 14),
         mediaByDescription: audit.mediaEvents?.byDescription || [],
         mediaByDevice: audit.mediaEvents?.byDevice || [],
-        recentValidationTargetTrips: [],
+        recentValidationTargetTrips: validationTargetTrips.slice(0, 12),
         recentMedia: mediaRecent,
       },
     };
@@ -538,10 +544,16 @@ function loadActivityAuditFallback(root) {
 
 function selectActivityFallback(root, previousCapture) {
   const previousActivity = previousCapture.activity || null;
-  if (previousActivity?.ok || (previousActivity?.recent || []).length) {
-    return previousActivity;
+  const auditActivity = loadActivityAuditFallback(root);
+  const previousGenerated = Date.parse(previousActivity?.generatedAt || previousActivity?.refreshFailedAt || 0);
+  const auditGenerated = Date.parse(auditActivity?.generatedAt || 0);
+  if (auditActivity && (!previousActivity || !Number.isFinite(previousGenerated) || auditGenerated >= previousGenerated)) {
+    return auditActivity;
   }
-  return loadActivityAuditFallback(root);
+  if (previousActivity?.ok || (previousActivity?.recent || []).length) {
+    return { ...previousActivity, source: previousActivity.source || "cached activity history" };
+  }
+  return auditActivity;
 }
 
 function writeAlarmReadings(root, readings) {
@@ -1164,7 +1176,7 @@ function addActivityTables(lines, activity) {
   }
   if (activity.refreshOk === false) {
     lines.push(
-      `- Live activity refresh failed with status \`${activity.refreshStatus || "n/a"}\`; using cached activity history from the last good capture.`
+      `- Live activity refresh failed with status \`${activity.refreshStatus || "n/a"}\`; using \`${activity.source || "cached activity history"}\`.`
     );
   }
   lines.push(`- Events returned: \`${activity.totalEvents}\``);
