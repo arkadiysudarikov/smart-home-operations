@@ -166,6 +166,28 @@ class GenerateAlertsTest(unittest.TestCase):
         titles = {item["title"] for item in alerts}
         self.assertIn("Alarm.com Homebridge cache is stale", titles)
 
+    def test_sideyard_gate_media_validation_alert_names_open_edge(self) -> None:
+        alarm = alarm_com_payload(activity_ok=True)
+        alarm["gateValidation"] = {
+            "status": "trip_seen_no_sideyard_media_seen",
+            "latestSideyardTripAt": "2026-06-10 14:53:30",
+            "device": {"state": "Open"},
+            "videoRule": {"action": "Record video from 2 cameras"},
+            "diagnosis": (
+                "Sideyard Gate is currently Open; another open test will not create "
+                "a fresh Alarm.com open event until Alarm.com first sees it Closed."
+            ),
+        }
+        self.patch_module(
+            load_alarm_com=lambda: alarm,
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+        )
+        alerts = generate_alerts.build_alerts(base_config(), latest_snapshot(), [])
+        alert = next(item for item in alerts if item["title"] == "Alarm.com Sideyard Gate media validation failed")
+        self.assertIn("current portal state: `Open`", alert["detail"])
+        self.assertIn("Close the Sideyard Gate", generate_alerts.recommended_action(alert) or "")
+
     def test_age_label_handles_alarm_com_utc_timestamps(self) -> None:
         self.assertEqual(
             generate_alerts.age_label("2026-06-10T20:00:00.000Z", "2026-06-10T13:05:30-07:00"),

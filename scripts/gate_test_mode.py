@@ -102,9 +102,37 @@ def sideyard_hb_state() -> dict[str, Any]:
     return {"available": False, "state": "Unknown"}
 
 
+def normalize_contact_state(raw: Any) -> str:
+    text = str(raw or "").strip().lower()
+    if text in {"open", "opened", "2"}:
+        return "Open"
+    if text in {"closed", "close", "1", "0"}:
+        return "Closed"
+    return "Unknown"
+
+
 def sideyard_portal_state(alarm_com: dict[str, Any]) -> dict[str, Any]:
+    gate = ((alarm_com.get("gateValidation") or {}).get("device") or {})
+    if gate:
+        return {
+            "available": True,
+            "id": gate.get("id"),
+            "state": normalize_contact_state(gate.get("state") or gate.get("rawState")),
+            "remoteCommandsEnabled": gate.get("remoteCommandsEnabled"),
+            "source": "gateValidation",
+        }
     systems = ((alarm_com.get("alarmState") or {}).get("systems") or [])
     for system in systems:
+        for partition in system.get("partitions") or []:
+            for device in partition.get("devices") or []:
+                if device.get("name") == "Sideyard Gate":
+                    return {
+                        "available": True,
+                        "id": device.get("id"),
+                        "state": normalize_contact_state(device.get("state") or device.get("rawState")),
+                        "remoteCommandsEnabled": device.get("remoteCommandsEnabled"),
+                        "source": "partitionDevice",
+                    }
         sensors = ((system.get("components") or {}).get("sensors") or [])
         for sensor in sensors:
             name = sensor.get("description") or sensor.get("name")
@@ -112,8 +140,9 @@ def sideyard_portal_state(alarm_com: dict[str, Any]) -> dict[str, Any]:
                 return {
                     "available": True,
                     "id": sensor.get("id"),
-                    "state": sensor.get("stateText") or sensor.get("state"),
+                    "state": normalize_contact_state(sensor.get("stateText") or sensor.get("state")),
                     "remoteCommandsEnabled": sensor.get("remoteCommandsEnabled"),
+                    "source": "componentSensor",
                 }
     return {"available": False, "state": "Unknown"}
 
@@ -141,6 +170,30 @@ def evaluate(started_at: datetime) -> dict[str, Any]:
         and portal_state.get("available")
         and str(hb_state.get("state")) == str(portal_state.get("state"))
     )
+    trip_seen = bool(trips)
+    media_seen = bool(media_events)
+    passed = bool(trip_seen and media_seen and homebridge_matches)
+    failure_reason = None
+    recommended_action = None
+    if not trip_seen:
+        if portal_state.get("state") == "Open":
+            failure_reason = "no_new_open_event_gate_already_open"
+            recommended_action = (
+                "Close the gate and wait until Alarm.com shows Sideyard Gate Closed, "
+                "then open it once to create a fresh open edge for the recording rule."
+            )
+        else:
+            failure_reason = "waiting_for_sideyard_gate_open_event"
+            recommended_action = "Open the Sideyard Gate once after this test starts."
+    elif not media_seen:
+        failure_reason = "sideyard_trip_seen_no_media"
+        recommended_action = (
+            "The gate open event reached Alarm.com, but no Sideyard/Backyard media event followed; "
+            "inspect the Alarm.com recording rule, camera clip permissions, and camera recording capability."
+        )
+    elif not homebridge_matches:
+        failure_reason = "media_seen_but_homebridge_cache_stale"
+        recommended_action = "Restart or refresh the Alarm.com Homebridge child bridge so Home state matches the portal."
     return {
         "generatedAt": now_local().isoformat(timespec="seconds"),
         "alarmGeneratedAt": alarm_com.get("generatedAt"),
@@ -155,11 +208,13 @@ def evaluate(started_at: datetime) -> dict[str, Any]:
         "homebridgeMatchesPortal": bool(homebridge_matches),
         "tripsAfterStart": trips,
         "mediaAfterStart": media_events,
-        "tripSeen": bool(trips),
-        "mediaSeen": bool(media_events),
+        "tripSeen": trip_seen,
+        "mediaSeen": media_seen,
+        "failureReason": failure_reason,
+        "recommendedAction": recommended_action,
         "sensorTriggeredMediaEvents": media.get("sensorTriggeredMediaEvents"),
         "validationTargetTripEvents": media.get("validationTargetTripEvents"),
-        "passed": bool(trips and media_events and homebridge_matches),
+        "passed": passed,
     }
 
 
@@ -181,6 +236,8 @@ def write_report(payload: dict[str, Any]) -> None:
         f"- Homebridge matches portal: `{result.get('homebridgeMatchesPortal')}`",
         f"- Trip seen after start: `{result.get('tripSeen')}`",
         f"- Media seen after start: `{result.get('mediaSeen')}`",
+        f"- Failure reason: `{result.get('failureReason') or 'none'}`",
+        f"- Recommended action: {result.get('recommendedAction') or 'none'}",
         "",
         "## Trip Evidence",
         "",

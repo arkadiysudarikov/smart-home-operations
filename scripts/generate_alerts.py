@@ -181,6 +181,10 @@ def recommended_action(alert: dict[str, str]) -> str | None:
     detail = alert.get("detail", "")
     if title == "Alarm.com sensor-triggered media is missing":
         return "Trip Entry Door or Sideyard Gate once, wait 1-2 minutes, then refresh Alarm.com activity/media and confirm a new clip or image event."
+    if title == "Alarm.com Sideyard Gate media validation failed":
+        if "current portal state: `Open`" in detail:
+            return "Close the Sideyard Gate and wait until Alarm.com shows Closed, then open it once to create a fresh open edge for the recording rule."
+        return "Open the Sideyard Gate once, wait 1-2 minutes, then refresh Alarm.com activity/media and confirm a new Sideyard or Backyard clip event."
     if title == "Alarm.com video recording rules are missing":
         return "Recreate the missing Alarm.com Recording Rules for Entry Door, Sideyard Gate, and related cameras; then run a post-rule door or gate trip test."
     if title == "Office TaHoma child bridge is unreachable":
@@ -772,6 +776,26 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
                         f"validation target trips: `{validation_trips}` "
                         f"(latest Entry Door/Sideyard Gate trip: `{latest_validation}`)."
                         f"{rule_state}"
+                    ),
+                }
+            )
+        gate_validation = alarm_com.get("gateValidation") or {}
+        if gate_validation.get("status") == "trip_seen_no_sideyard_media_seen":
+            gate_device = gate_validation.get("device") or {}
+            gate_state = gate_device.get("state") or "unknown"
+            latest_sideyard_trip = gate_validation.get("latestSideyardTripAt") or "none"
+            diagnosis = gate_validation.get("diagnosis")
+            diagnosis_detail = f" {diagnosis}" if diagnosis else ""
+            alerts.append(
+                {
+                    "severity": "warning",
+                    "title": "Alarm.com Sideyard Gate media validation failed",
+                    "detail": (
+                        "Sideyard Gate activity validation saw a gate-open trip but no Sideyard/Backyard media event; "
+                        f"latest Sideyard Gate trip: `{latest_sideyard_trip}`; "
+                        f"current portal state: `{gate_state}`; "
+                        f"rule: `{(gate_validation.get('videoRule') or {}).get('action') or 'missing'}`."
+                        f"{diagnosis_detail}"
                     ),
                 }
             )

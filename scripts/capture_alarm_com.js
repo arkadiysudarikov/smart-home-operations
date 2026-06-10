@@ -926,6 +926,7 @@ function buildGateValidation(payload, alarmHardware) {
   if (!payload.activity?.ok) blockers.push(`Activity history unavailable (${payload.activity?.status || "n/a"})`);
 
   const canValidateEvents = payload.activity?.ok && media?.ok;
+  const currentGateState = String(sideyardGate?.state || "").toLowerCase();
   const eventStatus = canValidateEvents
     ? sideyardTrips.length
       ? sideyardMedia.length
@@ -953,6 +954,10 @@ function buildGateValidation(payload, alarmHardware) {
     latestSideyardTripAt: sideyardTrips[0]?.localTime || null,
     recentSideyardTrips: sideyardTrips.slice(0, 8),
     recentSideyardMedia: sideyardMedia.slice(0, 8),
+    diagnosis:
+      currentGateState === "open"
+        ? "Sideyard Gate is currently Open; another open test will not create a fresh Alarm.com open event until Alarm.com first sees it Closed."
+        : null,
   };
 }
 
@@ -1496,6 +1501,9 @@ function writeReport(root, payload) {
     lines.push(`- Sideyard Gate Video rule: \`${gate.videoRule ? (gate.videoRule.isPaused ? "paused" : "active") : "missing"}\``);
     lines.push(`- Activity validation status: \`${gate.status}\``);
     lines.push(`- Latest Sideyard Gate trip: \`${gate.latestSideyardTripAt || "none"}\``);
+    if (gate.diagnosis) {
+      lines.push(`- Diagnosis: ${gate.diagnosis}`);
+    }
     if (gate.blockers.length) {
       lines.push(`- Blockers: \`${gate.blockers.join("; ")}\``);
     }
