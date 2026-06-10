@@ -903,7 +903,7 @@ function summarizeHistoryEvent(event) {
 
 async function fetchActivityHistory(auth, fallbackActivity = null) {
   const result = await fetchJson(`${BASE}/web/api/activity/historyEvents`, auth);
-  if (!result.ok && fallbackActivity?.ok) {
+  if (!result.ok && (fallbackActivity?.ok || (fallbackActivity?.recent || []).length)) {
     return {
       ...fallbackActivity,
       ok: true,
@@ -911,6 +911,7 @@ async function fetchActivityHistory(auth, fallbackActivity = null) {
       refreshOk: false,
       refreshStatus: result.status,
       refreshFailedAt: new Date().toISOString(),
+      endpointError: `historyEvents returned ${result.status}`,
     };
   }
   const rawEvents = Array.isArray(result.body?.value) ? result.body.value : [];
@@ -920,6 +921,7 @@ async function fetchActivityHistory(auth, fallbackActivity = null) {
     stale: false,
     refreshOk: result.ok,
     status: result.status,
+    endpointError: result.ok ? null : `historyEvents returned ${result.status}`,
     totalEvents: events.length,
     latestEventAt: events[0]?.eventDate || null,
     recent: events.slice(0, 50),
