@@ -128,6 +128,7 @@ The monitor writes:
 - `data/latest_chargepoint_refresh.json`
 - `data/alarm_com_devices.json`
 - `data/alarm_com_activity.json`
+- `data/alarm_com_gate_validation.json`
 - `data/snapshots/*.json`
 - `data/smart_home.sqlite`
 - `reports/latest.md`
@@ -189,7 +190,9 @@ compares the fresh Alarm.com portal device state against cached Homebridge
 Alarm.com characteristics; Alarm.com portal state is treated as the current
 source of truth when the cache disagrees. Activity-history capture degradation
 is surfaced separately from physical Alarm state through the `Alarm Activity`
-virtual sensor.
+virtual sensor. The Alarm.com report also validates the recorded Flex IO /
+gate-control hardware against Sideyard Gate state, the Sideyard Gate Video rule,
+and recent activity/media evidence when activity history is available.
 
 `scripts/fetch_chargepoint_sessions.py` refreshes
 `data/chargepoint_sessions.json` before the ChargePoint pairing report runs.

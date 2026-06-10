@@ -770,6 +770,57 @@ function mediaTriggerHealth(events) {
   };
 }
 
+function findAlarmDevice(payload, name) {
+  return flattenDevices(payload.alarmState).find((item) => item.name === name) || null;
+}
+
+function buildGateValidation(payload, alarmHardware) {
+  const hardware = (alarmHardware || []).filter((item) => /flex io|gate/i.test(`${item.name || ""} ${item.purpose || ""}`));
+  const sideyardGate = findAlarmDevice(payload, "Sideyard Gate");
+  const sideyardRule = (payload.videoRules?.rules || []).find((rule) => rule.name === "Sideyard Gate Video") || null;
+  const media = payload.activity?.mediaTriggerHealth || null;
+  const sideyardTrips = (media?.recentValidationTargetTrips || []).filter((event) =>
+    /sideyard gate/i.test(`${event.deviceDescription || ""}`)
+  );
+  const sideyardMedia = (media?.recentMedia || []).filter((event) => /sideyard/i.test(`${event.deviceDescription || ""} ${event.description || ""}`));
+  const blockers = [];
+  if (!hardware.length) blockers.push("Flex IO / gate-control hardware not recorded in config");
+  if (!sideyardGate) blockers.push("Sideyard Gate device not visible in Alarm.com state");
+  if (!sideyardRule) blockers.push("Sideyard Gate Video rule not found");
+  if (sideyardRule?.isPaused) blockers.push("Sideyard Gate Video rule is paused");
+  if (!payload.activity?.ok) blockers.push(`Activity history unavailable (${payload.activity?.status || "n/a"})`);
+
+  const canValidateEvents = payload.activity?.ok && media?.ok;
+  const eventStatus = canValidateEvents
+    ? sideyardTrips.length
+      ? sideyardMedia.length
+        ? "validated"
+        : "trip_seen_no_sideyard_media_seen"
+      : "no_recent_sideyard_trip"
+    : "blocked";
+  return {
+    generatedAt: payload.generatedAt,
+    hardwarePresent: hardware.length > 0,
+    hardware,
+    device: sideyardGate,
+    videoRule: sideyardRule
+      ? {
+          name: sideyardRule.name,
+          isPaused: sideyardRule.isPaused,
+          trigger: sideyardRule.trigger,
+          action: sideyardRule.action,
+          timeframe: sideyardRule.timeframe,
+        }
+      : null,
+    activityAvailable: Boolean(payload.activity?.ok),
+    status: blockers.length ? "attention" : eventStatus,
+    blockers,
+    latestSideyardTripAt: sideyardTrips[0]?.localTime || null,
+    recentSideyardTrips: sideyardTrips.slice(0, 8),
+    recentSideyardMedia: sideyardMedia.slice(0, 8),
+  };
+}
+
 function flattenDevices(alarmState) {
   const systems = alarmState?.systems || [];
   const rows = [];
@@ -1154,11 +1205,15 @@ function writeTelemetryArtifacts(root, payload) {
   };
   writeJson(path.join(root, "data/alarm_com_devices.json"), devices);
   writeJson(path.join(root, "data/alarm_com_activity.json"), activity);
+  if (payload.gateValidation) {
+    writeJson(path.join(root, "data/alarm_com_gate_validation.json"), payload.gateValidation);
+  }
 }
 
 function writeReport(root, payload) {
   const sourcesConfig = loadSourcesConfig(root);
   const alarmHardware = sourcesConfig.installed_hardware?.alarm_com || [];
+  payload.gateValidation = buildGateValidation(payload, alarmHardware);
   const lines = [
     "# Alarm.com Portal Capture",
     "",
@@ -1197,6 +1252,29 @@ function writeReport(root, payload) {
       lines,
       ["Rule", "Paused", "Trigger", "Action", "Timeframe"],
       payload.videoRules.rules.map((rule) => [rule.name, rule.isPaused, rule.trigger, rule.action, rule.timeframe])
+    );
+  }
+  if (payload.gateValidation) {
+    const gate = payload.gateValidation;
+    lines.push("", "## Sideyard Gate Validation", "");
+    lines.push(`- Flex IO / gate-control hardware recorded: \`${gate.hardwarePresent}\``);
+    lines.push(`- Sideyard Gate device state: \`${gate.device?.state || "not visible"}\``);
+    lines.push(`- Sideyard Gate remote commands: \`${gate.device?.remoteCommandsEnabled ?? "n/a"}\``);
+    lines.push(`- Sideyard Gate Video rule: \`${gate.videoRule ? (gate.videoRule.isPaused ? "paused" : "active") : "missing"}\``);
+    lines.push(`- Activity validation status: \`${gate.status}\``);
+    lines.push(`- Latest Sideyard Gate trip: \`${gate.latestSideyardTripAt || "none"}\``);
+    if (gate.blockers.length) {
+      lines.push(`- Blockers: \`${gate.blockers.join("; ")}\``);
+    }
+    table(
+      lines,
+      ["Trip time", "Device", "Event"],
+      (gate.recentSideyardTrips || []).map((event) => [event.localTime, event.deviceDescription, event.description])
+    );
+    table(
+      lines,
+      ["Media time", "Device", "Event"],
+      (gate.recentSideyardMedia || []).map((event) => [event.localTime, event.deviceDescription, event.description])
     );
   }
   if (payload.alarmState?.ok) {
