@@ -21,8 +21,10 @@ LOG_DIR = ROOT / "logs"
 SCE_REFRESH_STATUS_PATH = DATA_DIR / "latest_sce_refresh.json"
 SCE_API_STATUS_PATH = DATA_DIR / "latest_sce_api.json"
 ENERGY_RECONCILE_STATUS_PATH = DATA_DIR / "latest_energy_reconcile.json"
+GATE_TEST_STATUS_PATH = DATA_DIR / "latest_alarm_gate_test.json"
 SCE_REFRESH_LOCK = threading.Lock()
 ENERGY_RECONCILE_LOCK = threading.Lock()
+GATE_TEST_LOCK = threading.Lock()
 
 
 def load_config() -> dict[str, Any]:
@@ -117,6 +119,14 @@ def energy_reconcile_command() -> list[str]:
     ]
 
 
+def gate_test_command() -> list[str]:
+    return [
+        "/bin/zsh",
+        "-lc",
+        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/gate_test_mode.py --timeout 600 --interval 30',
+    ]
+
+
 def run_smart_home_check() -> dict[str, Any]:
     result = run(monitor_command(), timeout=120)
     return {
@@ -162,6 +172,11 @@ def write_energy_reconcile_status(payload: dict[str, Any]) -> None:
     ENERGY_RECONCILE_STATUS_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def write_gate_test_status(payload: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    GATE_TEST_STATUS_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
 def run_energy_reconcile_background(started_at: str) -> None:
     try:
         result = run(energy_reconcile_command(), timeout=900)
@@ -188,6 +203,32 @@ def run_energy_reconcile_background(started_at: str) -> None:
         )
     finally:
         ENERGY_RECONCILE_LOCK.release()
+
+
+def run_gate_test_background(started_at: str) -> None:
+    try:
+        result = run(gate_test_command(), timeout=900)
+        existing: dict[str, Any] = {}
+        if GATE_TEST_STATUS_PATH.exists():
+            try:
+                existing = json.loads(GATE_TEST_STATUS_PATH.read_text())
+            except json.JSONDecodeError:
+                existing = {}
+        write_gate_test_status(
+            {
+                **existing,
+                "ok": result["ok"],
+                "scheduled": False,
+                "startedAt": existing.get("startedAt") or started_at,
+                "finishedAt": existing.get("finishedAt") or datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                "returncode": result["returncode"],
+                "report": str(REPORT_DIR / "alarm_gate_test.md"),
+                "stdout": result["stdout"],
+                "stderr": result["stderr"],
+            }
+        )
+    finally:
+        GATE_TEST_LOCK.release()
 
 
 def refresh_sce_data() -> dict[str, Any]:
@@ -247,6 +288,34 @@ def refresh_and_reconcile_energy() -> dict[str, Any]:
         "alerts": str(REPORT_DIR / "alerts.md"),
         "homekitVirtualSensors": str(REPORT_DIR / "homekit_virtual_sensors.md"),
         "status": str(ENERGY_RECONCILE_STATUS_PATH),
+    }
+
+
+def start_gate_test() -> dict[str, Any]:
+    if not GATE_TEST_LOCK.acquire(blocking=False):
+        return {
+            "ok": True,
+            "scheduled": False,
+            "alreadyRunning": True,
+            "status": str(GATE_TEST_STATUS_PATH),
+            "report": str(REPORT_DIR / "alarm_gate_test.md"),
+        }
+    started_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    write_gate_test_status(
+        {
+            "ok": None,
+            "scheduled": True,
+            "startedAt": started_at,
+            "status": "running",
+            "report": str(REPORT_DIR / "alarm_gate_test.md"),
+        }
+    )
+    threading.Thread(target=run_gate_test_background, args=(started_at,), daemon=True).start()
+    return {
+        "ok": True,
+        "scheduled": True,
+        "status": str(GATE_TEST_STATUS_PATH),
+        "report": str(REPORT_DIR / "alarm_gate_test.md"),
     }
 
 
@@ -321,6 +390,9 @@ class Handler(BaseHTTPRequestHandler):
             return (200 if payload["ok"] else 500), payload
         if self.path == "/action/reconcile-energy":
             payload = refresh_and_reconcile_energy()
+            return (202 if payload["ok"] else 500), payload
+        if self.path == "/action/gate-test":
+            payload = start_gate_test()
             return (202 if payload["ok"] else 500), payload
         if self.path == "/action/restart-homebridge":
             payload = restart_homebridge()

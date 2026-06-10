@@ -86,6 +86,16 @@ cookie:
 ./scripts/capture_alarm_com.js --crawl
 ```
 
+Run a passive Sideyard Gate validation window after manually opening/closing
+the gate. This records the test start, refreshes Homebridge and Alarm.com state
+until Sideyard Gate trip/media evidence appears or the timeout expires, and
+does not send any physical gate command:
+
+```sh
+./scripts/gate_test_mode.py
+./scripts/gate_test_mode.py --timeout 600 --interval 30
+```
+
 Refresh ChargePoint sessions before pairing them against home energy sources:
 
 ```sh
@@ -117,7 +127,9 @@ The API path supports either UtilityAPI JSON API credentials
 the status is written to `data/latest_sce_api.json`. `Reconcile Energy` runs a
 full local energy refresh: current snapshot, storage cleanup, pattern analysis,
 SCE/Envoy/Sense/ChargePoint/Alarm.com reconciliation, combined energy report,
-alerts, and HomeKit virtual sensor updates.
+alerts, and HomeKit virtual sensor updates. `Gate Test` runs the passive
+Sideyard Gate validation helper and writes its status/report without creating a
+new bridge.
 
 Install the periodic local monitor:
 
@@ -136,6 +148,7 @@ The monitor writes:
 - `data/alarm_com_devices.json`
 - `data/alarm_com_activity.json`
 - `data/alarm_com_gate_validation.json`
+- `data/latest_alarm_gate_test.json`
 - `data/snapshots/*.json`
 - `data/smart_home.sqlite`
 - `reports/latest.md`
@@ -150,6 +163,7 @@ The monitor writes:
 - `reports/combined_energy_monitor.md`
 - `reports/sense_now_pairing.md`
 - `reports/alarm_com.md`
+- `reports/alarm_gate_test.md`
 - `reports/alarm_homebridge_state.md`
 - `reports/alerts.md`
 - `reports/homekit_virtual_sensors.md`
