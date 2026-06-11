@@ -24,10 +24,18 @@ SCE_API_STATUS_PATH = DATA_DIR / "latest_sce_api.json"
 ENERGY_RECONCILE_STATUS_PATH = DATA_DIR / "latest_energy_reconcile.json"
 GATE_TEST_STATUS_PATH = DATA_DIR / "latest_alarm_gate_test.json"
 ALARM_CACHE_REFRESH_STATUS_PATH = DATA_DIR / "latest_alarm_cache_refresh.json"
+GARAGE_LIGHT_HOLD_STATUS_PATH = DATA_DIR / "garage_light_hold.json"
 SCE_REFRESH_LOCK = threading.Lock()
 ENERGY_RECONCILE_LOCK = threading.Lock()
 GATE_TEST_LOCK = threading.Lock()
 ALARM_CACHE_REFRESH_LOCK = threading.Lock()
+GARAGE_LIGHT_HOLD_LOCK = threading.Lock()
+GARAGE_LIGHT_HOLD_TIMER: threading.Timer | None = None
+
+GARAGE_LIGHT_ID = "104430779-1206"
+GARAGE_LIGHT_HOLD_SECONDS = 300
+GARAGE_LIGHT_CONTROLLER_BRIGHTNESS = 100
+NODE_BIN = Path.home() / ".local/node-v24.16.0-darwin-arm64/bin/node"
 
 
 def load_config() -> dict[str, Any]:
@@ -45,6 +53,26 @@ def run(cmd: list[str], timeout: int = 45) -> dict[str, Any]:
         }
     except Exception as exc:
         return {"ok": False, "returncode": None, "stdout": "", "stderr": str(exc)}
+
+
+def json_run(cmd: list[str], timeout: int = 45) -> dict[str, Any]:
+    result = run(cmd, timeout=timeout)
+    payload: dict[str, Any] = {
+        "ok": False,
+        "returncode": result["returncode"],
+        "stdout": result["stdout"],
+        "stderr": result["stderr"],
+    }
+    text = result["stdout"].strip().splitlines()[-1:] or [""]
+    try:
+        parsed = json.loads(text[0])
+    except json.JSONDecodeError:
+        return payload
+    if isinstance(parsed, dict):
+        payload.update(parsed)
+        payload["returncode"] = result["returncode"]
+        payload["stderr"] = result["stderr"]
+    return payload
 
 
 def ps_rows() -> list[tuple[int, int, str]]:
@@ -136,6 +164,10 @@ def alarm_cache_refresh_command() -> list[str]:
         "-lc",
         'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/capture_alarm_com.js && ./scripts/smart_home_snapshot.py && ./scripts/generate_alerts.py',
     ]
+
+
+def alarm_light_command(*args: str) -> list[str]:
+    return [str(NODE_BIN), str(ROOT / "scripts" / "set_alarm_light.js"), "--light-id", GARAGE_LIGHT_ID, *args]
 
 
 def run_smart_home_check() -> dict[str, Any]:
@@ -437,6 +469,202 @@ def refresh_alarm_cache() -> dict[str, Any]:
     }
 
 
+def local_now() -> datetime:
+    return datetime.now(timezone.utc).astimezone()
+
+
+def parse_dt(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
+def read_garage_light_hold_state() -> dict[str, Any]:
+    if not GARAGE_LIGHT_HOLD_STATUS_PATH.exists():
+        return {}
+    try:
+        payload = json.loads(GARAGE_LIGHT_HOLD_STATUS_PATH.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def write_garage_light_hold_state(payload: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    GARAGE_LIGHT_HOLD_STATUS_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def garage_light_status() -> dict[str, Any]:
+    return json_run(alarm_light_command("--status"), timeout=90)
+
+
+def set_garage_light_on_100() -> dict[str, Any]:
+    return json_run(
+        alarm_light_command("--on", "--brightness", str(GARAGE_LIGHT_CONTROLLER_BRIGHTNESS)),
+        timeout=90,
+    )
+
+
+def set_garage_light_off() -> dict[str, Any]:
+    return json_run(alarm_light_command("--off", "--brightness", str(GARAGE_LIGHT_CONTROLLER_BRIGHTNESS)), timeout=90)
+
+
+def set_garage_light_brightness(brightness: int) -> dict[str, Any]:
+    return json_run(alarm_light_command("--on", "--brightness", str(brightness)), timeout=90)
+
+
+def garage_light_restore_started_state(started_state: dict[str, Any]) -> dict[str, Any]:
+    if bool(started_state.get("on")):
+        brightness = started_state.get("brightness")
+        if isinstance(brightness, (int, float)) and brightness > 0:
+            return set_garage_light_brightness(int(brightness))
+        return set_garage_light_on_100()
+    return set_garage_light_off()
+
+
+def schedule_garage_light_hold_check(state: dict[str, Any] | None = None) -> None:
+    global GARAGE_LIGHT_HOLD_TIMER
+    if GARAGE_LIGHT_HOLD_TIMER is not None:
+        GARAGE_LIGHT_HOLD_TIMER.cancel()
+        GARAGE_LIGHT_HOLD_TIMER = None
+
+    payload = state if state is not None else read_garage_light_hold_state()
+    if not payload.get("active"):
+        return
+
+    last_activity = parse_dt(payload.get("lastActivityAt"))
+    if last_activity is None:
+        return
+    delay = max(1.0, (last_activity + timedelta(seconds=GARAGE_LIGHT_HOLD_SECONDS) - local_now()).total_seconds())
+    GARAGE_LIGHT_HOLD_TIMER = threading.Timer(delay, expire_garage_light_hold)
+    GARAGE_LIGHT_HOLD_TIMER.daemon = True
+    GARAGE_LIGHT_HOLD_TIMER.start()
+
+
+def trigger_garage_light_activity() -> dict[str, Any]:
+    now = local_now()
+    with GARAGE_LIGHT_HOLD_LOCK:
+        existing = read_garage_light_hold_state()
+        started_state = existing.get("startedState") if existing.get("active") else None
+        if not isinstance(started_state, dict):
+            before = garage_light_status()
+            if not before.get("ok"):
+                write_garage_light_hold_state(
+                    {
+                        **existing,
+                        "active": False,
+                        "lastErrorAt": now.isoformat(timespec="seconds"),
+                        "lastError": before.get("error") or before.get("stderr") or "failed to read Garage Light state",
+                    }
+                )
+                return {
+                    "ok": False,
+                    "error": "failed to read Garage Light state",
+                    "detail": {k: before.get(k) for k in ("returncode", "stderr", "error")},
+                    "status": str(GARAGE_LIGHT_HOLD_STATUS_PATH),
+                }
+            started_state = before.get("light") if isinstance(before.get("light"), dict) else {}
+
+        command = set_garage_light_on_100()
+        if not command.get("ok"):
+            write_garage_light_hold_state(
+                {
+                    **existing,
+                    "active": False,
+                    "lastErrorAt": now.isoformat(timespec="seconds"),
+                    "lastError": command.get("error") or command.get("stderr") or "failed to set Garage Light",
+                }
+            )
+            return {
+                "ok": False,
+                "error": "failed to set Garage Light",
+                "detail": {k: command.get(k) for k in ("returncode", "stderr", "error")},
+                "status": str(GARAGE_LIGHT_HOLD_STATUS_PATH),
+            }
+
+        state = {
+            "active": True,
+            "lastActivityAt": now.isoformat(timespec="seconds"),
+            "holdSeconds": GARAGE_LIGHT_HOLD_SECONDS,
+            "controllerBrightness": GARAGE_LIGHT_CONTROLLER_BRIGHTNESS,
+            "lightId": GARAGE_LIGHT_ID,
+            "startedState": started_state,
+            "lastCommandAt": now.isoformat(timespec="seconds"),
+            "lastCommand": "hold-on",
+            "lastCommandResult": command.get("light"),
+            "status": "holding",
+        }
+        write_garage_light_hold_state(state)
+        schedule_garage_light_hold_check(state)
+        return {
+            "ok": True,
+            "scheduled": True,
+            "holdUntil": (now + timedelta(seconds=GARAGE_LIGHT_HOLD_SECONDS)).isoformat(timespec="seconds"),
+            "status": str(GARAGE_LIGHT_HOLD_STATUS_PATH),
+            "light": command.get("light"),
+        }
+
+
+def expire_garage_light_hold() -> None:
+    with GARAGE_LIGHT_HOLD_LOCK:
+        state = read_garage_light_hold_state()
+        if not state.get("active"):
+            return
+
+        now = local_now()
+        last_activity = parse_dt(state.get("lastActivityAt"))
+        if last_activity is None:
+            state.update({"active": False, "status": "invalid-last-activity", "finishedAt": now.isoformat(timespec="seconds")})
+            write_garage_light_hold_state(state)
+            return
+
+        elapsed = (now - last_activity).total_seconds()
+        if elapsed < GARAGE_LIGHT_HOLD_SECONDS:
+            schedule_garage_light_hold_check(state)
+            return
+
+        current = garage_light_status()
+        if not current.get("ok"):
+            state.update(
+                {
+                    "status": "expiry-status-failed",
+                    "lastErrorAt": now.isoformat(timespec="seconds"),
+                    "lastError": current.get("error") or current.get("stderr") or "failed to read Garage Light state",
+                }
+            )
+            write_garage_light_hold_state(state)
+            schedule_garage_light_hold_check(state)
+            return
+
+        light = current.get("light") if isinstance(current.get("light"), dict) else {}
+        if not light.get("on") or int(light.get("brightness") or 0) != GARAGE_LIGHT_CONTROLLER_BRIGHTNESS:
+            state.update(
+                {
+                    "active": False,
+                    "status": "manual-change-detected",
+                    "finishedAt": now.isoformat(timespec="seconds"),
+                    "currentState": light,
+                }
+            )
+            write_garage_light_hold_state(state)
+            return
+
+        restore = garage_light_restore_started_state(state.get("startedState") or {})
+        state.update(
+            {
+                "active": False,
+                "status": "restored" if restore.get("ok") else "restore-failed",
+                "finishedAt": now.isoformat(timespec="seconds"),
+                "restoreResult": restore.get("light"),
+                "lastError": None if restore.get("ok") else restore.get("error") or restore.get("stderr"),
+            }
+        )
+        write_garage_light_hold_state(state)
+
+
 def delayed_restart_homebridge() -> None:
     pid = find_main_homebridge_pid()
     if pid is not None:
@@ -515,6 +743,9 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/action/refresh-alarm-cache":
             payload = refresh_alarm_cache()
             return (202 if payload["ok"] else 500), payload
+        if self.path == "/action/garage-activity":
+            payload = trigger_garage_light_activity()
+            return (202 if payload["ok"] else 500), payload
         if self.path == "/action/restart-homebridge":
             payload = restart_homebridge()
             return (202 if payload["ok"] else 500), payload
@@ -541,6 +772,7 @@ def main() -> int:
     port = int(config["port"])
     os.chdir(ROOT)
     server = ThreadingHTTPServer((host, port), Handler)
+    schedule_garage_light_hold_check()
     server.serve_forever()
     return 0
 

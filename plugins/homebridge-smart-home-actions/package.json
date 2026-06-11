@@ -1,0 +1,14 @@
+{
+  "name": "homebridge-smart-home-actions",
+  "version": "1.0.0",
+  "description": "Homebridge platform for local Smart Home monitor action switches.",
+  "main": "index.js",
+  "keywords": [
+    "homebridge-plugin"
+  ],
+  "engines": {
+    "node": ">=18",
+    "homebridge": ">=2.0.0"
+  },
+  "license": "UNLICENSED"
+}
