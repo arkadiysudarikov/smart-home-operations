@@ -129,7 +129,9 @@ full local energy refresh: current snapshot, storage cleanup, pattern analysis,
 SCE/Envoy/Sense/ChargePoint/Alarm.com reconciliation, combined energy report,
 alerts, and HomeKit virtual sensor updates. `Gate Test` runs the passive
 Sideyard Gate validation helper and writes its status/report without creating a
-new bridge.
+new bridge. `Alarm Refresh` recaptures Alarm.com portal state, restarts only the
+Alarm.com child bridge, then resamples Homebridge characteristics and refreshes
+the Alarm Cache tile/report.
 
 Install the periodic local monitor:
 
