@@ -134,7 +134,10 @@ combined energy report, alerts, and HomeKit virtual sensor updates. `Gate Test` 
 Sideyard Gate validation helper and writes its status/report without creating a
 new bridge. `Alarm Refresh` recaptures Alarm.com portal state, restarts only the
 Alarm.com child bridge, then resamples Homebridge characteristics and refreshes
-the Alarm Cache tile/report.
+the Alarm Cache tile/report. `Garage Activity` is the local action switch used
+by garage-only Home automations to invoke the Garage Light last-activity hold;
+see `config/homekit_garage_activity.md` for the intended bridge and automation
+wiring.
 
 Install the periodic local monitor:
 
