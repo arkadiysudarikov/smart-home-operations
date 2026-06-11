@@ -7,6 +7,7 @@ import re
 import signal
 import subprocess
 import threading
+import time
 from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -22,9 +23,11 @@ SCE_REFRESH_STATUS_PATH = DATA_DIR / "latest_sce_refresh.json"
 SCE_API_STATUS_PATH = DATA_DIR / "latest_sce_api.json"
 ENERGY_RECONCILE_STATUS_PATH = DATA_DIR / "latest_energy_reconcile.json"
 GATE_TEST_STATUS_PATH = DATA_DIR / "latest_alarm_gate_test.json"
+ALARM_CACHE_REFRESH_STATUS_PATH = DATA_DIR / "latest_alarm_cache_refresh.json"
 SCE_REFRESH_LOCK = threading.Lock()
 ENERGY_RECONCILE_LOCK = threading.Lock()
 GATE_TEST_LOCK = threading.Lock()
+ALARM_CACHE_REFRESH_LOCK = threading.Lock()
 
 
 def load_config() -> dict[str, Any]:
@@ -127,6 +130,14 @@ def gate_test_command() -> list[str]:
     ]
 
 
+def alarm_cache_refresh_command() -> list[str]:
+    return [
+        "/bin/zsh",
+        "-lc",
+        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/capture_alarm_com.js && ./scripts/smart_home_snapshot.py && ./scripts/generate_alerts.py',
+    ]
+
+
 def run_smart_home_check() -> dict[str, Any]:
     result = run(monitor_command(), timeout=120)
     return {
@@ -175,6 +186,11 @@ def write_energy_reconcile_status(payload: dict[str, Any]) -> None:
 def write_gate_test_status(payload: dict[str, Any]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     GATE_TEST_STATUS_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def write_alarm_cache_refresh_status(payload: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    ALARM_CACHE_REFRESH_STATUS_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
 def run_energy_reconcile_background(started_at: str) -> None:
@@ -229,6 +245,80 @@ def run_gate_test_background(started_at: str) -> None:
         )
     finally:
         GATE_TEST_LOCK.release()
+
+
+def alarm_cache_stale_count() -> int | None:
+    path = DATA_DIR / "latest_alarm_homebridge_state.json"
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return None
+    stale_count = payload.get("staleCount")
+    return int(stale_count) if isinstance(stale_count, (int, float)) else None
+
+
+def wait_for_alarm_child_bridge(port: int, previous_pid: int | None, timeout: int = 60) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        pid = listening_pid(port)
+        if pid is not None and pid != previous_pid:
+            return {"ok": True, "pid": pid}
+        time.sleep(2)
+    pid = listening_pid(port)
+    return {"ok": pid is not None, "pid": pid, "timedOut": True}
+
+
+def run_alarm_cache_refresh_background(started_at: str) -> None:
+    try:
+        config = load_config()["actions"]
+        port = int(config["alarm_child_bridge_port"])
+        before_stale = alarm_cache_stale_count()
+        before_pid = listening_pid(port)
+        first_capture = run(alarm_cache_refresh_command(), timeout=180)
+        restart_result: dict[str, Any]
+        wait_result: dict[str, Any]
+        if before_pid is None:
+            restart_result = {"ok": False, "error": f"no Alarm child bridge is listening on port {port}"}
+            wait_result = {"ok": False, "pid": None}
+        else:
+            restart_result = terminate(before_pid)
+            wait_result = wait_for_alarm_child_bridge(port, before_pid)
+        second_capture = run(alarm_cache_refresh_command(), timeout=180) if wait_result.get("ok") else {"ok": False, "returncode": None, "stdout": "", "stderr": "Alarm child bridge did not restart"}
+        after_stale = alarm_cache_stale_count()
+        ok = bool(first_capture["ok"] and restart_result.get("ok") and wait_result.get("ok") and second_capture["ok"])
+        write_alarm_cache_refresh_status(
+            {
+                "ok": ok,
+                "startedAt": started_at,
+                "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                "returncode": second_capture["returncode"],
+                "alarmChildBridgePort": port,
+                "previousPid": before_pid,
+                "currentPid": wait_result.get("pid"),
+                "staleBefore": before_stale,
+                "staleAfter": after_stale,
+                "alarmHomebridgeState": str(REPORT_DIR / "alarm_homebridge_state.md"),
+                "alerts": str(REPORT_DIR / "alerts.md"),
+                "homekitVirtualSensors": str(REPORT_DIR / "homekit_virtual_sensors.md"),
+                "firstCapture": {
+                    "ok": first_capture["ok"],
+                    "returncode": first_capture["returncode"],
+                    "stderr": first_capture["stderr"],
+                },
+                "restart": restart_result,
+                "waitForRestart": wait_result,
+                "secondCapture": {
+                    "ok": second_capture["ok"],
+                    "returncode": second_capture["returncode"],
+                    "stdout": second_capture["stdout"],
+                    "stderr": second_capture["stderr"],
+                },
+            }
+        )
+    finally:
+        ALARM_CACHE_REFRESH_LOCK.release()
 
 
 def refresh_sce_data() -> dict[str, Any]:
@@ -319,6 +409,34 @@ def start_gate_test() -> dict[str, Any]:
     }
 
 
+def refresh_alarm_cache() -> dict[str, Any]:
+    if not ALARM_CACHE_REFRESH_LOCK.acquire(blocking=False):
+        return {
+            "ok": True,
+            "scheduled": False,
+            "alreadyRunning": True,
+            "status": str(ALARM_CACHE_REFRESH_STATUS_PATH),
+            "report": str(REPORT_DIR / "alarm_homebridge_state.md"),
+        }
+    started_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    write_alarm_cache_refresh_status(
+        {
+            "ok": None,
+            "scheduled": True,
+            "startedAt": started_at,
+            "status": "running",
+            "report": str(REPORT_DIR / "alarm_homebridge_state.md"),
+        }
+    )
+    threading.Thread(target=run_alarm_cache_refresh_background, args=(started_at,), daemon=True).start()
+    return {
+        "ok": True,
+        "scheduled": True,
+        "status": str(ALARM_CACHE_REFRESH_STATUS_PATH),
+        "report": str(REPORT_DIR / "alarm_homebridge_state.md"),
+    }
+
+
 def delayed_restart_homebridge() -> None:
     pid = find_main_homebridge_pid()
     if pid is not None:
@@ -393,6 +511,9 @@ class Handler(BaseHTTPRequestHandler):
             return (202 if payload["ok"] else 500), payload
         if self.path == "/action/gate-test":
             payload = start_gate_test()
+            return (202 if payload["ok"] else 500), payload
+        if self.path == "/action/refresh-alarm-cache":
+            payload = refresh_alarm_cache()
             return (202 if payload["ok"] else 500), payload
         if self.path == "/action/restart-homebridge":
             payload = restart_homebridge()
