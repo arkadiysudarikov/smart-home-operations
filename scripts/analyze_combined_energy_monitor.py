@@ -109,10 +109,10 @@ def build_source_status(
 ) -> list[dict[str, Any]]:
     stale_hours = float(thresholds.get("source_status_stale_hours", 24))
     chargepoint_stale_hours = float(thresholds.get("chargepoint_refresh_stale_hours", 24))
+    sce_stale_hours = float(thresholds.get("sce_interval_stale_hours", thresholds.get("sce_interval_stale_days", 30) * 24))
     sce_summary = (all_energy.get("sceGreenButton") or {}).get("summary", {})
-    sce_end = parse_dt(sce_summary.get("coverageEnd"))
-    sce_age_days = (now - sce_end).days if sce_end else None
-    sce_status = "missing" if sce_age_days is None else ("stale" if sce_age_days > int(thresholds.get("sce_interval_stale_days", 30)) else "fresh")
+    sce_age = age_hours(now, sce_summary.get("coverageEnd"))
+    sce_status = status_label(sce_age, sce_stale_hours)
 
     cp_refresh_status = str(chargepoint_refresh.get("status") or "missing")
     if chargepoint_refresh.get("ok") is True:
@@ -140,7 +140,7 @@ def build_source_status(
         {
             "source": "SCE",
             "status": sce_status,
-            "ageDays": sce_age_days,
+            "ageHours": sce_age,
             "detail": sce_summary.get("coverageEnd"),
         },
         {
@@ -307,9 +307,9 @@ def build_payload() -> dict[str, Any]:
 
     sce_summary = (all_energy.get("sceGreenButton") or {}).get("summary", {})
     sce_overlap_count = int(all_energy.get("overlapPairCount") or 0)
-    sce_end = parse_dt(sce_summary.get("coverageEnd"))
-    stale_days = (now - sce_end).days if sce_end else None
-    if stale_days is None or stale_days > int(thresholds.get("sce_interval_stale_days", 30)):
+    sce_age = age_hours(now, sce_summary.get("coverageEnd"))
+    sce_stale_hours = float(thresholds.get("sce_interval_stale_hours", thresholds.get("sce_interval_stale_days", 30) * 24))
+    if sce_age is None or sce_age >= sce_stale_hours:
         alerts.append(
             alert(
                 "warning",
@@ -424,7 +424,10 @@ def build_payload() -> dict[str, Any]:
         "SCE is utility grid exchange, while Envoy Consumption Total, Alarm.com Energy Clamp, and ChargePoint are site-load views."
     )
     if sce_overlap_count > 0:
-        insights.append(f"Fresh SCE interval data now overlaps the Smart Home monitor with {sce_overlap_count} paired intervals.")
+        if sce_age is not None and sce_age < sce_stale_hours:
+            insights.append(f"Fresh SCE interval data overlaps the Smart Home monitor with {sce_overlap_count} paired intervals.")
+        else:
+            insights.append(f"SCE interval data overlaps the Smart Home monitor with {sce_overlap_count} paired intervals, but the newest interval is stale.")
     if latest_bill:
         insights.append(
             f"Latest SCE bill net import was {fmt(latest_bill.get('net_import_kwh'), 0)} kWh after {fmt(latest_bill.get('export_kwh_sce'), 0)} kWh exported."

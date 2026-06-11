@@ -4,7 +4,7 @@
   "utilityapi_meter_uids": ["replace-with-utilityapi-meter-uid"],
   "utilityapi_authorization_uids": [],
   "utilityapi_interval_start": "2025-05-09",
-  "utilityapi_interval_end": "2026-06-10",
+  "utilityapi_interval_end": "auto",
   "resource_url": "https://sce-approved-resource-endpoint.example/espi/1_1/resource/...",
   "access_token": "replace-with-oauth-access-token"
 }

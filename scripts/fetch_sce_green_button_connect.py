@@ -7,7 +7,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +56,7 @@ def split_csv(value: Any) -> list[str]:
 
 def configured_utilityapi() -> dict[str, Any]:
     config = load_config()
+    end = os.environ.get("UTILITYAPI_INTERVAL_END") or config.get("utilityapi_interval_end")
     return {
         "api_token": os.environ.get("UTILITYAPI_API_TOKEN")
         or os.environ.get("UTILITYAPI_TOKEN")
@@ -66,9 +67,17 @@ def configured_utilityapi() -> dict[str, Any]:
             os.environ.get("UTILITYAPI_AUTHORIZATION_UIDS") or config.get("utilityapi_authorization_uids")
         ),
         "start": os.environ.get("UTILITYAPI_INTERVAL_START") or config.get("utilityapi_interval_start"),
-        "end": os.environ.get("UTILITYAPI_INTERVAL_END") or config.get("utilityapi_interval_end"),
+        "end": resolve_interval_end(end),
         "base_url": os.environ.get("UTILITYAPI_BASE_URL") or config.get("utilityapi_base_url") or UTILITYAPI_BASE_URL,
     }
+
+
+def resolve_interval_end(value: Any) -> str:
+    if value is None or str(value).strip().lower() in {"", "auto", "current", "today"}:
+        return (datetime.now(timezone.utc).astimezone().date() + timedelta(days=1)).isoformat()
+    if str(value).strip().lower() == "tomorrow":
+        return (datetime.now(timezone.utc).astimezone().date() + timedelta(days=1)).isoformat()
+    return str(value).strip()
 
 
 def api_get_json(url: str, api_token: str) -> dict[str, Any]:
@@ -130,7 +139,7 @@ def datapoint_value(reading: dict[str, Any], kind: str) -> float | None:
     return None
 
 
-def fetch_utilityapi_intervals(config: dict[str, Any]) -> Path:
+def fetch_utilityapi_intervals(config: dict[str, Any]) -> dict[str, Any]:
     api_token = config["api_token"]
     base_url = config["base_url"].rstrip("/")
     meter_uids = list(config["meter_uids"])
@@ -175,6 +184,8 @@ def fetch_utilityapi_intervals(config: dict[str, Any]) -> Path:
 
     csv_path = DOWNLOAD_DIR / f"SCE_Usage_UtilityAPI_{stamp}.csv"
     row_count = 0
+    coverage_start: str | None = None
+    coverage_end: str | None = None
     with csv_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
         writer.writerow(
@@ -195,6 +206,8 @@ def fetch_utilityapi_intervals(config: dict[str, Any]) -> Path:
                 end = reading.get("end")
                 if not start or not end:
                     continue
+                coverage_start = start if coverage_start is None or start < coverage_start else coverage_start
+                coverage_end = end if coverage_end is None or end > coverage_end else coverage_end
                 delivered = datapoint_value(reading, "fwd")
                 received = datapoint_value(reading, "rev")
                 net = datapoint_value(reading, "net")
@@ -216,7 +229,13 @@ def fetch_utilityapi_intervals(config: dict[str, Any]) -> Path:
                 row_count += 1
     if row_count == 0:
         raise NoUtilityApiIntervals(f"UtilityAPI returned {len(intervals)} interval objects but no kWh readings.")
-    return csv_path
+    return {
+        "path": csv_path,
+        "rowCount": row_count,
+        "coverageStart": coverage_start,
+        "coverageEnd": coverage_end,
+        "requestedEnd": config.get("end"),
+    }
 
 
 def suffix_for(content_type: str, url: str) -> str:
@@ -251,7 +270,7 @@ def main() -> int:
     utilityapi_config = configured_utilityapi()
     if utilityapi_config["api_token"]:
         try:
-            path = fetch_utilityapi_intervals(utilityapi_config)
+            result = fetch_utilityapi_intervals(utilityapi_config)
         except urllib.error.HTTPError as exc:
             write_status(
                 {
@@ -291,6 +310,7 @@ def main() -> int:
                 }
             )
             return 1
+        path = result["path"]
         write_status(
             {
                 "ok": True,
@@ -299,6 +319,10 @@ def main() -> int:
                 "finishedAt": now(),
                 "file": str(path),
                 "bytes": path.stat().st_size,
+                "intervalRows": result.get("rowCount"),
+                "coverageStart": result.get("coverageStart"),
+                "coverageEnd": result.get("coverageEnd"),
+                "requestedEnd": result.get("requestedEnd"),
             }
         )
         print(path)

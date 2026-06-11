@@ -123,11 +123,14 @@ interval exports and regenerates the energy reports and HomeKit alert states.
 The API path supports either UtilityAPI JSON API credentials
 (`utilityapi_api_token` plus `utilityapi_meter_uids` or
 `utilityapi_authorization_uids`) or a direct SCE Green Button Connect
-`resource_url`/`access_token`. Until one of those credential sets is configured,
-the status is written to `data/latest_sce_api.json`. `Reconcile Energy` runs a
-full local energy refresh: current snapshot, storage cleanup, pattern analysis,
-SCE/Envoy/Sense/ChargePoint/Alarm.com reconciliation, combined energy report,
-alerts, and HomeKit virtual sensor updates. `Gate Test` runs the passive
+`resource_url`/`access_token`. UtilityAPI imports default to an automatic moving
+end date so scheduled refreshes keep asking for the newest interval rows; each
+run writes downloaded file, row count, requested end, and returned coverage to
+`data/latest_sce_api.json`. Until one of those credential sets is configured,
+the status is written there as a registration-required fallback. `Reconcile
+Energy` runs a full local energy refresh: current snapshot, storage cleanup,
+pattern analysis, SCE/Envoy/Sense/ChargePoint/Alarm.com reconciliation,
+combined energy report, alerts, and HomeKit virtual sensor updates. `Gate Test` runs the passive
 Sideyard Gate validation helper and writes its status/report without creating a
 new bridge. `Alarm Refresh` recaptures Alarm.com portal state, restarts only the
 Alarm.com child bridge, then resamples Homebridge characteristics and refreshes
@@ -185,7 +188,7 @@ UtilityAPI or SCE Green Button Connect credentials are configured in
 `config/sce_green_button_connect.json` or equivalent environment variables:
 `UTILITYAPI_API_TOKEN`, `UTILITYAPI_METER_UIDS`,
 `UTILITYAPI_AUTHORIZATION_UIDS`, `UTILITYAPI_INTERVAL_START`,
-`UTILITYAPI_INTERVAL_END`, `SCE_GBC_RESOURCE_URL`, and
+`UTILITYAPI_INTERVAL_END` (optional, defaults to `auto`), `SCE_GBC_RESOURCE_URL`, and
 `SCE_GBC_ACCESS_TOKEN`. Manual Green Button CSV/XML downloads placed in
 `~/Downloads`, `~/Documents`, or iCloud Drive are still imported by the same
 pipeline.
