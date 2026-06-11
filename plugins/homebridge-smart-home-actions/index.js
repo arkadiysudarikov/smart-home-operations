@@ -27,15 +27,22 @@ class SmartHomeActionsPlatform {
     this.Characteristic = api.hap.Characteristic;
     this.accessories = new Map();
     this.baseUrl = (this.config.baseUrl || "http://127.0.0.1:18765").replace(/\/+$/, "");
-    this.actions = Array.isArray(this.config.actions) && this.config.actions.length
-      ? this.config.actions
-      : DEFAULT_ACTIONS;
+    this.actions = this.configuredActions();
 
     this.api.on("didFinishLaunching", () => this.syncAccessories());
   }
 
   configureAccessory(accessory) {
     this.accessories.set(accessory.UUID, accessory);
+  }
+
+  configuredActions() {
+    const configured = Array.isArray(this.config.actions) && this.config.actions.length
+      ? this.config.actions
+      : [];
+    const actionIds = new Set(configured.map((action) => action.id || action.name));
+    const missingDefaults = DEFAULT_ACTIONS.filter((action) => !actionIds.has(action.id));
+    return configured.length ? [...configured, ...missingDefaults] : DEFAULT_ACTIONS;
   }
 
   syncAccessories() {
