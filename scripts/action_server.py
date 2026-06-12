@@ -25,6 +25,14 @@ ENERGY_RECONCILE_STATUS_PATH = DATA_DIR / "latest_energy_reconcile.json"
 GATE_TEST_STATUS_PATH = DATA_DIR / "latest_alarm_gate_test.json"
 ALARM_CACHE_REFRESH_STATUS_PATH = DATA_DIR / "latest_alarm_cache_refresh.json"
 GARAGE_LIGHT_HOLD_STATUS_PATH = DATA_DIR / "garage_light_hold.json"
+ACTION_STATUS_PATHS = {
+    "check": DATA_DIR / "latest.json",
+    "refreshSce": SCE_REFRESH_STATUS_PATH,
+    "sceApi": SCE_API_STATUS_PATH,
+    "reconcileEnergy": ENERGY_RECONCILE_STATUS_PATH,
+    "alarmRefresh": ALARM_CACHE_REFRESH_STATUS_PATH,
+    "garageActivity": GARAGE_LIGHT_HOLD_STATUS_PATH,
+}
 SCE_REFRESH_LOCK = threading.Lock()
 ENERGY_RECONCILE_LOCK = threading.Lock()
 GATE_TEST_LOCK = threading.Lock()
@@ -73,6 +81,45 @@ def json_run(cmd: list[str], timeout: int = 45) -> dict[str, Any]:
         payload["returncode"] = result["returncode"]
         payload["stderr"] = result["stderr"]
     return payload
+
+
+def read_json_status(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {"exists": False, "path": str(path)}
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        return {"exists": True, "path": str(path), "ok": False, "error": f"invalid JSON: {exc}"}
+
+    if not isinstance(payload, dict):
+        return {"exists": True, "path": str(path), "ok": False, "error": "status file is not a JSON object"}
+
+    status = {
+        "exists": True,
+        "path": str(path),
+        "ok": payload.get("ok"),
+        "startedAt": payload.get("startedAt") or payload.get("timestamp"),
+        "finishedAt": payload.get("finishedAt") or payload.get("generatedAt") or payload.get("captured_at"),
+        "returncode": payload.get("returncode"),
+        "status": payload.get("status"),
+        "error": payload.get("error"),
+    }
+    if status["ok"] is None and isinstance(payload.get("homebridge"), dict):
+        launchd = payload["homebridge"].get("launchd")
+        if isinstance(launchd, dict) and "ok" in launchd:
+            status["ok"] = bool(launchd["ok"])
+    for key in ("staleBefore", "staleAfter", "coverageStart", "coverageEnd", "requestedEnd", "intervalRows", "file"):
+        if key in payload:
+            status[key] = payload[key]
+    return status
+
+
+def action_status() -> dict[str, Any]:
+    return {
+        "ok": True,
+        "generatedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "actions": {name: read_json_status(path) for name, path in ACTION_STATUS_PATHS.items()},
+    }
 
 
 def ps_rows() -> list[tuple[int, int, str]]:
@@ -168,6 +215,10 @@ def alarm_cache_refresh_command() -> list[str]:
 
 def alarm_light_command(*args: str) -> list[str]:
     return [str(NODE_BIN), str(ROOT / "scripts" / "set_alarm_light.js"), "--light-id", GARAGE_LIGHT_ID, *args]
+
+
+def alarm_panel_command(mode: str) -> list[str]:
+    return [str(NODE_BIN), str(ROOT / "scripts" / "set_alarm_panel.js"), "--mode", mode]
 
 
 def run_smart_home_check() -> dict[str, Any]:
@@ -516,6 +567,19 @@ def set_garage_light_brightness(brightness: int) -> dict[str, Any]:
     return json_run(alarm_light_command("--on", "--brightness", str(brightness)), timeout=90)
 
 
+def set_alarm_panel(mode: str) -> dict[str, Any]:
+    result = json_run(alarm_panel_command(mode), timeout=120)
+    return {
+        "ok": bool(result.get("ok")),
+        "mode": mode,
+        "partition": result.get("partition"),
+        "responseStatus": result.get("responseStatus"),
+        "returncode": result.get("returncode"),
+        "error": result.get("error"),
+        "stderr": result.get("stderr"),
+    }
+
+
 def garage_light_restore_started_state(started_state: dict[str, Any]) -> dict[str, Any]:
     if bool(started_state.get("on")):
         brightness = started_state.get("brightness")
@@ -728,6 +792,8 @@ class Handler(BaseHTTPRequestHandler):
     def route(self) -> tuple[int, dict[str, Any]]:
         if self.path == "/health":
             return 200, {"ok": True}
+        if self.path == "/status":
+            return 200, action_status()
         if self.path == "/action/run-check":
             payload = run_smart_home_check()
             return (200 if payload["ok"] else 500), payload
@@ -745,6 +811,15 @@ class Handler(BaseHTTPRequestHandler):
             return (202 if payload["ok"] else 500), payload
         if self.path == "/action/garage-activity":
             payload = trigger_garage_light_activity()
+            return (202 if payload["ok"] else 500), payload
+        if self.path == "/action/panel-home":
+            payload = set_alarm_panel("home")
+            return (202 if payload["ok"] else 500), payload
+        if self.path == "/action/panel-stay":
+            payload = set_alarm_panel("stay")
+            return (202 if payload["ok"] else 500), payload
+        if self.path == "/action/panel-off":
+            payload = set_alarm_panel("off")
             return (202 if payload["ok"] else 500), payload
         if self.path == "/action/restart-homebridge":
             payload = restart_homebridge()

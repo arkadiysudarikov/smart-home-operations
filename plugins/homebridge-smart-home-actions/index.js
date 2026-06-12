@@ -12,6 +12,9 @@ const DEFAULT_ACTIONS = [
   { id: "reconcile-energy", name: "Reconcile Energy", path: "/action/reconcile-energy", timeoutMs: 120000 },
   { id: "alarm-refresh", name: "Alarm Refresh", path: "/action/refresh-alarm-cache", timeoutMs: 120000 },
   { id: "garage-activity", name: "Garage Activity", path: "/action/garage-activity", timeoutMs: 120000 },
+  { id: "panel-home", name: "Panel Home", path: "/action/panel-home", timeoutMs: 120000 },
+  { id: "panel-stay", name: "Panel Stay", path: "/action/panel-stay", timeoutMs: 120000 },
+  { id: "panel-off", name: "Panel Off", path: "/action/panel-off", timeoutMs: 120000 },
 ];
 
 module.exports = (homebridge) => {
@@ -117,13 +120,46 @@ class SmartHomeActionsPlatform {
         method: action.method || "POST",
         signal: controller.signal,
       });
+      const body = await response.text().catch(() => "");
 
       if (!response.ok) {
-        const body = await response.text().catch(() => "");
         throw new Error(`HTTP ${response.status}${body ? `: ${body.slice(0, 200)}` : ""}`);
       }
+      this.log.info(`${action.name} completed${this.summarizeResponse(body)}`);
     } finally {
       clearTimeout(timer);
+    }
+  }
+
+  summarizeResponse(body) {
+    if (!body) {
+      return ".";
+    }
+    try {
+      const payload = JSON.parse(body);
+      const parts = [];
+      if (payload.finishedAt) {
+        parts.push(`finished ${payload.finishedAt}`);
+      }
+      if (payload.startedAt && !payload.finishedAt) {
+        parts.push(`started ${payload.startedAt}`);
+      }
+      if (payload.status) {
+        parts.push(`status ${payload.status}`);
+      }
+      if (payload.staleBefore !== undefined || payload.staleAfter !== undefined) {
+        parts.push(`stale ${payload.staleBefore ?? "?"}->${payload.staleAfter ?? "?"}`);
+      }
+      if (payload.coverageEnd) {
+        parts.push(`coverage through ${payload.coverageEnd}`);
+      }
+      if (payload.scheduled) {
+        parts.push("scheduled");
+      }
+      return parts.length ? ` (${parts.join(", ")}).` : ".";
+    } catch (error) {
+      const summary = body.trim().replace(/\s+/g, " ").slice(0, 160);
+      return summary ? `: ${summary}` : ".";
     }
   }
 }

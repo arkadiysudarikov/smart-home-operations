@@ -124,8 +124,12 @@ The API path supports either UtilityAPI JSON API credentials
 (`utilityapi_api_token` plus `utilityapi_meter_uids` or
 `utilityapi_authorization_uids`) or a direct SCE Green Button Connect
 `resource_url`/`access_token`. UtilityAPI imports default to an automatic moving
-end date so scheduled refreshes keep asking for the newest interval rows; each
-run writes downloaded file, row count, requested end, and returned coverage to
+end date so scheduled refreshes keep asking for the newest interval rows. When
+UtilityAPI returns intervals older than the local stale threshold, `Refresh SCE`
+automatically triggers a one-time UtilityAPI historical collection for the
+configured meter, waits briefly for it to finish, then refetches intervals. This
+does not enable UtilityAPI ongoing monitoring. Each run writes downloaded file,
+row count, requested end, returned coverage, and any collection attempt to
 `data/latest_sce_api.json`. Until one of those credential sets is configured,
 the status is written there as a registration-required fallback. `Reconcile
 Energy` runs a full local energy refresh: current snapshot, storage cleanup,
@@ -191,8 +195,12 @@ UtilityAPI or SCE Green Button Connect credentials are configured in
 `config/sce_green_button_connect.json` or equivalent environment variables:
 `UTILITYAPI_API_TOKEN`, `UTILITYAPI_METER_UIDS`,
 `UTILITYAPI_AUTHORIZATION_UIDS`, `UTILITYAPI_INTERVAL_START`,
-`UTILITYAPI_INTERVAL_END` (optional, defaults to `auto`), `SCE_GBC_RESOURCE_URL`, and
-`SCE_GBC_ACCESS_TOKEN`. Manual Green Button CSV/XML downloads placed in
+`UTILITYAPI_INTERVAL_END` (optional, defaults to `auto`),
+`UTILITYAPI_AUTO_HISTORICAL_COLLECTION` (optional, defaults to on),
+`UTILITYAPI_AUTO_COLLECTION_STALE_HOURS` (optional, defaults to `36`),
+`UTILITYAPI_HISTORICAL_COLLECTION_TIMEOUT_SECONDS` (optional, defaults to
+`600`), `UTILITYAPI_HISTORICAL_COLLECTION_POLL_SECONDS` (optional, defaults to
+`30`), `SCE_GBC_RESOURCE_URL`, and `SCE_GBC_ACCESS_TOKEN`. Manual Green Button CSV/XML downloads placed in
 `~/Downloads`, `~/Documents`, or iCloud Drive are still imported by the same
 pipeline.
 

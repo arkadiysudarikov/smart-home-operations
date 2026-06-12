@@ -7,6 +7,7 @@ import urllib.parse
 import urllib.error
 import urllib.request
 import csv
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -69,7 +70,30 @@ def configured_utilityapi() -> dict[str, Any]:
         "start": os.environ.get("UTILITYAPI_INTERVAL_START") or config.get("utilityapi_interval_start"),
         "end": resolve_interval_end(end),
         "base_url": os.environ.get("UTILITYAPI_BASE_URL") or config.get("utilityapi_base_url") or UTILITYAPI_BASE_URL,
+        "auto_historical_collection": parse_bool(
+            os.environ.get("UTILITYAPI_AUTO_HISTORICAL_COLLECTION")
+            if os.environ.get("UTILITYAPI_AUTO_HISTORICAL_COLLECTION") is not None
+            else config.get("utilityapi_auto_historical_collection", True)
+        ),
+        "stale_hours": float(
+            os.environ.get("UTILITYAPI_AUTO_COLLECTION_STALE_HOURS")
+            or config.get("utilityapi_auto_collection_stale_hours", 36)
+        ),
+        "collection_timeout_seconds": int(
+            os.environ.get("UTILITYAPI_HISTORICAL_COLLECTION_TIMEOUT_SECONDS")
+            or config.get("utilityapi_historical_collection_timeout_seconds", 600)
+        ),
+        "collection_poll_seconds": int(
+            os.environ.get("UTILITYAPI_HISTORICAL_COLLECTION_POLL_SECONDS")
+            or config.get("utilityapi_historical_collection_poll_seconds", 30)
+        ),
     }
+
+
+def parse_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() not in {"0", "false", "no", "off"}
 
 
 def resolve_interval_end(value: Any) -> str:
@@ -91,6 +115,39 @@ def api_get_json(url: str, api_token: str) -> dict[str, Any]:
     )
     with urllib.request.urlopen(request, timeout=120) as response:
         return json.loads(response.read().decode("utf-8"))
+
+
+def api_post_json(url: str, api_token: str, payload: dict[str, Any]) -> dict[str, Any]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+            "User-Agent": "SmartHomeMonitor/1.0",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=120) as response:
+        body = response.read().decode("utf-8")
+        return json.loads(body) if body else {}
+
+
+def parse_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def coverage_age_hours(coverage_end: str | None) -> float | None:
+    parsed = parse_datetime(coverage_end)
+    if parsed is None:
+        return None
+    return (datetime.now(timezone.utc).astimezone() - parsed.astimezone()).total_seconds() / 3600
 
 
 def paged_get(url: str, api_token: str, collection_key: str) -> tuple[list[dict[str, Any]], list[str]]:
@@ -235,7 +292,107 @@ def fetch_utilityapi_intervals(config: dict[str, Any]) -> dict[str, Any]:
         "coverageStart": coverage_start,
         "coverageEnd": coverage_end,
         "requestedEnd": config.get("end"),
+        "meters": meter_uids,
+        "authorizations": authorization_uids,
     }
+
+
+def utilityapi_meter_status(config: dict[str, Any], meter_uids: list[str]) -> list[dict[str, Any]]:
+    if not meter_uids:
+        return []
+    api_token = config["api_token"]
+    base_url = config["base_url"].rstrip("/")
+    url = f"{base_url}/meters?{urllib.parse.urlencode({'uids': ','.join(meter_uids)})}"
+    return api_get_json(url, api_token).get("meters") or []
+
+
+def trigger_historical_collection(config: dict[str, Any], meter_uids: list[str]) -> dict[str, Any]:
+    if not meter_uids:
+        return {"ok": False, "error": "no meter uids available for historical collection"}
+    api_token = config["api_token"]
+    base_url = config["base_url"].rstrip("/")
+    payload = api_post_json(f"{base_url}/meters/historical-collection", api_token, {"meters": meter_uids})
+    return {
+        "ok": bool(payload.get("success", True)),
+        "meters": meter_uids,
+        "collectionDuration": payload.get("collection_duration"),
+        "createdFreeCollection": payload.get("created_free_collection"),
+    }
+
+
+def wait_for_historical_collection(config: dict[str, Any], meter_uids: list[str]) -> dict[str, Any]:
+    timeout = max(0, int(config.get("collection_timeout_seconds") or 0))
+    poll_seconds = max(5, int(config.get("collection_poll_seconds") or 30))
+    deadline = time.monotonic() + timeout
+    polls: list[dict[str, Any]] = []
+    while True:
+        meters = utilityapi_meter_status(config, meter_uids)
+        statuses = [
+            {
+                "uid": str(meter.get("uid")),
+                "status": meter.get("status"),
+                "statusMessage": meter.get("status_message"),
+                "statusTs": meter.get("status_ts"),
+                "intervalCount": meter.get("interval_count"),
+                "intervalCoverage": meter.get("interval_coverage"),
+            }
+            for meter in meters
+        ]
+        polls.append({"at": now(), "meters": statuses})
+        if statuses and all(item.get("status") != "pending" for item in statuses):
+            return {"ok": True, "polls": polls[-8:]}
+        if time.monotonic() >= deadline:
+            return {"ok": False, "timedOut": True, "polls": polls[-8:]}
+        time.sleep(poll_seconds)
+
+
+def fetch_with_auto_historical_collection(config: dict[str, Any]) -> dict[str, Any]:
+    try:
+        result = fetch_utilityapi_intervals(config)
+    except NoUtilityApiIntervals:
+        if not config.get("auto_historical_collection") or not config.get("meter_uids"):
+            raise
+        collection = trigger_historical_collection(config, config["meter_uids"])
+        if not collection.get("ok"):
+            raise
+        wait_result = wait_for_historical_collection(config, config["meter_uids"])
+        if not wait_result.get("ok"):
+            raise
+        result = fetch_utilityapi_intervals(config)
+        result["historicalCollection"] = {
+            "triggered": True,
+            "triggeredAt": now(),
+            **collection,
+            "wait": wait_result,
+            "refetchedAt": now(),
+            "reason": "no_intervals",
+        }
+    age = coverage_age_hours(result.get("coverageEnd"))
+    result["coverageAgeHours"] = age
+    if not config.get("auto_historical_collection"):
+        return result
+    if age is not None and age < float(config.get("stale_hours") or 36):
+        return result
+    collection = trigger_historical_collection(config, result.get("meters") or [])
+    result["historicalCollection"] = {
+        "triggered": True,
+        "triggeredAt": now(),
+        **collection,
+    }
+    if not collection.get("ok"):
+        return result
+    wait_result = wait_for_historical_collection(config, result.get("meters") or [])
+    result["historicalCollection"]["wait"] = wait_result
+    if not wait_result.get("ok"):
+        return result
+    refreshed = fetch_utilityapi_intervals(config)
+    refreshed["coverageAgeHours"] = coverage_age_hours(refreshed.get("coverageEnd"))
+    refreshed["historicalCollection"] = result["historicalCollection"] | {
+        "refetchedAt": now(),
+        "previousCoverageEnd": result.get("coverageEnd"),
+        "previousIntervalRows": result.get("rowCount"),
+    }
+    return refreshed
 
 
 def suffix_for(content_type: str, url: str) -> str:
@@ -270,7 +427,7 @@ def main() -> int:
     utilityapi_config = configured_utilityapi()
     if utilityapi_config["api_token"]:
         try:
-            result = fetch_utilityapi_intervals(utilityapi_config)
+            result = fetch_with_auto_historical_collection(utilityapi_config)
         except urllib.error.HTTPError as exc:
             write_status(
                 {
@@ -291,7 +448,7 @@ def main() -> int:
                     "startedAt": started_at,
                     "finishedAt": now(),
                     "detail": str(exc),
-                    "requiredAction": "Trigger or wait for UtilityAPI historical collection for the configured SCE meter, then rerun Refresh SCE.",
+                    "requiredAction": "Refresh SCE will auto-trigger UtilityAPI historical collection when configured meter data is stale; otherwise trigger collection manually and rerun Refresh SCE.",
                 }
             )
             return 0
@@ -323,6 +480,8 @@ def main() -> int:
                 "coverageStart": result.get("coverageStart"),
                 "coverageEnd": result.get("coverageEnd"),
                 "requestedEnd": result.get("requestedEnd"),
+                "coverageAgeHours": result.get("coverageAgeHours"),
+                "autoHistoricalCollection": result.get("historicalCollection"),
             }
         )
         print(path)

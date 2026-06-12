@@ -210,7 +210,7 @@ def recommended_action(alert: dict[str, str]) -> str | None:
             return "Power-cycle the named Alarm.com camera(s), verify Wi-Fi/network connectivity, then recapture Alarm.com after the portal clears the camera trouble."
         return "Open Alarm.com Issues, resolve the listed trouble condition, then recapture Alarm.com."
     if title == "SCE interval data is stale":
-        return "Run Refresh SCE/UtilityAPI or import a fresh Green Button interval export, then rerun energy reconciliation."
+        return "Run Refresh SCE; with UtilityAPI configured, it auto-triggers one-time historical collection when returned intervals are still stale. If that fails, import a fresh Green Button export."
     if title in {"Alarm.com energy is stale", "Alarm.com energy totals disagree"}:
         return "Recapture Alarm.com energy and compare the updated Energy Clamp totals against Envoy and SCE in the combined report."
     if title == "Energy readings need reconciliation":
