@@ -22,6 +22,7 @@ COMBINED_ENERGY_PATH = DATA_DIR / "latest_combined_energy_monitor.json"
 ALARM_COM_PATH = DATA_DIR / "latest_alarm_com.json"
 LATEST_CHARACTERISTICS_PATH = DATA_DIR / "latest_characteristics.json"
 ALARM_STATE_COMPARISON_PATH = DATA_DIR / "latest_alarm_homebridge_state.json"
+ACTION_STATUS_URL = "http://127.0.0.1:18765/status"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 
 
@@ -58,6 +59,25 @@ def load_latest_characteristics() -> dict[str, Any]:
     try:
         data = json.loads(LATEST_CHARACTERISTICS_PATH.read_text())
     except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_alarm_state_comparison() -> dict[str, Any]:
+    if not ALARM_STATE_COMPARISON_PATH.exists():
+        return {}
+    try:
+        data = json.loads(ALARM_STATE_COMPARISON_PATH.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def load_action_status() -> dict[str, Any]:
+    try:
+        with urllib.request.urlopen(ACTION_STATUS_URL, timeout=3) as response:
+            data = json.loads(response.read().decode("utf-8"))
+    except Exception:
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -900,6 +920,16 @@ def active_state_titles(config: dict[str, Any], latest: dict[str, Any]) -> set[s
             states.add("Solar surplus")
 
     states.update(str(item) for item in load_combined_energy().get("states", []))
+    for source in load_combined_energy().get("sourceStatus", []):
+        if source.get("source") == "SCE" and source.get("status") == "fresh":
+            states.add("SCE fresh")
+
+    comparison = load_alarm_state_comparison()
+    if comparison and int(comparison.get("staleCount") or 0) == 0:
+        states.add("Alarm cache clean")
+
+    if load_action_status().get("ok") is True:
+        states.add("Actions online")
 
     return states
 

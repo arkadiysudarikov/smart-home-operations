@@ -140,6 +140,21 @@
         "alert_titles": ["Recent Homebridge warning volume is high"]
       },
       {
+        "id": "smart_home_actions_online",
+        "name": "Actions OK",
+        "state_titles": ["Actions online"]
+      },
+      {
+        "id": "smart_home_sce_fresh",
+        "name": "SCE OK",
+        "state_titles": ["SCE fresh"]
+      },
+      {
+        "id": "smart_home_alarm_cache_clean",
+        "name": "Alarm OK",
+        "state_titles": ["Alarm cache clean"]
+      },
+      {
         "id": "smart_home_grid_importing",
         "name": "Grid In",
         "state_titles": ["Grid importing"]
