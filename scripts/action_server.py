@@ -442,7 +442,7 @@ def sce_refresh_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        f'"{python_bin()}" ./scripts/refresh_energy.py',
+        f'"{python_bin()}" ./scripts/fetch_sce_green_button_connect.py && "{python_bin()}" ./scripts/refresh_energy.py --fast',
     ]
 
 
@@ -499,12 +499,39 @@ def write_sce_refresh_status(payload: dict[str, Any]) -> None:
     SCE_REFRESH_STATUS_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def latest_energy_refresh_status() -> dict[str, Any]:
+    payload = load_json_file(ENERGY_REFRESH_STATUS_PATH)
+    return payload if isinstance(payload, dict) else {}
+
+
+def latest_sce_api_status() -> dict[str, Any]:
+    payload = load_json_file(SCE_API_STATUS_PATH)
+    return payload if isinstance(payload, dict) else {}
+
+
+def energy_refresh_summary() -> dict[str, Any]:
+    latest = latest_energy_refresh_status()
+    return {
+        "energyRefresh": str(ENERGY_REFRESH_STATUS_PATH),
+        "energyRefreshOk": latest.get("ok"),
+        "energyRefreshStatus": latest.get("status"),
+        "energyRefreshMode": latest.get("mode"),
+        "energyRefreshRequiredFailures": latest.get("requiredFailures"),
+        "sceCoverageEnd": latest.get("sceCoverageEnd"),
+        "sceIntervalRows": latest.get("sceIntervalRows"),
+        "combinedEnergyGeneratedAt": latest.get("combinedEnergyGeneratedAt"),
+    }
+
+
 def run_sce_refresh_background(started_at: str) -> None:
     try:
         result = run(sce_refresh_command(), timeout=600)
+        latest = latest_energy_refresh_status()
+        sce_api = latest_sce_api_status()
+        ok = bool(result["ok"] and sce_api.get("ok"))
         write_sce_refresh_status(
             {
-                "ok": result["ok"],
+                "ok": ok,
                 "startedAt": started_at,
                 "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
                 "returncode": result["returncode"],
@@ -516,6 +543,10 @@ def run_sce_refresh_background(started_at: str) -> None:
                 "alerts": str(REPORT_DIR / "alerts.md"),
                 "stdout": result["stdout"],
                 "stderr": result["stderr"],
+                "sceApiOk": sce_api.get("ok"),
+                "sceApiStatus": sce_api.get("status"),
+                "sceApiFinishedAt": sce_api.get("finishedAt") or sce_api.get("generatedAt"),
+                **energy_refresh_summary(),
             }
         )
     finally:
@@ -540,9 +571,11 @@ def write_alarm_cache_refresh_status(payload: dict[str, Any]) -> None:
 def run_energy_reconcile_background(started_at: str) -> None:
     try:
         result = run(energy_reconcile_command(), timeout=900)
+        latest = latest_energy_refresh_status()
+        ok = bool(latest.get("ok")) if latest else result["ok"]
         write_energy_reconcile_status(
             {
-                "ok": result["ok"],
+                "ok": ok,
                 "startedAt": started_at,
                 "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
                 "returncode": result["returncode"],
@@ -559,6 +592,7 @@ def run_energy_reconcile_background(started_at: str) -> None:
                 "homekitVirtualSensors": str(REPORT_DIR / "homekit_virtual_sensors.md"),
                 "stdout": result["stdout"],
                 "stderr": result["stderr"],
+                **energy_refresh_summary(),
             }
         )
     finally:

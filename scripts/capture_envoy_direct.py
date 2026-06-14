@@ -5,6 +5,8 @@ import json
 import os
 import ssl
 import xml.etree.ElementTree as ET
+import base64
+import plistlib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -20,6 +22,7 @@ OUT_PATH = DATA_DIR / "latest_envoy_direct.json"
 TOKEN_CACHE_PATH = DATA_DIR / "envoy_token.json"
 HOMEBRIDGE_CONFIG_PATH = Path.home() / ".homebridge" / "config.json"
 ENLIGHTEN_BASE = "https://enlighten.enphaseenergy.com"
+ENLIGHTEN_PREFS_GLOB = "*/Data/Library/Preferences/com.enphaseenergy.MyEnlighten.plist"
 
 
 def now() -> str:
@@ -90,10 +93,41 @@ def configured_token(config: dict[str, Any]) -> tuple[str | None, str, dict[str,
     envoy = config.get("envoy") or {}
     if isinstance(envoy, dict) and envoy.get("token"):
         return str(envoy["token"]), "sources_config", {}
+    value, metadata = enlighten_site_data_token()
+    if value:
+        return value, "enlighten_site_data", metadata
     value, metadata = cached_token()
     if value:
         return value, "cache", metadata
     return None, "none", {}
+
+
+def enlighten_site_data_token() -> tuple[str | None, dict[str, Any]]:
+    containers = Path.home() / "Library" / "Containers"
+    for prefs_path in containers.glob(ENLIGHTEN_PREFS_GLOB):
+        try:
+            payload = plistlib.load(prefs_path.open("rb"))
+            encoded = payload.get("site_data")
+            if isinstance(encoded, bytes):
+                encoded = encoded.decode("utf-8")
+            if not isinstance(encoded, str):
+                continue
+            encoded = json.loads(encoded)
+            site_data = json.loads(urllib.parse.unquote(base64.b64decode(encoded).decode("utf-8")))
+        except Exception:
+            continue
+        for envoy in site_data.get("envoy") or []:
+            token_value = envoy.get("entrez_token")
+            if token_value:
+                return str(token_value), {
+                    "ok": True,
+                    "source": "enlighten_site_data",
+                    "serialNumber": envoy.get("serialNumber"),
+                    "partNumber": envoy.get("part_num"),
+                    "siteId": site_data.get("site_id"),
+                    "userId": site_data.get("user_id"),
+                }
+    return None, {}
 
 
 def homebridge_enphase_device() -> dict[str, Any]:
