@@ -24,6 +24,7 @@ SCE_API_STATUS_PATH = DATA_DIR / "latest_sce_api.json"
 ENERGY_RECONCILE_STATUS_PATH = DATA_DIR / "latest_energy_reconcile.json"
 GATE_TEST_STATUS_PATH = DATA_DIR / "latest_alarm_gate_test.json"
 ALARM_CACHE_REFRESH_STATUS_PATH = DATA_DIR / "latest_alarm_cache_refresh.json"
+UNIFI_OCCUPANCY_RECOVERY_STATUS_PATH = DATA_DIR / "latest_unifi_occupancy_recovery.json"
 GARAGE_LIGHT_HOLD_STATUS_PATH = DATA_DIR / "garage_light_hold.json"
 ACTION_STATUS_PATHS = {
     "check": DATA_DIR / "latest.json",
@@ -31,6 +32,7 @@ ACTION_STATUS_PATHS = {
     "sceApi": SCE_API_STATUS_PATH,
     "reconcileEnergy": ENERGY_RECONCILE_STATUS_PATH,
     "alarmRefresh": ALARM_CACHE_REFRESH_STATUS_PATH,
+    "unifiOccupancyRecovery": UNIFI_OCCUPANCY_RECOVERY_STATUS_PATH,
     "garageActivity": GARAGE_LIGHT_HOLD_STATUS_PATH,
 }
 SCE_REFRESH_LOCK = threading.Lock()
@@ -177,7 +179,7 @@ def monitor_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/smart_home_snapshot.py && ./scripts/maintain_storage.py && ./scripts/analyze_patterns.py && ./scripts/analyze_energy_pairing.py && ./scripts/analyze_all_energy_readings.py && ./scripts/capture_sense_trends.js && ./scripts/fetch_chargepoint_sessions.py && ./scripts/analyze_chargepoint_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py',
+        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/smart_home_snapshot.py && ./scripts/recover_unifi_occupancy.py && ./scripts/maintain_storage.py && ./scripts/analyze_patterns.py && ./scripts/analyze_energy_pairing.py && ./scripts/analyze_all_energy_readings.py && ./scripts/capture_sense_trends.js && ./scripts/fetch_chargepoint_sessions.py && ./scripts/analyze_chargepoint_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py',
     ]
 
 
@@ -193,7 +195,7 @@ def energy_reconcile_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/smart_home_snapshot.py && ./scripts/maintain_storage.py && ./scripts/analyze_patterns.py && ./scripts/analyze_energy_pairing.py && ./scripts/analyze_all_energy_readings.py && ./scripts/capture_sense_trends.js && ./scripts/fetch_chargepoint_sessions.py && ./scripts/analyze_chargepoint_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py && ./scripts/install_homekit_virtual_sensors.py',
+        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/smart_home_snapshot.py && ./scripts/recover_unifi_occupancy.py && ./scripts/maintain_storage.py && ./scripts/analyze_patterns.py && ./scripts/analyze_energy_pairing.py && ./scripts/analyze_all_energy_readings.py && ./scripts/capture_sense_trends.js && ./scripts/fetch_chargepoint_sessions.py && ./scripts/analyze_chargepoint_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py && ./scripts/install_homekit_virtual_sensors.py',
     ]
 
 

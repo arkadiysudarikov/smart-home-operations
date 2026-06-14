@@ -166,6 +166,52 @@ class GenerateAlertsTest(unittest.TestCase):
         titles = {item["title"] for item in alerts}
         self.assertIn("Alarm.com Homebridge cache is stale", titles)
 
+    def test_unifi_auth_alert_requires_unifi_401_line(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["recentWarnings"] = [
+            '[homebridge-unifi-occupancy] ERROR: Failed to load device fingerprints StatusCodeError: 502 - {"error":{"code":502,"message":"Bad Gateway"}}',
+            "[Sense Energy Meter] Error event on sense: Unexpected server response: 401.",
+        ]
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+        )
+        alerts = generate_alerts.build_alerts(base_config(), latest, [])
+        titles = {item["title"] for item in alerts}
+        self.assertNotIn("UniFi occupancy authentication is failing", titles)
+
+    def test_unifi_api_alert_handles_gateway_timeout_without_auth_label(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["recentWarnings"] = [
+            '[homebridge-unifi-occupancy] ERROR: Failed to load device fingerprints StatusCodeError: 504 - {"error":{"code":504,"message":"Gateway Timeout"}}',
+        ]
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+        )
+        alerts = generate_alerts.build_alerts(base_config(), latest, [])
+        titles = {item["title"] for item in alerts}
+        self.assertIn("UniFi occupancy API is failing", titles)
+        self.assertNotIn("UniFi occupancy authentication is failing", titles)
+
+    def test_unifi_auth_alert_takes_precedence_over_api_timeout(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["recentWarnings"] = [
+            "[homebridge-unifi-occupancy] ERROR: Failed to load clients: StatusCodeError: 401 - Unauthorized",
+            '[homebridge-unifi-occupancy] ERROR: Failed to load device fingerprints StatusCodeError: 504 - {"error":{"code":504,"message":"Gateway Timeout"}}',
+        ]
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+        )
+        alerts = generate_alerts.build_alerts(base_config(), latest, [])
+        titles = {item["title"] for item in alerts}
+        self.assertIn("UniFi occupancy authentication is failing", titles)
+        self.assertNotIn("UniFi occupancy API is failing", titles)
+
     def test_sideyard_gate_media_validation_alert_names_open_edge(self) -> None:
         alarm = alarm_com_payload(activity_ok=True)
         alarm["gateValidation"] = {

@@ -140,6 +140,24 @@ def warning_category(message: str) -> str:
     return "Other"
 
 
+def has_unifi_auth_warning(warnings: list[Any]) -> bool:
+    for warning in warnings:
+        text = str(warning)
+        if "[homebridge-unifi-occupancy]" in text and "401" in text:
+            return True
+    return False
+
+
+def has_unifi_api_warning(warnings: list[Any]) -> bool:
+    for warning in warnings:
+        text = str(warning).lower()
+        if "homebridge-unifi-occupancy" not in text:
+            continue
+        if any(token in text for token in ("502", "504", "gateway timeout", "bad gateway", "timeout", "etimedout")):
+            return True
+    return False
+
+
 def warning_trend(rows: list[sqlite3.Row]) -> dict[str, Any]:
     categories: Counter[str] = Counter()
     examples: dict[str, str] = {}
@@ -241,6 +259,8 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         return "Run the Homebridge permission hardening step and rerun the monitor to verify storage paths."
     if title == "UniFi occupancy authentication is failing":
         return "Refresh the UniFi occupancy credentials/session and verify the Homebridge UniFi plugin can load clients."
+    if title == "UniFi occupancy API is failing":
+        return "Check the UniFi Network application on the gateway. If the API recovers but occupancy stays stale, restart only the UniFi Occupancy child bridge."
     if title == "House load is high":
         return "Check the current large loads in Home/Envoy, then compare against Sense live load and ChargePoint charging state."
     if title == "Sense live websocket auth is noisy":
@@ -634,13 +654,22 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
             }
         )
 
-    recent_warnings = "\n".join(str(item) for item in logs.get("recentWarnings", []))
-    if "[homebridge-unifi-occupancy]" in recent_warnings and "401" in recent_warnings:
+    recent_warning_items = logs.get("recentWarnings", [])
+    recent_warnings = "\n".join(str(item) for item in recent_warning_items)
+    if has_unifi_auth_warning(recent_warning_items):
         alerts.append(
             {
                 "severity": "warning",
                 "title": "UniFi occupancy authentication is failing",
                 "detail": "Homebridge UniFi occupancy is receiving `401 Unauthorized` while loading clients.",
+            }
+        )
+    elif has_unifi_api_warning(recent_warning_items):
+        alerts.append(
+            {
+                "severity": "warning",
+                "title": "UniFi occupancy API is failing",
+                "detail": "Homebridge UniFi occupancy is receiving gateway/timeout errors from the UniFi Network API.",
             }
         )
 

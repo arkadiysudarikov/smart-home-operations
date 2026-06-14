@@ -244,7 +244,7 @@ def collect_log_signals(lines: list[str]) -> dict[str, Any]:
             except ValueError:
                 latest[key] = value
     unifi_status = {}
-    for match in re.findall(r'Accessory status unchanged: "([^"]+)" (active|inactive)', joined):
+    for match in re.findall(r'(?:Accessory status unchanged|Updated accessory status): "([^"]+)" (active|inactive)', joined):
         unifi_status[match[0]] = match[1]
     first_timestamp = next((m.group(1) for line in lines if (m := TS_RE.search(line))), None)
     latest_timestamp = next((m.group(1) for line in reversed(lines) if (m := TS_RE.search(line))), None)
@@ -277,7 +277,7 @@ def classify_home_event(component: str | None, message: str) -> str:
     text = f"{component or ''} {message}".lower()
     if WARNING_RE.search(text):
         return "warning"
-    if "accessory status changed" in text or "accessory status unchanged" in text:
+    if "accessory status changed" in text or "accessory status unchanged" in text or "updated accessory status" in text:
         return "occupancy"
     if "mqtt message received" in text or "current-state" in text or "environmental-current-sensor-data" in text:
         return "telemetry"

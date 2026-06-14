@@ -41,6 +41,12 @@
     "home_event_tail_limit": 500,
     "warning_lookback_lines": 6000
   },
+  "unifi_occupancy_recovery": {
+    "enabled": true,
+    "cooldown_minutes": 20,
+    "refresh_snapshot_after_restart": true,
+    "post_restart_snapshot_delay_seconds": 8
+  },
   "retention": {
     "snapshot_files_days": 2,
     "snapshot_db_days": 14,
@@ -122,7 +128,10 @@
       {
         "id": "smart_home_unifi_auth_failed",
         "name": "UniFi Auth",
-        "alert_titles": ["UniFi occupancy authentication is failing"]
+        "alert_titles": [
+          "UniFi occupancy authentication is failing",
+          "UniFi occupancy API is failing"
+        ]
       },
       {
         "id": "smart_home_office_tahoma_offline",
