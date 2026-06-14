@@ -158,6 +158,13 @@ def has_unifi_api_warning(warnings: list[Any]) -> bool:
     return False
 
 
+def has_sense_live_auth_warning(warnings: list[Any]) -> bool:
+    for warning in warnings:
+        if warning_category(str(warning)) == "Sense live websocket auth":
+            return True
+    return False
+
+
 def warning_trend(rows: list[sqlite3.Row]) -> dict[str, Any]:
     categories: Counter[str] = Counter()
     examples: dict[str, str] = {}
@@ -873,7 +880,7 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
     trend = warning_trend(warning_window)
     trend_counts = {item.get("category"): int(item.get("count") or 0) for item in trend.get("leaders") or []}
     sense_live_401_count = trend_counts.get("Sense live websocket auth", 0)
-    if sense_live_401_count >= int(config["alerts"].get("sense_live_401_warning_min", 3)):
+    if has_sense_live_auth_warning(recent_warning_items) and sense_live_401_count >= int(config["alerts"].get("sense_live_401_warning_min", 3)):
         alerts.append(
             {
                 "severity": "warning",

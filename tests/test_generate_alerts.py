@@ -108,6 +108,15 @@ def alarm_warning_row() -> dict[str, Any]:
     return {"raw_json": json.dumps(raw), "alarm_websocket": 0, "warning_count": 1}
 
 
+def sense_auth_warning_row() -> dict[str, Any]:
+    raw = {
+        "homebridge": {
+            "logs": {"recentWarnings": ["[Sense Energy Meter] Error event on sense: Unexpected server response: 401."]},
+        }
+    }
+    return {"raw_json": json.dumps(raw), "alarm_websocket": 1, "warning_count": 1}
+
+
 class GenerateAlertsTest(unittest.TestCase):
     def patch_module(self, **replacements: Any) -> None:
         self._restore = getattr(self, "_restore", {})
@@ -254,6 +263,24 @@ class GenerateAlertsTest(unittest.TestCase):
         alert = next(item for item in alerts if item["title"] == "Alarm.com trouble conditions active")
         self.assertIn("Video Device - Not Responding (Sideyard)", alert["detail"])
         self.assertIn("Power-cycle", generate_alerts.recommended_action(alert) or "")
+
+    def test_old_sense_live_auth_warnings_do_not_alert_when_current_snapshot_is_clean(self) -> None:
+        current = latest_snapshot()
+        current["homebridge"]["logs"]["recentWarnings"] = [
+            "[Security System] WebSocket token fetch returned 403, forcing re-authentication...",
+        ]
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+        )
+        alerts = generate_alerts.build_alerts(
+            base_config(),
+            current,
+            [sense_auth_warning_row(), sense_auth_warning_row(), sense_auth_warning_row()],
+        )
+        titles = {item["title"] for item in alerts}
+        self.assertNotIn("Sense live websocket auth is noisy", titles)
 
     def test_age_label_handles_alarm_com_utc_timestamps(self) -> None:
         self.assertEqual(
