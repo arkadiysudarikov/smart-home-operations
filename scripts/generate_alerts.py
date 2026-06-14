@@ -782,7 +782,15 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
         trouble_rows = trouble.get("rows") or []
         if trouble.get("ok") and trouble_rows:
             examples = ", ".join(
-                f"{item.get('description') or item.get('id')} ({item.get('emberDeviceId') or item.get('deviceId') or 'n/a'})"
+                " ".join(
+                    part
+                    for part in [
+                        str(item.get("description") or item.get("id")),
+                        f"({item.get('emberDeviceId') or item.get('deviceId') or 'n/a'})",
+                        f"mac={item.get('macAddress')}" if item.get("macAddress") else "",
+                    ]
+                    if part
+                )
                 for item in trouble_rows[:4]
             )
             alerts.append(

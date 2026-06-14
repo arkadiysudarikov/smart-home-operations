@@ -1370,6 +1370,8 @@ function buildAutomationRuleReview(payload) {
 
 function summarizeTroubleCondition(item) {
   const attrs = item.attributes || item;
+  const redirectUrl = String(attrs.extraData?.redirectUrl || attrs.redirectUrl || "");
+  const macAddress = /(?:[?&]macAddress=)([^&]+)/i.exec(redirectUrl)?.[1] || "";
   const detail = String(attrs.extraData?.description || attrs.description || "")
     .replace(/\s+/g, " ")
     .trim();
@@ -1378,6 +1380,8 @@ function summarizeTroubleCondition(item) {
     description: attrs.description || "",
     deviceId: attrs.deviceId ?? attrs.extraData?.deviceId ?? null,
     emberDeviceId: attrs.emberDeviceId || "",
+    macAddress,
+    redirectUrl,
     severity: attrs.severity ?? null,
     troubleConditionType: attrs.troubleConditionType ?? null,
     detail: detail.slice(0, 500),
@@ -1728,10 +1732,11 @@ function writeReport(root, payload) {
     lines.push("", "## Trouble Conditions", "");
     table(
       lines,
-      ["Issue", "Device ID", "Severity", "Detail"],
+      ["Issue", "Device ID", "MAC", "Severity", "Detail"],
       (payload.troubleConditions.rows || []).map((item) => [
         item.description || item.id,
         item.emberDeviceId || item.deviceId || "n/a",
+        item.macAddress || "n/a",
         item.severity ?? "n/a",
         item.detail || "",
       ])

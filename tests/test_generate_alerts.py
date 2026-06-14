@@ -251,6 +251,7 @@ class GenerateAlertsTest(unittest.TestCase):
                 {
                     "description": "Video Device - Not Responding (Sideyard)",
                     "emberDeviceId": "104430779-2052",
+                    "macAddress": "504074958A80",
                 }
             ],
         }
@@ -262,6 +263,7 @@ class GenerateAlertsTest(unittest.TestCase):
         alerts = generate_alerts.build_alerts(base_config(), latest_snapshot(), [])
         alert = next(item for item in alerts if item["title"] == "Alarm.com trouble conditions active")
         self.assertIn("Video Device - Not Responding (Sideyard)", alert["detail"])
+        self.assertIn("mac=504074958A80", alert["detail"])
         self.assertIn("Power-cycle", generate_alerts.recommended_action(alert) or "")
 
     def test_old_sense_live_auth_warnings_do_not_alert_when_current_snapshot_is_clean(self) -> None:
