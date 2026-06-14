@@ -18,6 +18,21 @@ const EXPECTED_VIDEO_RULES = [
   "Garage Door Video",
   "Sideyard Gate Video",
 ];
+const TRACKED_AUTOMATION_RULES = [
+  "Garage Door 2207 Opens - Garage Light 100%",
+  "Garage Door 2210 Opens - Garage Light 100%",
+  "Garage Door Contact Opens - Garage Light 100%",
+  "When Garage Door is Opened, then Turn Lights On",
+  "Panel Camera Alarm Image Uploads",
+  "Panel Camera Disarm Image Uploads",
+  "Peek-Ins & Manual Image Uploads",
+  "Fire Safety",
+  "Sensor Left Open Energy Saver",
+  "Smart Away",
+  "Smart Humidity Control",
+  "Weather Event - Energy Savings",
+  ...EXPECTED_VIDEO_RULES,
+];
 const STATE_NAMES = {
   partitions: { 0: "Unknown", 1: "Disarmed", 2: "Armed stay", 3: "Armed away", 4: "Armed night" },
   sensors: { 0: "Unknown", 1: "Closed", 2: "Open", 3: "Idle", 4: "Active", 5: "Dry", 6: "Wet" },
@@ -1181,19 +1196,7 @@ async function fetchRecordingRules(auth) {
     : Array.isArray(result.body?.value)
       ? result.body.value
       : [];
-  const rules = rawRules.map((rule) => {
-    const attrs = rule.attributes || rule;
-    return {
-      id: rule.id || attrs.id || attrs.editPageQueryParameters?.selectedDisplay || attrs.editPageQueryParameters?.SelectedDisplay || "",
-      name: attrs.name || "",
-      isPaused: Boolean(attrs.isPaused),
-      canBeEdited: attrs.canBeEdited,
-      canBePaused: attrs.canBePaused,
-      trigger: attrs.triggerCondition?.description || "",
-      action: attrs.action?.description || "",
-      timeframe: attrs.timeframe?.description || "",
-    };
-  });
+  const rules = rawRules.map(summarizeAutomationRule);
   const names = new Set(rules.map((rule) => rule.name));
   return {
     ok: result.ok,
@@ -1205,6 +1208,164 @@ async function fetchRecordingRules(auth) {
     pausedExpected: rules.filter((rule) => EXPECTED_VIDEO_RULES.includes(rule.name) && rule.isPaused).map((rule) => rule.name),
     rules,
   };
+}
+
+function cleanRuleText(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function automationRuleCategory(rule) {
+  if (rule.displayType === 8 || rule.id.startsWith("etr-")) {
+    return "Video";
+  }
+  if (/Garage Door .*Garage Light|Garage Light/.test(rule.name) || /Garage Light/.test(rule.action)) {
+    return "Garage Light";
+  }
+  if (/Panel Camera|Peek-In|Image Upload/i.test(rule.name)) {
+    return "Panel Camera";
+  }
+  if (/Thermostat|Energy|Humidity|Smart Away|Fire Safety/i.test(`${rule.name} ${rule.action}`)) {
+    return "Thermostat/Energy";
+  }
+  return "Automation";
+}
+
+function summarizeAutomationRule(rule) {
+  const attrs = rule.attributes || rule;
+  const query = attrs.editPageQueryParameters || {};
+  const summary = {
+    id: rule.id || attrs.id || query.selectedDisplay || query.SelectedDisplay || "",
+    name: cleanRuleText(attrs.name),
+    isPaused: Boolean(attrs.isPaused),
+    canBeEdited: attrs.canBeEdited,
+    canBePaused: attrs.canBePaused,
+    trigger: cleanRuleText(attrs.triggerCondition?.description),
+    action: cleanRuleText(attrs.action?.description),
+    timeframe: cleanRuleText(attrs.timeframe?.description),
+    followUpAction: cleanRuleText(attrs.followUpAction?.description) || null,
+    followUpTriggerCondition: cleanRuleText(attrs.followUpTriggerCondition?.description) || null,
+    toggleText: attrs.toggleText || null,
+    displayType: attrs.displayType ?? null,
+    editPage: attrs.editPage ?? null,
+    eventType: query.EventType || query.eventType || null,
+    warning: cleanRuleText(attrs.warningTextForRestrictedRule),
+    disabledTooltip: cleanRuleText(attrs.tooltipForDisabledEditAndToggle),
+  };
+  summary.category = automationRuleCategory(summary);
+  return summary;
+}
+
+async function fetchAutomationRules(auth) {
+  const url = `${BASE}/web/api/automation/rules/rules?filter%5Bsearch%5D=`;
+  const result = await fetchJson(url, auth, { referer: `${BASE}/web/system/automation/rules` });
+  const rawRules = Array.isArray(result.body?.data)
+    ? result.body.data
+    : Array.isArray(result.body?.value)
+      ? result.body.value
+      : [];
+  const rules = rawRules.map(summarizeAutomationRule);
+  const names = new Set(rules.map((rule) => rule.name));
+  const garageLightRules = rules.filter((rule) => rule.category === "Garage Light");
+  return {
+    ok: result.ok,
+    status: result.status,
+    checkedAt: new Date().toISOString(),
+    tracked: TRACKED_AUTOMATION_RULES,
+    ruleCount: rules.length,
+    missingTracked: TRACKED_AUTOMATION_RULES.filter((name) => !names.has(name)),
+    pausedTracked: rules.filter((rule) => TRACKED_AUTOMATION_RULES.includes(rule.name) && rule.isPaused).map((rule) => rule.name),
+    garageLightRules,
+    rules,
+  };
+}
+
+function buildAutomationRuleReview(payload) {
+  const rules = payload.automationRules?.rules || [];
+  const activity = payload.activity || {};
+  const byDescription = activity.byDescription || [];
+  const mediaHealth = activity.mediaTriggerHealth || {};
+  const ruleByName = new Map(rules.map((rule) => [rule.name, rule]));
+  const garageDirect = (payload.automationRules?.garageLightRules || []).filter((rule) => !rule.isPaused);
+  const garageDuplicate = ruleByName.get("When Garage Door is Opened, then Turn Lights On");
+  const sensorSaver = ruleByName.get("Sensor Left Open Energy Saver");
+  const garageVideo = ruleByName.get("Garage Door Video");
+  const sideyardVideo = ruleByName.get("Sideyard Gate Video");
+  const sideyardLightRule = rules.find(
+    (rule) =>
+      !rule.isPaused &&
+      /Sideyard Gate/i.test(rule.trigger || "") &&
+      /Turn ON Sideyard Light/i.test(rule.action || "")
+  );
+  const garageMediaCount = byDescription
+    .filter((item) => /Garage Door Video/i.test(item.name))
+    .reduce((sum, item) => sum + (Number(item.count) || 0), 0);
+  const gateCameraTrouble = (payload.troubleConditions?.rows || []).filter((item) =>
+    /Sideyard|Backyard/i.test(`${item.description || ""} ${item.detail || ""}`)
+  );
+
+  const rows = [];
+  rows.push({
+    area: "Garage light latency",
+    status: garageDirect.length >= 3 ? "covered" : "attention",
+    recommendation:
+      garageDirect.length >= 3
+        ? "Keep Alarm.com as the instant-on owner for garage-door open events; Home/Smart Home should only hold, restore, or turn off."
+        : "Add direct Alarm.com garage-door-open to Garage Light 100% rules before relying on Home app latency.",
+  });
+  if (garageDuplicate) {
+    rows.push({
+      area: "Garage duplicate",
+      status: garageDuplicate.isPaused ? "fixed" : "attention",
+      recommendation: garageDuplicate.isPaused
+        ? "Generic garage-open light rule is paused; the three named direct rules remain active."
+        : "Pause the generic garage-open light rule to avoid duplicated light commands.",
+    });
+  }
+  if (sensorSaver) {
+    const isNoop = /0°F.*0°F|Change target temp or mode/i.test(sensorSaver.action || "");
+    rows.push({
+      area: "Sensor Left Open Energy Saver",
+      status: sensorSaver.isPaused ? "fixed" : isNoop ? "attention" : "covered",
+      recommendation: sensorSaver.isPaused
+        ? "Paused because the active action was effectively a 0°F/0°F thermostat trim."
+        : isNoop
+          ? "Pause it or configure real heat/cool trims; as captured, it does not do useful work."
+          : "Configured with a nonzero thermostat action.",
+    });
+  }
+  rows.push({
+    area: "Garage lock unlock",
+    status: "candidate",
+    recommendation:
+      "Add Garage Lock unlocked -> Garage Light 100% in the Alarm.com rule wizard if the regular-rule builder exposes lock activity as a trigger.",
+  });
+  rows.push({
+    area: "Sideyard gate lighting",
+    status: sideyardLightRule ? "covered" : "candidate",
+    recommendation: sideyardLightRule
+      ? "Alarm.com now turns Sideyard Light on when Sideyard Gate opens, limited to after sunset with the captured follow-up off behavior."
+      : "Add Sideyard Gate opened -> Sideyard Light on for fast safety lighting; keep off/restore behavior outside Alarm.com unless a hold condition is explicit.",
+  });
+  if (garageVideo) {
+    rows.push({
+      area: "Garage Door Video",
+      status: garageMediaCount > 0 ? "covered" : "verify",
+      recommendation:
+        garageMediaCount > 0
+          ? "Recent activity includes Garage Door Video clips."
+          : "Rule is active but recent activity did not show Garage Door Video media; run a controlled open test before adding close-video rules.",
+    });
+  }
+  if (sideyardVideo) {
+    rows.push({
+      area: "Sideyard Gate Video",
+      status: gateCameraTrouble.length ? "blocked" : mediaHealth.latestValidationTargetTripAt ? "verify" : "covered",
+      recommendation: gateCameraTrouble.length
+        ? "Fix Sideyard/Backyard camera trouble before relying on gate video validation."
+        : "Close/open the gate once after the portal shows Closed to verify fresh Sideyard Gate video media.",
+    });
+  }
+  return rows;
 }
 
 function summarizeTroubleCondition(item) {
@@ -1481,6 +1642,9 @@ function writeTelemetryArtifacts(root, payload) {
   };
   writeJson(path.join(root, "data/alarm_com_devices.json"), devices);
   writeJson(path.join(root, "data/alarm_com_activity.json"), activity);
+  if (payload.automationRules?.ok) {
+    writeJson(path.join(root, "data/alarm_com_automation_rules.json"), payload.automationRules);
+  }
   if (payload.gateValidation) {
     writeJson(path.join(root, "data/alarm_com_gate_validation.json"), payload.gateValidation);
   }
@@ -1501,6 +1665,7 @@ function writeReport(root, payload) {
     `- Activity history capture: \`${
       payload.activity?.ok ? (payload.activity?.refreshOk === false ? "cached" : "ok") : "failed"
     }\``,
+    `- Automation rules: \`${payload.automationRules?.ok ? `${payload.automationRules.ruleCount} found` : "failed"}\``,
     `- Video recording rules: \`${payload.videoRules?.ok ? `${payload.videoRules.ruleCount} found` : "failed"}\``,
     `- Trouble conditions: \`${payload.troubleConditions?.ok ? `${payload.troubleConditions.count} found` : "failed"}\``,
     `- Websocket token check: \`${payload.websocketToken?.ok ? "ok" : "failed"}\``,
@@ -1518,6 +1683,34 @@ function writeReport(root, payload) {
     for (const item of alarmHardware) {
       lines.push(`- ${item.name}: ${item.purpose || "installed"}`);
     }
+  }
+  if (payload.automationRules?.ok) {
+    lines.push("", "## Automation Rules", "");
+    lines.push(`- Checked: \`${payload.automationRules.checkedAt}\``);
+    lines.push(`- Rules found: \`${payload.automationRules.ruleCount}\``);
+    lines.push(`- Missing tracked rules: \`${payload.automationRules.missingTracked.join(", ") || "none"}\``);
+    lines.push(`- Paused tracked rules: \`${payload.automationRules.pausedTracked.join(", ") || "none"}\``);
+    if ((payload.automationRules.garageLightRules || []).length) {
+      lines.push(`- Garage-light direct rules: \`${payload.automationRules.garageLightRules.length}\``);
+    }
+    table(
+      lines,
+      ["Rule", "Category", "Paused", "Trigger", "Action", "Timeframe"],
+      payload.automationRules.rules.map((rule) => [
+        rule.name,
+        rule.category,
+        rule.isPaused,
+        rule.trigger,
+        rule.action,
+        rule.timeframe,
+      ])
+    );
+    lines.push("", "### Automation Rule Review", "");
+    table(
+      lines,
+      ["Area", "Status", "Recommendation"],
+      buildAutomationRuleReview(payload).map((item) => [item.area, item.status, item.recommendation])
+    );
   }
   if (payload.videoRules?.ok) {
     lines.push("", "## Video Recording Rules", "");
@@ -1620,6 +1813,7 @@ async function main() {
     energy: { ok: false },
     alarmState: { ok: false },
     activity: { ok: false },
+    automationRules: { ok: false },
     videoRules: { ok: false },
     troubleConditions: { ok: false },
     websocketToken: { ok: false },
@@ -1651,6 +1845,11 @@ async function main() {
       payload.videoRules = await fetchRecordingRules(auth);
     } catch (error) {
       payload.errors.push(`Video recording rule capture failed: ${error.message || error}`);
+    }
+    try {
+      payload.automationRules = await fetchAutomationRules(auth);
+    } catch (error) {
+      payload.errors.push(`Automation rule capture failed: ${error.message || error}`);
     }
     try {
       payload.troubleConditions = await fetchTroubleConditions(auth);

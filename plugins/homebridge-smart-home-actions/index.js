@@ -9,6 +9,7 @@ const DEFAULT_ACTIONS = [
   { id: "office-restart", name: "Office Restart", path: "/action/restart-office-tahoma", timeoutMs: 5000 },
   { id: "mute-alerts", name: "Mute Alerts", path: "/action/silence-alerts", timeoutMs: 120000 },
   { id: "refresh-sce", name: "Refresh SCE", path: "/action/refresh-sce", timeoutMs: 120000 },
+  { id: "refresh-energy", name: "Refresh Energy", path: "/action/reconcile-energy", timeoutMs: 120000 },
   { id: "reconcile-energy", name: "Reconcile Energy", path: "/action/reconcile-energy", timeoutMs: 120000 },
   { id: "alarm-refresh", name: "Alarm Refresh", path: "/action/refresh-alarm-cache", timeoutMs: 120000 },
   { id: "garage-activity", name: "Garage Activity", path: "/action/garage-activity", timeoutMs: 120000 },

@@ -4,8 +4,19 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 function findSenseModule() {
+  const root = path.resolve(__dirname, "..");
+  const directCandidates = [
+    path.join(root, "node_modules", "sense-energy-node"),
+    path.join(root, "node_modules", "homebridge-sense-power-meter", "node_modules", "sense-energy-node"),
+  ];
+  for (const candidate of directCandidates) {
+    if (fs.existsSync(path.join(candidate, "index.js"))) {
+      return candidate;
+    }
+  }
   const local = path.join(os.homedir(), ".local");
   for (const nodeDir of fs.existsSync(local) ? fs.readdirSync(local).sort().reverse() : []) {
     const candidate = path.join(
@@ -17,17 +28,63 @@ function findSenseModule() {
       return candidate;
     }
   }
-  throw new Error("sense-energy-node dependency was not found under ~/.local");
+  throw new Error("sense-energy-node dependency was not found in repo node_modules or under ~/.local");
 }
 
 function loadSenseConfig() {
-  const configPath = path.join(os.homedir(), ".homebridge/config.json");
-  const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-  const accessory = (config.accessories || []).find((item) => item.accessory === "SensePowerMeter");
-  if (!accessory) {
-    throw new Error("SensePowerMeter accessory is not configured in Homebridge");
+  const root = path.resolve(__dirname, "..");
+  const localConfigPath = path.join(root, "config", "sense.json");
+  if (process.env.SENSE_USERNAME && process.env.SENSE_PASSWORD) {
+    return { username: process.env.SENSE_USERNAME, password: process.env.SENSE_PASSWORD };
   }
-  return accessory;
+  if (fs.existsSync(localConfigPath)) {
+    const config = JSON.parse(fs.readFileSync(localConfigPath, "utf8"));
+    const password = config.password || readKeychainPassword(config.password_keychain_service, config.password_keychain_account || config.username);
+    if (config.username && password) {
+      return { ...config, password };
+    }
+  }
+  const candidates = [
+    process.env.HOMEBRIDGE_CONFIG,
+    path.join(os.homedir(), ".homebridge/config.json"),
+  ].filter(Boolean);
+  for (const configPath of candidates) {
+    if (!fs.existsSync(configPath)) {
+      continue;
+    }
+    const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
+    const accessory = (config.accessories || []).find((item) => item.accessory === "SensePowerMeter");
+    if (accessory?.username && accessory?.password) {
+      return accessory;
+    }
+  }
+  const snapshotDir = path.join(root, "data", "snapshots");
+  const snapshots = fs.existsSync(snapshotDir)
+    ? fs.readdirSync(snapshotDir).filter((name) => name.endsWith(".json")).sort().reverse()
+    : [];
+  for (const snapshot of snapshots) {
+    const payload = JSON.parse(fs.readFileSync(path.join(snapshotDir, snapshot), "utf8"));
+    const config = payload?.homebridge?.config || {};
+    const accessory = (config.accessories || []).find((item) => item.accessory === "SensePowerMeter");
+    if (accessory?.username && accessory?.password) {
+      return accessory;
+    }
+  }
+  throw new Error("Sense credentials were not found in SENSE_USERNAME/SENSE_PASSWORD, config/sense.json, Homebridge config, or snapshots");
+}
+
+function readKeychainPassword(service, account) {
+  if (!service || !account) {
+    return null;
+  }
+  try {
+    return execFileSync("security", ["find-generic-password", "-a", account, "-s", service, "-w"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trimEnd();
+  } catch {
+    return null;
+  }
 }
 
 async function main() {

@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import json
+import html
 import os
 import re
 import signal
 import subprocess
+import sys
 import threading
 import time
 from datetime import datetime, timedelta, timezone
@@ -26,8 +28,10 @@ GATE_TEST_STATUS_PATH = DATA_DIR / "latest_alarm_gate_test.json"
 ALARM_CACHE_REFRESH_STATUS_PATH = DATA_DIR / "latest_alarm_cache_refresh.json"
 UNIFI_OCCUPANCY_RECOVERY_STATUS_PATH = DATA_DIR / "latest_unifi_occupancy_recovery.json"
 GARAGE_LIGHT_HOLD_STATUS_PATH = DATA_DIR / "garage_light_hold.json"
+ENERGY_REFRESH_STATUS_PATH = DATA_DIR / "latest_energy_refresh.json"
 ACTION_STATUS_PATHS = {
     "check": DATA_DIR / "latest.json",
+    "refreshEnergy": ENERGY_REFRESH_STATUS_PATH,
     "refreshSce": SCE_REFRESH_STATUS_PATH,
     "sceApi": SCE_API_STATUS_PATH,
     "reconcileEnergy": ENERGY_RECONCILE_STATUS_PATH,
@@ -45,7 +49,8 @@ GARAGE_LIGHT_HOLD_TIMER: threading.Timer | None = None
 GARAGE_LIGHT_ID = "104430779-1206"
 GARAGE_LIGHT_HOLD_SECONDS = 300
 GARAGE_LIGHT_CONTROLLER_BRIGHTNESS = 100
-NODE_BIN = Path.home() / ".local/node-v24.16.0-darwin-arm64/bin/node"
+NODE_BIN = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
+BUNDLED_PYTHON = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
 
 
 def load_config() -> dict[str, Any]:
@@ -63,6 +68,10 @@ def run(cmd: list[str], timeout: int = 45) -> dict[str, Any]:
         }
     except Exception as exc:
         return {"ok": False, "returncode": None, "stdout": "", "stderr": str(exc)}
+
+
+def python_bin() -> str:
+    return str(BUNDLED_PYTHON if BUNDLED_PYTHON.exists() else Path(sys.executable))
 
 
 def json_run(cmd: list[str], timeout: int = 45) -> dict[str, Any]:
@@ -101,7 +110,7 @@ def read_json_status(path: Path) -> dict[str, Any]:
         "path": str(path),
         "ok": payload.get("ok"),
         "startedAt": payload.get("startedAt") or payload.get("timestamp"),
-        "finishedAt": payload.get("finishedAt") or payload.get("generatedAt") or payload.get("captured_at"),
+        "finishedAt": payload.get("finishedAt") or payload.get("generatedAt") or payload.get("captured_at") or payload.get("capturedAt"),
         "returncode": payload.get("returncode"),
         "status": payload.get("status"),
         "error": payload.get("error"),
@@ -116,12 +125,229 @@ def read_json_status(path: Path) -> dict[str, Any]:
     return status
 
 
+def parse_status_dt(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    raw = value[:-1] + "+00:00" if value.endswith("Z") else value
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone()
+
+
+def source_age_hours(value: Any) -> float | None:
+    parsed = parse_status_dt(value)
+    if not parsed:
+        return None
+    return (datetime.now(timezone.utc).astimezone() - parsed).total_seconds() / 3600
+
+
+def operational_source_status() -> list[dict[str, Any]]:
+    sce = load_json_file(SCE_API_STATUS_PATH)
+    chargepoint = load_json_file(DATA_DIR / "latest_chargepoint_refresh.json")
+    alarm = load_json_file(ROOT / "config" / "alarm_energy_readings.json") or load_json_file(DATA_DIR / "latest_alarm_com.json")
+    sense_trends = load_json_file(DATA_DIR / "sense_trends_latest.json")
+    sense_now = load_json_file(DATA_DIR / "sense_now_latest.json")
+    envoy = load_json_file(DATA_DIR / "latest_envoy_direct.json")
+
+    cp_status = str(chargepoint.get("status") or "missing")
+    if chargepoint.get("ok") is True and cp_status in {"downloaded", "fresh_enough"}:
+        cp_row_status = "fresh"
+    elif cp_status:
+        cp_row_status = cp_status
+    else:
+        cp_row_status = "missing"
+
+    sense_capture = sense_now.get("capturedAt") or sense_trends.get("capturedAt")
+    sense_age = source_age_hours(sense_capture)
+    sense_row_status = "missing"
+    if sense_capture:
+        sense_row_status = "stale" if sense_age is not None and sense_age >= 24 else "fresh"
+
+    envoy_finished = envoy.get("finishedAt")
+    envoy_status = str(envoy.get("status") or "missing")
+    envoy_row_status = envoy_status if envoy_status in {"live", "auth_required", "reachable", "unreachable"} else ("missing" if not envoy.get("exists") else envoy_status)
+
+    return [
+        {
+            "source": "Envoy",
+            "status": envoy_row_status,
+            "ageHours": source_age_hours(envoy_finished),
+            "detail": f"{envoy.get('host') or 'n/a'} {envoy.get('serialNumber') or ''}".strip(),
+        },
+        {
+            "source": "Sense",
+            "status": sense_row_status,
+            "ageHours": sense_age,
+            "detail": sense_capture or "credentials missing or not captured",
+        },
+        {
+            "source": "SCE",
+            "status": "fresh" if sce.get("ok") and sce.get("coverageEnd") else ("missing" if not sce else "stale"),
+            "ageHours": source_age_hours(sce.get("coverageEnd")),
+            "detail": sce.get("coverageEnd"),
+        },
+        {
+            "source": "ChargePoint",
+            "status": cp_row_status,
+            "ageHours": source_age_hours(chargepoint.get("finishedAt")),
+            "detail": chargepoint.get("mode") or chargepoint.get("fallbackReason") or cp_status,
+        },
+        {
+            "source": "Alarm.com",
+            "status": "fresh" if alarm.get("capturedAtLocal") and (source_age_hours(alarm.get("capturedAtLocal")) or 999) < 24 else "stale",
+            "ageHours": source_age_hours(alarm.get("capturedAtLocal")),
+            "detail": alarm.get("capturedAtLocal"),
+        },
+    ]
+
+
 def action_status() -> dict[str, Any]:
     return {
         "ok": True,
         "generatedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
         "actions": {name: read_json_status(path) for name, path in ACTION_STATUS_PATHS.items()},
     }
+
+
+def energy_status() -> dict[str, Any]:
+    combined = read_json_status(DATA_DIR / "latest_combined_energy_monitor.json")
+    refresh = read_json_status(ENERGY_REFRESH_STATUS_PATH)
+    sce = read_json_status(SCE_API_STATUS_PATH)
+    chargepoint = read_json_status(DATA_DIR / "latest_chargepoint_refresh.json")
+    alarm = read_json_status(DATA_DIR / "latest_alarm_com.json")
+    alarm_energy = read_json_status(ROOT / "config" / "alarm_energy_readings.json")
+    sense = read_json_status(DATA_DIR / "sense_trends_latest.json")
+    sense_now = read_json_status(DATA_DIR / "sense_now_latest.json")
+    envoy = read_json_status(DATA_DIR / "latest_envoy_direct.json")
+    payload = {
+        "ok": True,
+        "generatedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "refresh": refresh,
+        "sce": sce,
+        "chargepoint": chargepoint,
+        "alarm": alarm,
+        "alarmEnergy": alarm_energy,
+        "sense": sense,
+        "senseNow": sense_now,
+        "envoy": envoy,
+        "combined": combined,
+        "operationalSourceStatus": operational_source_status(),
+    }
+    combined_payload = load_json_file(DATA_DIR / "latest_combined_energy_monitor.json")
+    if combined_payload:
+        payload["sourceStatus"] = combined_payload.get("sourceStatus", [])
+        payload["alerts"] = combined_payload.get("alerts", [])
+        payload["dailySummary"] = combined_payload.get("dailySummary", [])[-10:]
+    return payload
+
+
+def load_json_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def html_escape(value: Any) -> str:
+    return html.escape("" if value is None else str(value), quote=True)
+
+
+def render_energy_page() -> bytes:
+    status = energy_status()
+    sources = status.get("operationalSourceStatus") or status.get("sourceStatus") or []
+    alerts = status.get("alerts") or []
+    refresh = status.get("refresh") or {}
+    source_rows = "\n".join(
+        "<tr>"
+        f"<td>{html_escape(item.get('source'))}</td>"
+        f"<td><span class='pill {html_escape(item.get('status'))}'>{html_escape(item.get('status'))}</span></td>"
+        f"<td>{html_escape(item.get('detail'))}</td>"
+        f"<td>{html_escape(round(float(item.get('ageHours')), 2) if isinstance(item.get('ageHours'), (int, float)) else item.get('ageDays'))}</td>"
+        "</tr>"
+        for item in sources
+    )
+    alert_rows = "\n".join(
+        f"<li><strong>{html_escape(item.get('severity'))}</strong> {html_escape(item.get('title'))}: {html_escape(item.get('detail'))}</li>"
+        for item in alerts
+    ) or "<li>No combined-energy alerts.</li>"
+    body = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Smart Home Energy</title>
+  <style>
+    body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 32px; color: #1f2933; }}
+    h1 {{ font-size: 28px; margin-bottom: 4px; }}
+    .muted {{ color: #64748b; }}
+    .actions {{ display: flex; gap: 12px; flex-wrap: wrap; margin: 24px 0; }}
+    button {{ border: 1px solid #0f766e; background: #0f766e; color: white; border-radius: 6px; padding: 10px 14px; font-size: 14px; cursor: pointer; }}
+    button.secondary {{ background: white; color: #0f766e; }}
+    table {{ border-collapse: collapse; width: 100%; margin-top: 12px; }}
+    th, td {{ border-bottom: 1px solid #e2e8f0; text-align: left; padding: 10px 8px; vertical-align: top; }}
+    th {{ font-size: 12px; text-transform: uppercase; color: #64748b; }}
+    .pill {{ border-radius: 999px; padding: 3px 8px; background: #e2e8f0; }}
+    .pill.fresh, .pill.complete {{ background: #dcfce7; color: #166534; }}
+    .pill.stale, .pill.failed, .pill.missing, .pill.auth_required, .pill.unreachable {{ background: #fee2e2; color: #991b1b; }}
+    .pill.downloaded, .pill.fallback, .pill.reachable {{ background: #fef3c7; color: #92400e; }}
+    .panel {{ margin-top: 24px; }}
+    code {{ background: #f1f5f9; padding: 2px 4px; border-radius: 4px; }}
+  </style>
+</head>
+<body>
+  <h1>Smart Home Energy</h1>
+  <div class="muted">Generated {html_escape(status.get('generatedAt'))}</div>
+  <div class="panel">
+    <strong>Last refresh:</strong>
+    <span class="pill {html_escape(refresh.get('status'))}">{html_escape(refresh.get('status') or 'unknown')}</span>
+    <span class="muted">finished {html_escape(refresh.get('finishedAt'))}</span>
+  </div>
+  <div class="actions">
+    <button data-action="/action/reconcile-energy">Refresh All Energy</button>
+    <button class="secondary" data-action="/action/refresh-sce">Refresh SCE</button>
+    <button class="secondary" data-action="/action/refresh-alarm-cache">Refresh Alarm.com</button>
+  </div>
+  <div id="result" class="muted"></div>
+  <div class="panel">
+    <h2>Source Status</h2>
+    <table>
+      <thead><tr><th>Source</th><th>Status</th><th>Detail</th><th>Age</th></tr></thead>
+      <tbody>{source_rows}</tbody>
+    </table>
+  </div>
+  <div class="panel">
+    <h2>Alerts</h2>
+    <ul>{alert_rows}</ul>
+  </div>
+  <p class="muted">JSON: <code>/status/energy</code></p>
+  <script>
+    document.querySelectorAll('button[data-action]').forEach((button) => {{
+      button.addEventListener('click', async () => {{
+        button.disabled = true;
+        document.getElementById('result').textContent = 'Requesting ' + button.textContent + '...';
+        try {{
+          const response = await fetch(button.dataset.action, {{ method: 'POST' }});
+          const payload = await response.json();
+          document.getElementById('result').textContent = JSON.stringify(payload, null, 2);
+        }} catch (error) {{
+          document.getElementById('result').textContent = String(error);
+        }} finally {{
+          button.disabled = false;
+        }}
+      }});
+    }});
+  </script>
+</body>
+</html>
+"""
+    return body.encode()
 
 
 def ps_rows() -> list[tuple[int, int, str]]:
@@ -179,7 +405,7 @@ def monitor_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/smart_home_snapshot.py && ./scripts/recover_unifi_occupancy.py && ./scripts/maintain_storage.py && ./scripts/analyze_patterns.py && ./scripts/analyze_energy_pairing.py && ./scripts/analyze_all_energy_readings.py && ./scripts/capture_sense_trends.js && ./scripts/fetch_chargepoint_sessions.py && ./scripts/analyze_chargepoint_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py',
+        f'"{python_bin()}" ./scripts/refresh_energy.py',
     ]
 
 
@@ -187,7 +413,7 @@ def sce_refresh_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/fetch_sce_green_button_connect.py && "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3" ./scripts/extract_sce_bills.py && ./scripts/analyze_all_energy_readings.py && ./scripts/capture_sense_trends.js && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py',
+        f'"{python_bin()}" ./scripts/refresh_energy.py',
     ]
 
 
@@ -195,7 +421,7 @@ def energy_reconcile_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/smart_home_snapshot.py && ./scripts/recover_unifi_occupancy.py && ./scripts/maintain_storage.py && ./scripts/analyze_patterns.py && ./scripts/analyze_energy_pairing.py && ./scripts/analyze_all_energy_readings.py && ./scripts/capture_sense_trends.js && ./scripts/fetch_chargepoint_sessions.py && ./scripts/analyze_chargepoint_pairing.py && ./scripts/analyze_meter_reconciliation.py && ./scripts/analyze_bill_home_pairing.py && ./scripts/analyze_energy_costs.py && ./scripts/analyze_combined_energy_monitor.py && ./scripts/generate_alerts.py && ./scripts/install_homekit_virtual_sensors.py',
+        f'"{python_bin()}" ./scripts/refresh_energy.py',
     ]
 
 
@@ -791,11 +1017,20 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_html(self, status: int, body: bytes) -> None:
+        self.send_response(status)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def route(self) -> tuple[int, dict[str, Any]]:
         if self.path == "/health":
             return 200, {"ok": True}
         if self.path == "/status":
             return 200, action_status()
+        if self.path == "/status/energy":
+            return 200, energy_status()
         if self.path == "/action/run-check":
             payload = run_smart_home_check()
             return (200 if payload["ok"] else 500), payload
@@ -835,6 +1070,9 @@ class Handler(BaseHTTPRequestHandler):
         return 404, {"ok": False, "error": "unknown endpoint"}
 
     def do_GET(self) -> None:
+        if self.path in {"/", "/energy"}:
+            self.send_html(200, render_energy_page())
+            return
         status, payload = self.route()
         self.send_json(status, payload)
 

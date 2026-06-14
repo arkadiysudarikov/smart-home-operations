@@ -763,6 +763,8 @@ def main() -> int:
         else:
             raise RuntimeError(f"Unsupported ChargePoint mode: {mode}")
     except ChargePointConfigMissing as exc:
+        if try_csv_fallback(started_at, config, f"registration_required: {exc}"):
+            return 0
         write_status(
             {
                 "ok": None,

@@ -155,6 +155,7 @@ The monitor writes:
 - `data/latest_events.json`
 - `data/latest_characteristics.json`
 - `data/latest_alarm_com.json`
+- `data/alarm_com_automation_rules.json`
 - `data/latest_alarm_homebridge_state.json`
 - `data/latest_chargepoint_refresh.json`
 - `data/alarm_com_devices.json`
