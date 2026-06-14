@@ -152,6 +152,7 @@ def operational_source_status() -> list[dict[str, Any]]:
     sense_trends = load_json_file(DATA_DIR / "sense_trends_latest.json")
     sense_now = load_json_file(DATA_DIR / "sense_now_latest.json")
     envoy = load_json_file(DATA_DIR / "latest_envoy_direct.json")
+    refresh = load_json_file(ENERGY_REFRESH_STATUS_PATH)
 
     cp_status = str(chargepoint.get("status") or "missing")
     if chargepoint.get("ok") is True and cp_status in {"downloaded", "fresh_enough"}:
@@ -164,8 +165,18 @@ def operational_source_status() -> list[dict[str, Any]]:
     sense_capture = sense_now.get("capturedAt") or sense_trends.get("capturedAt")
     sense_age = source_age_hours(sense_capture)
     sense_row_status = "missing"
+    sense_detail = sense_capture or "credentials missing or not captured"
     if sense_capture:
         sense_row_status = "stale" if sense_age is not None and sense_age >= 24 else "fresh"
+    for step in refresh.get("steps") or []:
+        if step.get("name") == "capture_sense_now" and not step.get("ok"):
+            stderr = str(step.get("stderr") or "")
+            if "credentials were not found" in stderr:
+                sense_row_status = "credentials_missing"
+                sense_detail = "SENSE_USERNAME/SENSE_PASSWORD or config/sense.json Keychain entry required"
+            else:
+                sense_row_status = "failed"
+                sense_detail = stderr.splitlines()[-1] if stderr else "Sense realtime capture failed"
 
     envoy_finished = envoy.get("finishedAt")
     envoy_status = str(envoy.get("status") or "missing")
@@ -182,7 +193,7 @@ def operational_source_status() -> list[dict[str, Any]]:
             "source": "Sense",
             "status": sense_row_status,
             "ageHours": sense_age,
-            "detail": sense_capture or "credentials missing or not captured",
+            "detail": sense_detail,
         },
         {
             "source": "SCE",
@@ -295,7 +306,7 @@ def render_energy_page() -> bytes:
     th {{ font-size: 12px; text-transform: uppercase; color: #64748b; }}
     .pill {{ border-radius: 999px; padding: 3px 8px; background: #e2e8f0; }}
     .pill.fresh, .pill.complete {{ background: #dcfce7; color: #166534; }}
-    .pill.stale, .pill.failed, .pill.missing, .pill.auth_required, .pill.unreachable {{ background: #fee2e2; color: #991b1b; }}
+    .pill.stale, .pill.failed, .pill.missing, .pill.auth_required, .pill.unreachable, .pill.credentials_missing {{ background: #fee2e2; color: #991b1b; }}
     .pill.downloaded, .pill.fallback, .pill.reachable {{ background: #fef3c7; color: #92400e; }}
     .panel {{ margin-top: 24px; }}
     code {{ background: #f1f5f9; padding: 2px 4px; border-radius: 4px; }}

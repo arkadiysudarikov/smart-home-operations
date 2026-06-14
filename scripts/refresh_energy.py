@@ -128,6 +128,7 @@ def main() -> int:
             ("snapshot", [py, "scripts/smart_home_snapshot.py"], 120, True, False),
             ("fetch_sce", [py, "scripts/fetch_sce_green_button_connect.py"], 600, False, False),
             ("capture_envoy_direct", [py, "scripts/capture_envoy_direct.py"], 60, True, False),
+            ("capture_sense_now", "scripts/capture_sense_now.js", 120, True, True),
             ("capture_alarm_com", "scripts/capture_alarm_com.js", 300, True, True),
             ("fetch_chargepoint", [py, "scripts/fetch_chargepoint_sessions.py"], 300, True, False),
             ("generate_alerts", [py, "scripts/generate_alerts.py"], 300, True, False),
