@@ -119,7 +119,25 @@ def read_json_status(path: Path) -> dict[str, Any]:
         launchd = payload["homebridge"].get("launchd")
         if isinstance(launchd, dict) and "ok" in launchd:
             status["ok"] = bool(launchd["ok"])
-    for key in ("staleBefore", "staleAfter", "coverageStart", "coverageEnd", "requestedEnd", "intervalRows", "file"):
+    passthrough_keys = (
+        "staleBefore",
+        "staleAfter",
+        "coverageStart",
+        "coverageEnd",
+        "requestedEnd",
+        "intervalRows",
+        "file",
+        "mode",
+        "currentStep",
+        "requiredFailures",
+        "sceCoverageEnd",
+        "sceIntervalRows",
+        "combinedEnergyGeneratedAt",
+        "combinedEnergy",
+        "energyCosts",
+        "alerts",
+    )
+    for key in passthrough_keys:
         if key in payload:
             status[key] = payload[key]
     return status
