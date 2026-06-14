@@ -21,6 +21,16 @@ DATA_DIR = ROOT / "data"
 SNAPSHOT_DIR = DATA_DIR / "snapshots"
 REPORT_DIR = ROOT / "reports"
 DB_PATH = DATA_DIR / "smart_home.sqlite"
+SOURCE_ROOT = Path.home() / "Documents" / "Smart Home"
+RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor"
+DRIFT_CHECK_FILES = [
+    "scripts/capture_alarm_com.js",
+    "scripts/action_server.py",
+    "scripts/smart_home_snapshot.py",
+    "scripts/refresh_energy.py",
+    "scripts/generate_alerts.py",
+    "scripts/install_monitor.sh",
+]
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -73,6 +83,67 @@ def read_json(path: Path) -> Any:
         return json.loads(path.read_text())
     except Exception:
         return None
+
+
+def file_sha256(path: Path) -> str | None:
+    try:
+        digest = hashlib.sha256()
+        with path.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+    except Exception:
+        return None
+
+
+def collect_runtime_drift() -> dict[str, Any]:
+    if SOURCE_ROOT.resolve() == RUNTIME_ROOT.resolve():
+        return {
+            "status": "same-root",
+            "ok": True,
+            "sourceRoot": str(SOURCE_ROOT),
+            "runtimeRoot": str(RUNTIME_ROOT),
+            "files": [],
+            "driftedFiles": [],
+            "missingFiles": [],
+        }
+
+    files: list[dict[str, Any]] = []
+    drifted: list[str] = []
+    missing: list[str] = []
+    for relative in DRIFT_CHECK_FILES:
+        source_path = SOURCE_ROOT / relative
+        runtime_path = RUNTIME_ROOT / relative
+        source_hash = file_sha256(source_path)
+        runtime_hash = file_sha256(runtime_path)
+        item = {
+            "path": relative,
+            "sourcePresent": source_hash is not None,
+            "runtimePresent": runtime_hash is not None,
+            "sourceHash": source_hash[:12] if source_hash else None,
+            "runtimeHash": runtime_hash[:12] if runtime_hash else None,
+            "match": bool(source_hash and runtime_hash and source_hash == runtime_hash),
+        }
+        if not source_hash or not runtime_hash:
+            item["status"] = "missing"
+            missing.append(relative)
+        elif source_hash != runtime_hash:
+            item["status"] = "drift"
+            drifted.append(relative)
+        else:
+            item["status"] = "ok"
+        files.append(item)
+
+    status = "drift" if drifted else "missing" if missing else "ok"
+    return {
+        "status": status,
+        "ok": status == "ok",
+        "sourceRoot": str(SOURCE_ROOT),
+        "runtimeRoot": str(RUNTIME_ROOT),
+        "files": files,
+        "driftedFiles": drifted,
+        "missingFiles": missing,
+    }
 
 
 def sanitize_homebridge_config(config: dict[str, Any] | None) -> dict[str, Any]:
@@ -517,6 +588,7 @@ def write_report(snapshot: dict[str, Any], snapshot_path: Path) -> None:
     apps = snapshot["apps"]
     active = logs.get("unifiOccupancy", {}).get("active", [])
     permissions = hb.get("security", {}).get("homebridgePermissions", {})
+    runtime_drift = snapshot.get("runtimeDrift", {})
     alarm_platform = next(
         (
             item
@@ -613,6 +685,18 @@ def write_report(snapshot: dict[str, Any], snapshot_path: Path) -> None:
         lines.extend(f"- `{line[-220:]}`" for line in warnings[-12:])
     else:
         lines.append("- No warning lines found in the sampled log window.")
+    lines.extend(["", "## Runtime Drift", ""])
+    lines.append(f"- Status: `{runtime_drift.get('status', 'unknown')}`")
+    lines.append(f"- Source root: `{runtime_drift.get('sourceRoot')}`")
+    lines.append(f"- Runtime root: `{runtime_drift.get('runtimeRoot')}`")
+    drifted_files = runtime_drift.get("driftedFiles") or []
+    missing_files = runtime_drift.get("missingFiles") or []
+    if drifted_files:
+        lines.append(f"- Drifted files: `{', '.join(drifted_files)}`")
+    if missing_files:
+        lines.append(f"- Missing files: `{', '.join(missing_files)}`")
+    if not drifted_files and not missing_files:
+        lines.append("- Runtime scripts match the source checkout for monitored files.")
     insecure_paths = permissions.get("insecurePaths", [])
     lines.extend(["", "## Security Hygiene", ""])
     if insecure_paths:
@@ -660,6 +744,7 @@ def main() -> int:
             "characteristicChanges": characteristic_changes,
             "newEventsStored": 0,
         },
+        "runtimeDrift": collect_runtime_drift(),
         "sourceConfig": config,
     }
     snapshot_path = save_snapshot(snapshot)
