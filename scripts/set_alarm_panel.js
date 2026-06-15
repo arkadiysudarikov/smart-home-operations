@@ -5,6 +5,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+const ROOT = path.resolve(__dirname, "..");
+const RUNTIME_ROOT = path.join(os.homedir(), "Library/Application Support/SmartHomeMonitor");
+
+function runningFromRuntimeRoot() {
+  return path.resolve(ROOT) === path.resolve(RUNTIME_ROOT);
+}
+
 function findAlarmModule() {
   const local = path.join(os.homedir(), ".local");
   for (const nodeDir of fs.existsSync(local) ? fs.readdirSync(local).sort().reverse() : []) {
@@ -36,13 +43,15 @@ function loadAlarmConfig() {
 }
 
 function parseArgs(argv) {
-  const args = { mode: null, partitionId: null };
+  const args = { mode: null, partitionId: null, forceOutsideRuntime: false };
   for (let index = 2; index < argv.length; index += 1) {
     const item = argv[index];
     if (item === "--mode") {
       args.mode = argv[++index];
     } else if (item === "--partition-id") {
       args.partitionId = argv[++index];
+    } else if (item === "--force-outside-runtime") {
+      args.forceOutsideRuntime = true;
     } else {
       throw new Error(`unknown argument: ${item}`);
     }
@@ -77,6 +86,11 @@ function summarizePartition(partition) {
 
 async function main() {
   const args = parseArgs(process.argv);
+  if (!args.forceOutsideRuntime && !runningFromRuntimeRoot()) {
+    throw new Error(
+      `refusing to send live Alarm.com panel command outside the runtime root: ${ROOT} != ${RUNTIME_ROOT}`
+    );
+  }
   const alarm = require(findAlarmModule());
   const config = loadAlarmConfig();
   const auth = await alarm.login(config.username, config.password, config.mfaCookie);

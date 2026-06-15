@@ -5,6 +5,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+const ROOT = path.resolve(__dirname, "..");
+const RUNTIME_ROOT = path.join(os.homedir(), "Library/Application Support/SmartHomeMonitor");
+
+function runningFromRuntimeRoot() {
+  return path.resolve(ROOT) === path.resolve(RUNTIME_ROOT);
+}
+
 function findAlarmModule() {
   const local = path.join(os.homedir(), ".local");
   for (const nodeDir of fs.existsSync(local) ? fs.readdirSync(local).sort().reverse() : []) {
@@ -36,7 +43,7 @@ function loadAlarmConfig() {
 }
 
 function parseArgs(argv) {
-  const args = { command: "status", lightId: "104430779-1206", brightness: 100 };
+  const args = { command: "status", lightId: "104430779-1206", brightness: 100, forceOutsideRuntime: false };
   for (let index = 2; index < argv.length; index += 1) {
     const item = argv[index];
     if (item === "--status") {
@@ -49,6 +56,8 @@ function parseArgs(argv) {
       args.lightId = argv[++index];
     } else if (item === "--brightness") {
       args.brightness = Number(argv[++index]);
+    } else if (item === "--force-outside-runtime") {
+      args.forceOutsideRuntime = true;
     } else {
       throw new Error(`unknown argument: ${item}`);
     }
@@ -75,6 +84,11 @@ function summarizeLight(light) {
 
 async function main() {
   const args = parseArgs(process.argv);
+  if (!args.forceOutsideRuntime && !runningFromRuntimeRoot()) {
+    throw new Error(
+      `refusing to send live Alarm.com light command outside the runtime root: ${ROOT} != ${RUNTIME_ROOT}`
+    );
+  }
   const alarm = require(findAlarmModule());
   const config = loadAlarmConfig();
   const auth = await alarm.login(config.username, config.password, config.mfaCookie);

@@ -102,6 +102,52 @@ class ActionServerTest(unittest.TestCase):
 
         schedule_check.assert_called_once()
 
+    def test_send_json_ignores_client_disconnect(self) -> None:
+        class BrokenWriter:
+            def write(self, body: bytes) -> None:
+                raise BrokenPipeError()
+
+        class FakeHandler:
+            wfile = BrokenWriter()
+
+            def send_response(self, status: int) -> None:
+                self.status = status
+
+            def send_header(self, name: str, value: str) -> None:
+                return None
+
+            def end_headers(self) -> None:
+                return None
+
+        handler = FakeHandler()
+
+        action_server.Handler.send_json(handler, 200, {"ok": True})
+
+        self.assertEqual(handler.status, 200)
+
+    def test_send_html_ignores_client_disconnect(self) -> None:
+        class BrokenWriter:
+            def write(self, body: bytes) -> None:
+                raise ConnectionResetError()
+
+        class FakeHandler:
+            wfile = BrokenWriter()
+
+            def send_response(self, status: int) -> None:
+                self.status = status
+
+            def send_header(self, name: str, value: str) -> None:
+                return None
+
+            def end_headers(self) -> None:
+                return None
+
+        handler = FakeHandler()
+
+        action_server.Handler.send_html(handler, 200, b"ok")
+
+        self.assertEqual(handler.status, 200)
+
 
 if __name__ == "__main__":
     unittest.main()
