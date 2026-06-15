@@ -115,13 +115,20 @@ def file_fingerprint(path: Path) -> str:
     return digest.hexdigest()
 
 
-def discover_sce_files(extra_files: list[Path]) -> list[Path]:
-    roots = {
-        DATA_DIR: None,
-        Path.home() / "Downloads": 2,
-        Path.home() / "Documents": 3,
-        Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs": 4,
-    }
+def external_file_scan_enabled() -> bool:
+    return os.environ.get("SMART_HOME_SCAN_EXTERNAL_FILES", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def discover_sce_files(extra_files: list[Path], *, scan_external: bool = False) -> list[Path]:
+    roots: dict[Path, int | None] = {DATA_DIR: None}
+    if scan_external:
+        roots.update(
+            {
+                Path.home() / "Downloads": 2,
+                Path.home() / "Documents": 3,
+                Path.home() / "Library" / "Mobile Documents" / "com~apple~CloudDocs": 4,
+            }
+        )
     skip_dirs = {
         ".cache",
         ".git",
@@ -600,7 +607,7 @@ def write_outputs(
             "1. Sign in to SCE My Account.",
             "2. Open `Data Sharing & Download`.",
             "3. Choose the service account, select the last 12 months, and download CSV or XML Green Button data.",
-            "4. Put the file in `~/Downloads`, `~/Documents`, or iCloud Drive and rerun `./scripts/analyze_all_energy_readings.py`.",
+            "4. Put the file in `data/sce-downloads/` or rerun `./scripts/analyze_all_energy_readings.py --scan-external-files` for a one-time scan of Downloads, Documents, and iCloud Drive.",
             "",
             "## Output Files",
             "",
@@ -615,9 +622,17 @@ def write_outputs(
 def main() -> int:
     parser = argparse.ArgumentParser(description="Pair SCE, bill, Sense, and Enphase energy readings.")
     parser.add_argument("--sce-file", action="append", default=[], help="Specific SCE Green Button CSV/XML file to import.")
+    parser.add_argument(
+        "--scan-external-files",
+        action="store_true",
+        help="also scan Downloads, Documents, and iCloud Drive for SCE Green Button files",
+    )
     args = parser.parse_args()
 
-    files = discover_sce_files([Path(item).expanduser() for item in args.sce_file])
+    files = discover_sce_files(
+        [Path(item).expanduser() for item in args.sce_file],
+        scan_external=args.scan_external_files or external_file_scan_enabled(),
+    )
     intervals, file_stats = load_sce_intervals(files)
     samples = load_monitor_samples()
     overlap_pairs = build_overlap_pairs(intervals, samples)

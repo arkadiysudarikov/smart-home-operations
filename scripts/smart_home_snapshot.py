@@ -24,12 +24,26 @@ DB_PATH = DATA_DIR / "smart_home.sqlite"
 SOURCE_ROOT = Path.home() / "Documents" / "Smart Home"
 RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor"
 DRIFT_CHECK_FILES = [
-    "scripts/capture_alarm_com.js",
     "scripts/action_server.py",
-    "scripts/smart_home_snapshot.py",
-    "scripts/refresh_energy.py",
+    "scripts/analyze_all_energy_readings.py",
+    "scripts/analyze_bill_home_pairing.py",
+    "scripts/analyze_chargepoint_pairing.py",
+    "scripts/analyze_combined_energy_monitor.py",
+    "scripts/analyze_energy_automation_opportunities.py",
+    "scripts/analyze_energy_costs.py",
+    "scripts/analyze_meter_reconciliation.py",
+    "scripts/capture_alarm_com.js",
+    "scripts/capture_envoy_direct.py",
+    "scripts/capture_sense_now.js",
+    "scripts/capture_sense_trends.js",
+    "scripts/extract_sce_bills.py",
+    "scripts/fetch_chargepoint_sessions.py",
+    "scripts/fetch_sce_green_button_connect.py",
     "scripts/generate_alerts.py",
+    "scripts/install_homekit_virtual_sensors.py",
     "scripts/install_monitor.sh",
+    "scripts/refresh_energy.py",
+    "scripts/smart_home_snapshot.py",
 ]
 
 
