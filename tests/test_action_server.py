@@ -10,6 +10,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,8 +70,8 @@ class ActionServerTest(unittest.TestCase):
         stderr = io.StringIO()
         with (
             contextlib.redirect_stderr(stderr),
-            unittest.mock.patch.object(action_server, "load_config") as load_config,
-            unittest.mock.patch.object(sys, "argv", ["action_server.py"]),
+            mock.patch.object(action_server, "load_config") as load_config,
+            mock.patch.object(sys, "argv", ["action_server.py"]),
         ):
             self.assertEqual(action_server.main(), 1)
 
@@ -87,15 +88,15 @@ class ActionServerTest(unittest.TestCase):
 
         self.patch_module(ROOT=Path("/repo"), RUNTIME_ROOT=Path("/runtime"))
         with (
-            unittest.mock.patch.object(
+            mock.patch.object(
                 action_server,
                 "load_config",
                 return_value={"actions": {"bind_host": "127.0.0.1", "port": 0}},
             ),
-            unittest.mock.patch.object(action_server, "ThreadingHTTPServer", FakeServer),
-            unittest.mock.patch.object(action_server, "schedule_garage_light_hold_check") as schedule_check,
-            unittest.mock.patch.object(action_server.os, "chdir"),
-            unittest.mock.patch.object(sys, "argv", ["action_server.py", "--force-outside-runtime"]),
+            mock.patch.object(action_server, "ThreadingHTTPServer", FakeServer),
+            mock.patch.object(action_server, "schedule_garage_light_hold_check") as schedule_check,
+            mock.patch.object(action_server.os, "chdir"),
+            mock.patch.object(sys, "argv", ["action_server.py", "--force-outside-runtime"]),
         ):
             self.assertEqual(action_server.main(), 0)
 
