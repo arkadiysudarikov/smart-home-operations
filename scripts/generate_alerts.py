@@ -1375,8 +1375,10 @@ def write_homekit_report(updates: list[dict[str, Any]]) -> None:
                 "- `warning` HomebridgeDummy stale cached accessories: "
                 + ", ".join(f"`{name}`" for name in dummy_drift["stale"])
             )
-    if not audit["virtualCacheMismatches"]:
+    if not audit["virtualCacheMismatches"] and not audit["virtualCachePendingRefresh"]:
         lines.append("- `ok` HomebridgeDummy switch cache matches virtual tile readback.")
+    elif not audit["virtualCacheMismatches"]:
+        lines.append("- `ok` HomebridgeDummy switch cache has no stale mismatches.")
     else:
         for item in audit["virtualCacheMismatches"]:
             lines.append(
