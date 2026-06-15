@@ -45,6 +45,16 @@ DRIFT_CHECK_FILES = [
     "scripts/refresh_energy.py",
     "scripts/smart_home_snapshot.py",
 ]
+DRIFT_CHECK_EXTERNAL_FILES = [
+    (
+        "launchagents/com.arkadiy.smart-home-monitor.plist",
+        Path.home() / "Library" / "LaunchAgents" / "com.arkadiy.smart-home-monitor.plist",
+    ),
+    (
+        "launchagents/com.arkadiy.smart-home-actions.plist",
+        Path.home() / "Library" / "LaunchAgents" / "com.arkadiy.smart-home-actions.plist",
+    ),
+]
 
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
@@ -125,9 +135,10 @@ def collect_runtime_drift() -> dict[str, Any]:
     files: list[dict[str, Any]] = []
     drifted: list[str] = []
     missing: list[str] = []
-    for relative in DRIFT_CHECK_FILES:
+    check_items = [(relative, RUNTIME_ROOT / relative) for relative in DRIFT_CHECK_FILES]
+    check_items.extend(DRIFT_CHECK_EXTERNAL_FILES)
+    for relative, runtime_path in check_items:
         source_path = SOURCE_ROOT / relative
-        runtime_path = RUNTIME_ROOT / relative
         source_hash = file_sha256(source_path)
         runtime_hash = file_sha256(runtime_path)
         item = {

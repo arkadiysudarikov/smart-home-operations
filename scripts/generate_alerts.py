@@ -1137,6 +1137,72 @@ def cached_enphase_service_names() -> set[str]:
     return names
 
 
+def cached_homebridge_dummy_names() -> set[str]:
+    names: set[str] = set()
+    for path in sorted((HOMEBRIDGE_DIR / "accessories").glob("cachedAccessories*")):
+        data = load_json_file(path)
+        if not isinstance(data, list):
+            continue
+        for accessory in data:
+            if not isinstance(accessory, dict):
+                continue
+            if accessory.get("platform") == "HomebridgeDummy" or accessory.get("plugin") == "homebridge-dummy":
+                if accessory.get("displayName"):
+                    names.add(str(accessory["displayName"]))
+    return names
+
+
+def configured_homebridge_dummy_names(homebridge_config: dict[str, Any]) -> set[str]:
+    for platform in homebridge_config.get("platforms", []):
+        if isinstance(platform, dict) and platform.get("platform") == "HomebridgeDummy":
+            return {
+                str(item["name"])
+                for item in platform.get("accessories", [])
+                if isinstance(item, dict) and item.get("name")
+            }
+    return set()
+
+
+def homebridge_dummy_switch_cache(characteristics: dict[str, Any]) -> dict[str, Any]:
+    states: dict[str, Any] = {}
+    for item in characteristics.values():
+        if not isinstance(item, dict):
+            continue
+        if (
+            item.get("platform") == "HomebridgeDummy"
+            and item.get("service") == "Switch"
+            and item.get("characteristic") == "On"
+            and item.get("accessory")
+        ):
+            states[str(item["accessory"])] = item.get("value")
+    return states
+
+
+def unifi_multi_active_clients(characteristics: dict[str, Any]) -> dict[str, list[str]]:
+    prefixes = ("1588EThompson", "Express", "Extender", "Level 1", "Level 2")
+    active_by_client: dict[str, list[str]] = {}
+    for item in characteristics.values():
+        if not isinstance(item, dict):
+            continue
+        if item.get("platform") != "UnifiOccupancy" or item.get("characteristic") != "OccupancyDetected":
+            continue
+        if int(item.get("value") or 0) != 1:
+            continue
+        name = str(item.get("accessory") or "")
+        client = name
+        for prefix in prefixes:
+            marker = f"{prefix} "
+            if client.startswith(marker):
+                client = client[len(marker):]
+                break
+        active_by_client.setdefault(client, []).append(name)
+    return {
+        client: sorted(names)
+        for client, names in sorted(active_by_client.items())
+        if len(names) > 1
+    }
+
+
 def audit_homekit_surface(updates: list[dict[str, Any]]) -> dict[str, Any]:
     characteristics = load_latest_characteristics()
     homebridge_config = load_json_file(HOMEBRIDGE_CONFIG_PATH)
@@ -1172,6 +1238,33 @@ def audit_homekit_surface(updates: list[dict[str, Any]]) -> dict[str, Any]:
 
     disabled = disabled_enphase_service_names(homebridge_config)
     cached_disabled = sorted(disabled.intersection(cached_enphase_service_names()))
+    configured_dummy = configured_homebridge_dummy_names(homebridge_config)
+    cached_dummy = cached_homebridge_dummy_names()
+    dummy_cache_drift = {
+        "missing": sorted(configured_dummy - cached_dummy),
+        "stale": sorted(cached_dummy - configured_dummy),
+    }
+    switch_cache = homebridge_dummy_switch_cache(characteristics)
+    virtual_cache_mismatches: list[dict[str, Any]] = []
+    virtual_cache_pending: list[dict[str, Any]] = []
+    for update in updates:
+        name = str(update.get("name"))
+        if "readback" not in update or name not in switch_cache:
+            continue
+        cache_value = switch_cache[name]
+        readback_value = update.get("readback")
+        if cache_value == readback_value:
+            continue
+        item = {
+            "name": update.get("name"),
+            "active": update.get("active"),
+            "readback": readback_value,
+            "cache": cache_value,
+        }
+        if readback_value == update.get("active"):
+            virtual_cache_pending.append(item)
+        else:
+            virtual_cache_mismatches.append(item)
     webhook_mismatches = [
         {
             "name": update.get("name"),
@@ -1186,6 +1279,10 @@ def audit_homekit_surface(updates: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         "duplicateVisibleLabels": duplicate_visible_labels,
         "cachedDisabledEnphaseServices": cached_disabled,
+        "homebridgeDummyCacheDrift": dummy_cache_drift,
+        "unifiMultiActiveClients": unifi_multi_active_clients(characteristics),
+        "virtualCacheMismatches": virtual_cache_mismatches,
+        "virtualCachePendingRefresh": virtual_cache_pending,
         "webhookMismatches": webhook_mismatches,
     }
 
@@ -1255,6 +1352,30 @@ def write_homekit_report(updates: list[dict[str, Any]]) -> None:
             "- `warning` Disabled Enphase services still cached: "
             + ", ".join(f"`{name}`" for name in audit["cachedDisabledEnphaseServices"])
         )
+    dummy_drift = audit["homebridgeDummyCacheDrift"]
+    if not dummy_drift["missing"] and not dummy_drift["stale"]:
+        lines.append("- `ok` HomebridgeDummy configured accessories match the child-bridge cache.")
+    else:
+        if dummy_drift["missing"]:
+            lines.append(
+                "- `warning` HomebridgeDummy configured accessories missing from cache: "
+                + ", ".join(f"`{name}`" for name in dummy_drift["missing"])
+            )
+        if dummy_drift["stale"]:
+            lines.append(
+                "- `warning` HomebridgeDummy stale cached accessories: "
+                + ", ".join(f"`{name}`" for name in dummy_drift["stale"])
+            )
+    if not audit["virtualCacheMismatches"]:
+        lines.append("- `ok` HomebridgeDummy switch cache matches virtual tile readback.")
+    else:
+        for item in audit["virtualCacheMismatches"]:
+            lines.append(
+                f"- `warning` `{item.get('name')}` cache=`{item.get('cache')}` readback=`{item.get('readback')}`"
+            )
+    if audit["virtualCachePendingRefresh"]:
+        names = ", ".join(f"`{item.get('name')}`" for item in audit["virtualCachePendingRefresh"])
+        lines.append(f"- `info` HomebridgeDummy cache is awaiting the next snapshot for: {names}.")
     if not audit["duplicateVisibleLabels"]:
         lines.append("- `ok` No cross-platform duplicate visible labels in current HomeKit characteristics.")
     else:
@@ -1266,6 +1387,14 @@ def write_homekit_report(updates: list[dict[str, Any]]) -> None:
                 }
             )
             lines.append(f"- `warning` `{label}` appears on " + ", ".join(f"`{surface}`" for surface in surfaces))
+    if not audit["unifiMultiActiveClients"]:
+        lines.append("- `ok` No UniFi client is active in multiple occupancy locations.")
+    else:
+        for client, names in sorted(audit["unifiMultiActiveClients"].items()):
+            lines.append(
+                f"- `warning` UniFi client `{client}` is active in multiple locations: "
+                + ", ".join(f"`{name}`" for name in names)
+            )
     (REPORT_DIR / "homekit_virtual_sensors.md").write_text("\n".join(lines) + "\n")
 
 
