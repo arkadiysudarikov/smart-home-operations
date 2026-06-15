@@ -2,8 +2,12 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import sys
+import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,6 +68,46 @@ class RecoverUniFiOccupancyTest(unittest.TestCase):
                 {"restart_when_no_tracked_accessories": True},
             )
         )
+
+    def test_main_refuses_live_recovery_outside_runtime_root_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            status_path = Path(tmp) / "latest_unifi_occupancy_recovery.json"
+            with (
+                mock.patch.object(recover_unifi_occupancy, "ROOT", Path("/repo")),
+                mock.patch.object(recover_unifi_occupancy, "RUNTIME_ROOT", Path("/runtime")),
+                mock.patch.object(recover_unifi_occupancy, "STATUS_PATH", status_path),
+                mock.patch.object(recover_unifi_occupancy, "DATA_DIR", Path(tmp)),
+                mock.patch.object(recover_unifi_occupancy, "load_config") as load_config,
+                mock.patch.object(sys, "argv", ["recover_unifi_occupancy.py"]),
+            ):
+                self.assertEqual(recover_unifi_occupancy.main(), 1)
+
+            payload = json.loads(status_path.read_text())
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["action"], "none")
+            self.assertIn("outside the runtime root", payload["error"])
+            load_config.assert_not_called()
+
+    def test_force_outside_runtime_allows_disabled_config_path(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            status_path = Path(tmp) / "latest_unifi_occupancy_recovery.json"
+            with (
+                mock.patch.object(recover_unifi_occupancy, "ROOT", Path("/repo")),
+                mock.patch.object(recover_unifi_occupancy, "RUNTIME_ROOT", Path("/runtime")),
+                mock.patch.object(recover_unifi_occupancy, "STATUS_PATH", status_path),
+                mock.patch.object(recover_unifi_occupancy, "DATA_DIR", Path(tmp)),
+                mock.patch.object(
+                    recover_unifi_occupancy,
+                    "load_config",
+                    return_value={"unifi_occupancy_recovery": {"enabled": False}},
+                ),
+                mock.patch.object(sys, "argv", ["recover_unifi_occupancy.py", "--force-outside-runtime"]),
+            ):
+                self.assertEqual(recover_unifi_occupancy.main(), 0)
+
+            payload = json.loads(status_path.read_text())
+            self.assertTrue(payload["ok"])
+            self.assertFalse(payload["enabled"])
 
 
 if __name__ == "__main__":

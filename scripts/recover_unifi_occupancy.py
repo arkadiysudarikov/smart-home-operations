@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import re
@@ -17,10 +18,15 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor"
 CONFIG_PATH = ROOT / "config" / "sources.json"
 DATA_DIR = ROOT / "data"
 REPORT_DIR = ROOT / "reports"
 STATUS_PATH = DATA_DIR / "latest_unifi_occupancy_recovery.json"
+
+
+def running_from_runtime_root() -> bool:
+    return ROOT.resolve() == RUNTIME_ROOT.resolve()
 
 
 def now_iso() -> str:
@@ -246,6 +252,26 @@ def write_status(payload: dict[str, Any]) -> None:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Recover stale UniFi occupancy by probing UniFi and restarting the child bridge when safe.")
+    parser.add_argument(
+        "--force-outside-runtime",
+        action="store_true",
+        help="allow live UniFi child-bridge recovery when this script is not running from the runtime root",
+    )
+    args = parser.parse_args()
+    if not args.force_outside_runtime and not running_from_runtime_root():
+        write_status(
+            {
+                "ok": False,
+                "checkedAt": now_iso(),
+                "action": "none",
+                "error": "refusing to recover live UniFi occupancy outside the runtime root",
+                "sourceRoot": str(ROOT),
+                "runtimeRoot": str(RUNTIME_ROOT),
+            }
+        )
+        return 1
+
     config = load_config()
     recovery_config = config.get("unifi_occupancy_recovery", {}) if isinstance(config.get("unifi_occupancy_recovery"), dict) else {}
     if recovery_config.get("enabled", True) is False:
