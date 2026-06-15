@@ -143,7 +143,7 @@ def age_seconds(value: Any) -> float | None:
 
 def is_recent_status(path: Path, max_age_seconds: int, *timestamp_keys: str) -> bool:
     payload = load_json(path)
-    if payload.get("ok") is False:
+    if "ok" in payload and payload.get("ok") is not True:
         return False
     for key in timestamp_keys:
         age = age_seconds(payload.get(key))

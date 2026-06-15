@@ -839,7 +839,8 @@ def main() -> int:
     if result.get("skipped"):
         write_status(
             {
-                "ok": None,
+                "ok": True,
+                "skipped": True,
                 "status": result.get("status") or "skipped",
                 "startedAt": started_at,
                 "finishedAt": now(),

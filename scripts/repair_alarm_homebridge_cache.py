@@ -11,6 +11,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor"
 DATA_DIR = ROOT / "data"
 COMPARISON_PATH = DATA_DIR / "latest_alarm_homebridge_state.json"
 CHARACTERISTICS_PATH = DATA_DIR / "latest_characteristics.json"
@@ -21,6 +22,10 @@ MOTION_FALSE_STATES = {"Idle", "Closed"}
 MOTION_TRUE_STATES = {"Active", "Activated", "Open"}
 CONTACT_CLOSED_STATES = {"Idle", "Closed"}
 CONTACT_OPEN_STATES = {"Open", "Active", "Activated"}
+
+
+def running_from_runtime_root() -> bool:
+    return ROOT.resolve() == RUNTIME_ROOT.resolve()
 
 
 def load_json(path: Path) -> Any:
@@ -112,7 +117,17 @@ def repair_cache_file(cache_path: Path, device_id: str, display_name: str, chara
     }
 
 
-def repair_from_latest_comparison() -> dict[str, Any]:
+def repair_from_latest_comparison(*, allow_outside_runtime: bool = False) -> dict[str, Any]:
+    if not allow_outside_runtime and not running_from_runtime_root():
+        return {
+            "ok": False,
+            "error": "refusing to repair live Homebridge cache outside the runtime root",
+            "sourceRoot": str(ROOT),
+            "runtimeRoot": str(RUNTIME_ROOT),
+            "changedCount": 0,
+            "repairs": [],
+            "skipped": [],
+        }
     comparison = load_json(COMPARISON_PATH)
     characteristics = load_json(CHARACTERISTICS_PATH)
     if not isinstance(comparison, dict):
@@ -172,8 +187,13 @@ def repair_from_latest_comparison() -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Repair stale Alarm.com sensor state in the Homebridge child cache.")
-    parser.parse_args()
-    result = repair_from_latest_comparison()
+    parser.add_argument(
+        "--force-outside-runtime",
+        action="store_true",
+        help="allow live Homebridge cache repair when this script is not running from the runtime root",
+    )
+    args = parser.parse_args()
+    result = repair_from_latest_comparison(allow_outside_runtime=args.force_outside_runtime)
     print(json.dumps(result, indent=2, sort_keys=True))
     return 0 if result.get("ok") else 1
 

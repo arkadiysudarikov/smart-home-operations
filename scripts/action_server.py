@@ -174,7 +174,7 @@ def operational_source_status() -> list[dict[str, Any]]:
     refresh = load_json_file(ENERGY_REFRESH_STATUS_PATH)
 
     cp_status = str(chargepoint.get("status") or "missing")
-    if chargepoint.get("ok") is True and cp_status in {"downloaded", "fresh_enough"}:
+    if chargepoint.get("ok") is not False and cp_status in {"downloaded", "fresh_enough"}:
         cp_row_status = "fresh"
     elif cp_status:
         cp_row_status = cp_status
