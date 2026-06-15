@@ -14,6 +14,10 @@ SPEC.loader.exec_module(smart_home_snapshot)
 
 
 class SmartHomeSnapshotTest(unittest.TestCase):
+    def test_runtime_drift_checks_cover_live_action_scripts(self) -> None:
+        self.assertIn("scripts/set_alarm_light.js", smart_home_snapshot.DRIFT_CHECK_FILES)
+        self.assertIn("scripts/set_alarm_panel.js", smart_home_snapshot.DRIFT_CHECK_FILES)
+
     def test_collect_log_signals_tracks_unifi_updated_and_unchanged_statuses(self) -> None:
         signals = smart_home_snapshot.collect_log_signals(
             [

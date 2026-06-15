@@ -46,6 +46,8 @@ DRIFT_CHECK_FILES = [
     "scripts/recover_unifi_occupancy.py",
     "scripts/refresh_energy.py",
     "scripts/repair_alarm_homebridge_cache.py",
+    "scripts/set_alarm_light.js",
+    "scripts/set_alarm_panel.js",
     "scripts/smart_home_snapshot.py",
     "scripts/update_office_tahoma_ip.js",
 ]
