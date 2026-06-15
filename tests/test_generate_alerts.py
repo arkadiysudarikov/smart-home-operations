@@ -290,6 +290,32 @@ class GenerateAlertsTest(unittest.TestCase):
             "5m",
         )
 
+    def test_virtual_cache_pending_refresh_is_not_stale_mismatch(self) -> None:
+        self.patch_module(
+            load_json_file=lambda _path: {},
+            load_latest_characteristics=lambda: {},
+            disabled_enphase_service_names=lambda _config: set(),
+            cached_enphase_service_names=lambda: set(),
+            configured_homebridge_dummy_names=lambda _config: set(),
+            cached_homebridge_dummy_names=lambda: set(),
+            homebridge_dummy_switch_cache=lambda _characteristics: {"Grid Out": True},
+            unifi_multi_active_clients=lambda _characteristics: {},
+        )
+
+        audit = generate_alerts.audit_homekit_surface(
+            [
+                {
+                    "name": "Grid Out",
+                    "active": False,
+                    "readback": False,
+                    "ok": True,
+                }
+            ]
+        )
+
+        self.assertEqual(audit["virtualCacheMismatches"], [])
+        self.assertEqual(audit["virtualCachePendingRefresh"][0]["name"], "Grid Out")
+
 
 if __name__ == "__main__":
     unittest.main()
