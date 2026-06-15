@@ -13,6 +13,7 @@ from zoneinfo import ZoneInfo
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor"
 CONFIG_PATH = ROOT / "config" / "sources.json"
 DATA_DIR = ROOT / "data"
 DB_PATH = DATA_DIR / "smart_home.sqlite"
@@ -26,6 +27,10 @@ ACTION_STATUS_URL = "http://127.0.0.1:18765/status"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 HOMEBRIDGE_DIR = Path.home() / ".homebridge"
 HOMEBRIDGE_CONFIG_PATH = HOMEBRIDGE_DIR / "config.json"
+
+
+def running_from_runtime_root() -> bool:
+    return ROOT.resolve() == RUNTIME_ROOT.resolve()
 
 
 def load_config() -> dict[str, Any]:
@@ -1043,6 +1048,8 @@ def update_homekit_virtual_sensors(config: dict[str, Any], alerts: list[dict[str
     sensor_config = config.get("homekit_virtual_sensors", {})
     if not sensor_config.get("enabled", False):
         return []
+    if not running_from_runtime_root():
+        return []
     webhook_url = str(sensor_config.get("webhook_url", "")).rstrip("/")
     if not webhook_url:
         return []
@@ -1336,7 +1343,9 @@ def write_homekit_report(updates: list[dict[str, Any]]) -> None:
             )
     audit = payload["surfaceAudit"]
     lines.extend(["", "## Surface Audit", ""])
-    if not audit["webhookMismatches"]:
+    if not updates:
+        lines.append("- `info` Virtual tile webhook readback was skipped outside the runtime root.")
+    elif not audit["webhookMismatches"]:
         lines.append("- `ok` Virtual tile webhook readback matches requested state.")
     else:
         for item in audit["webhookMismatches"]:
