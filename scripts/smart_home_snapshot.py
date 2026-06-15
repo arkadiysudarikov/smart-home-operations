@@ -46,6 +46,7 @@ DRIFT_CHECK_FILES = [
     "scripts/refresh_energy.py",
     "scripts/repair_alarm_homebridge_cache.py",
     "scripts/smart_home_snapshot.py",
+    "scripts/update_office_tahoma_ip.js",
 ]
 DRIFT_CHECK_EXTERNAL_FILES = [
     (

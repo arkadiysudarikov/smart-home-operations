@@ -7,9 +7,14 @@ const os = require("os");
 const path = require("path");
 
 const ROOT = path.resolve(__dirname, "..");
+const RUNTIME_ROOT = path.join(os.homedir(), "Library/Application Support/SmartHomeMonitor");
 const SOURCES_CONFIG = path.join(ROOT, "config/sources.json");
 const HOMEBRIDGE_CONFIG = path.join(os.homedir(), ".homebridge/config.json");
 const BACKUP_DIR = path.join(os.homedir(), ".homebridge/codex-backups");
+
+function runningFromRuntimeRoot() {
+  return path.resolve(ROOT) === path.resolve(RUNTIME_ROOT);
+}
 
 function loadJson(filePath) {
   return JSON.parse(fs.readFileSync(filePath, "utf8"));
@@ -129,6 +134,16 @@ function backupConfig(raw) {
 async function main() {
   const args = new Set(process.argv.slice(2));
   const shouldApply = args.has("--apply");
+  const forceOutsideRuntime = args.has("--force-outside-runtime");
+  if (shouldApply && !forceOutsideRuntime && !runningFromRuntimeRoot()) {
+    console.error(JSON.stringify({
+      ok: false,
+      error: "refusing to update live Homebridge config outside the runtime root",
+      sourceRoot: ROOT,
+      runtimeRoot: RUNTIME_ROOT,
+    }, null, 2));
+    process.exit(1);
+  }
   const rawConfig = fs.readFileSync(HOMEBRIDGE_CONFIG, "utf8");
   const config = JSON.parse(rawConfig);
   const office = officePlatform(config);
