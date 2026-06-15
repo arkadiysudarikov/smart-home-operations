@@ -1044,24 +1044,32 @@ def update_homekit_virtual_sensors(config: dict[str, Any], alerts: list[dict[str
             any(title in active_titles for title in accessory.get("alert_titles", []))
             or any(title in state_titles for title in accessory.get("state_titles", []))
         )
-        query = urllib.parse.urlencode(
+        set_query = urllib.parse.urlencode(
             {
                 "id": accessory_id,
                 "set": "On",
                 "value": "true" if should_be_active else "false",
             }
         )
-        url = f"{webhook_url}/?{query}"
+        set_url = f"{webhook_url}/?{set_query}"
         try:
-            with urllib.request.urlopen(url, timeout=5) as response:
+            with urllib.request.urlopen(set_url, timeout=5) as response:
                 body = response.read().decode("utf-8", errors="replace")
+            readback_query = urllib.parse.urlencode({"id": accessory_id, "get": "On"})
+            readback_url = f"{webhook_url}/?{readback_query}"
+            with urllib.request.urlopen(readback_url, timeout=5) as response:
+                readback_body = response.read().decode("utf-8", errors="replace")
+            readback_value = json.loads(readback_body).get("value")
+            verified = readback_value == should_be_active
             updates.append(
                 {
                     "id": accessory_id,
                     "name": accessory.get("name"),
                     "active": should_be_active,
-                    "ok": True,
+                    "ok": verified,
                     "response": body,
+                    "readback": readback_value,
+                    "verified": verified,
                 }
             )
         except Exception as exc:
@@ -1117,9 +1125,10 @@ def write_homekit_report(updates: list[dict[str, Any]]) -> None:
         lines.append("- No virtual sensor updates were attempted.")
     else:
         for update in updates:
-            status = "ok" if update.get("ok") else "failed"
+            status = "ok" if update.get("ok") else "mismatch" if update.get("verified") is False else "failed"
             lines.append(
                 f"- `{status}` `{update.get('name')}` active=`{update.get('active')}`"
+                + (f" readback=`{update.get('readback')}`" if "readback" in update else "")
                 + (f" error=`{update.get('error')}`" if update.get("error") else "")
             )
     (REPORT_DIR / "homekit_virtual_sensors.md").write_text("\n".join(lines) + "\n")

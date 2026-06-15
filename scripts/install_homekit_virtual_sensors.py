@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import copy
 import json
 import shutil
 from datetime import datetime
@@ -39,6 +40,7 @@ def virtual_accessories() -> list[dict[str, Any]]:
 
 def main() -> int:
     homebridge = load_json(HOMEBRIDGE_CONFIG)
+    original = copy.deepcopy(homebridge)
     target = None
     for platform in homebridge.get("platforms", []):
         if platform.get("platform") == "HomebridgeDummy":
@@ -59,6 +61,10 @@ def main() -> int:
     else:
         target["webhookConfig"]["port"] = 63743
         target["webhookConfig"]["disableSSL"] = True
+
+    if homebridge == original:
+        print("Virtual sensors already installed; no Homebridge config changes needed.")
+        return 0
 
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")

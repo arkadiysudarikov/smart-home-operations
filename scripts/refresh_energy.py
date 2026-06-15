@@ -237,6 +237,7 @@ def main() -> int:
                 False,
                 "recent ChargePoint capture is still fresh",
             ),
+            ("analyze_combined_energy", [py, "scripts/analyze_combined_energy_monitor.py"], 300, True, False, None),
             ("generate_alerts", [py, "scripts/generate_alerts.py"], 300, True, False, None),
             ("analyze_energy_automation", [py, "scripts/analyze_energy_automation_opportunities.py"], 120, True, False, None),
         ]

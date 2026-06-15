@@ -600,7 +600,7 @@ def run_energy_reconcile_background(started_at: str) -> None:
     try:
         result = run(energy_reconcile_command(), timeout=900)
         latest = latest_energy_refresh_status()
-        ok = bool(latest.get("ok")) if latest else result["ok"]
+        ok = bool(result["ok"] and (latest.get("ok") if latest else True))
         write_energy_reconcile_status(
             {
                 "ok": ok,

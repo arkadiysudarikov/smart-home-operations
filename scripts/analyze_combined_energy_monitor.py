@@ -116,6 +116,31 @@ def effective_sce_summary(all_energy: dict[str, Any]) -> dict[str, Any]:
     return green_button
 
 
+def live_envoy_source() -> dict[str, Any] | None:
+    envoy = load_json(DATA_DIR / "latest_envoy_direct.json")
+    if not envoy.get("finishedAt"):
+        return None
+    status = str(envoy.get("status") or "")
+    if envoy.get("ok") is True and status == "live":
+        status = "fresh"
+    return {
+        "status": status or "missing",
+        "timestamp": envoy.get("finishedAt"),
+        "detail": f"{envoy.get('host') or 'n/a'} {envoy.get('serialNumber') or ''}".strip(),
+    }
+
+
+def live_sense_source() -> dict[str, Any] | None:
+    sense = load_json(DATA_DIR / "sense_now_latest.json")
+    if not sense.get("capturedAt"):
+        return None
+    return {
+        "status": "fresh" if sense.get("ok") is not False else "failed",
+        "timestamp": sense.get("capturedAt"),
+        "detail": sense.get("capturedAt"),
+    }
+
+
 def build_source_status(
     now: datetime,
     thresholds: dict[str, Any],
@@ -132,6 +157,8 @@ def build_source_status(
     sce_summary = effective_sce_summary(all_energy)
     sce_age = age_hours(now, sce_summary.get("coverageEnd"))
     sce_status = status_label(sce_age, sce_stale_hours)
+    envoy_live = live_envoy_source()
+    sense_live = live_sense_source()
 
     cp_refresh_status = str(chargepoint_refresh.get("status") or "missing")
     if chargepoint_refresh.get("ok") is True:
@@ -143,18 +170,23 @@ def build_source_status(
     else:
         cp_status = "missing"
 
+    envoy_fallback_end = (bill_home.get("envoy") or {}).get("coverage", {}).get("end")
+    sense_fallback_end = (bill_home.get("sense") or {}).get("end")
+    envoy_timestamp = envoy_live.get("timestamp") if envoy_live else envoy_fallback_end
+    sense_timestamp = sense_live.get("timestamp") if sense_live else sense_fallback_end
+
     rows = [
         {
             "source": "Envoy",
-            "status": "fresh" if (bill_home.get("envoy") or {}).get("coverage", {}).get("end") else "missing",
-            "ageHours": age_hours(now, (bill_home.get("envoy") or {}).get("coverage", {}).get("end")),
-            "detail": (bill_home.get("envoy") or {}).get("coverage", {}).get("end"),
+            "status": envoy_live.get("status") if envoy_live else ("fresh" if envoy_fallback_end else "missing"),
+            "ageHours": age_hours(now, envoy_timestamp),
+            "detail": envoy_live.get("detail") if envoy_live else envoy_fallback_end,
         },
         {
             "source": "Sense",
-            "status": "fresh" if (bill_home.get("sense") or {}).get("end") else "missing",
-            "ageHours": age_hours(now, (bill_home.get("sense") or {}).get("end")),
-            "detail": (bill_home.get("sense") or {}).get("end"),
+            "status": sense_live.get("status") if sense_live else ("fresh" if sense_fallback_end else "missing"),
+            "ageHours": age_hours(now, sense_timestamp),
+            "detail": sense_live.get("detail") if sense_live else sense_fallback_end,
         },
         {
             "source": "SCE",
