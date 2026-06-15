@@ -42,6 +42,7 @@ DRIFT_CHECK_FILES = [
     "scripts/generate_alerts.py",
     "scripts/install_homekit_virtual_sensors.py",
     "scripts/install_monitor.sh",
+    "scripts/patch_smarthq_remaining_duration.js",
     "scripts/recover_unifi_occupancy.py",
     "scripts/refresh_energy.py",
     "scripts/repair_alarm_homebridge_cache.py",
