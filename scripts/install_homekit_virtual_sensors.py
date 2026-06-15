@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import copy
 import json
 import shutil
@@ -10,9 +11,14 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor"
 CONFIG_PATH = ROOT / "config" / "sources.json"
 HOMEBRIDGE_CONFIG = Path.home() / ".homebridge" / "config.json"
 BACKUP_DIR = Path.home() / ".homebridge" / "codex-backups"
+
+
+def running_from_runtime_root() -> bool:
+    return ROOT.resolve() == RUNTIME_ROOT.resolve()
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -39,6 +45,28 @@ def virtual_accessories() -> list[dict[str, Any]]:
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Install Smart Home virtual status sensors into the HomebridgeDummy platform.")
+    parser.add_argument(
+        "--force-outside-runtime",
+        action="store_true",
+        help="allow live Homebridge config writes when this script is not running from the runtime root",
+    )
+    args = parser.parse_args()
+    if not args.force_outside_runtime and not running_from_runtime_root():
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "refusing to update live Homebridge config outside the runtime root",
+                    "sourceRoot": str(ROOT),
+                    "runtimeRoot": str(RUNTIME_ROOT),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 1
+
     homebridge = load_json(HOMEBRIDGE_CONFIG)
     original = copy.deepcopy(homebridge)
     target = None
