@@ -35,6 +35,17 @@ class RefreshEnergyTest(unittest.TestCase):
 
             self.assertTrue(refresh_energy.is_recent_status(path, 3600, "capturedAt"))
 
+    def test_summarize_steps_counts_optional_failures_without_hiding_them(self) -> None:
+        summary = refresh_energy.summarize_steps(
+            [
+                {"name": "snapshot", "ok": True},
+                {"name": "alarm", "ok": False, "optional": True},
+                {"name": "chargepoint", "ok": True, "skipped": True, "optional": True},
+            ]
+        )
+
+        self.assertEqual(summary, {"total": 3, "complete": 2, "skipped": 1, "failed": 1})
+
 
 if __name__ == "__main__":
     unittest.main()

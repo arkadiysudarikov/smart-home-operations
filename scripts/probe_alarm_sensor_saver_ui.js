@@ -158,6 +158,22 @@ function parseCookies(cookieHeader) {
     .filter(Boolean);
 }
 
+function redactText(value) {
+  return String(value)
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .replace(/\b(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}\b/g, "[redacted-phone]")
+    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}\b/g, "[redacted-token]");
+}
+
+function redactArtifact(value) {
+  if (typeof value === "string") return redactText(value);
+  if (Array.isArray(value)) return value.map(redactArtifact);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactArtifact(item)]));
+  }
+  return value;
+}
+
 async function main() {
   const args = parseArgs(process.argv);
   if (!args.forceOutsideRuntime && !runningFromRuntimeRoot()) {
@@ -303,22 +319,21 @@ async function main() {
         title: document.title,
         textSample: document.body.innerText.slice(0, 3500),
         controls,
-        htmlSample: document.body.innerHTML.slice(0, 5000),
       };
     })()`);
 
     cdp.close();
-    const out = {
+    const out = redactArtifact({
       ok: true,
       generatedAt: new Date().toISOString(),
       before,
       clickText,
       clickResult,
       after,
-    };
+    });
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(path.join(DATA_DIR, "alarm_sensor_saver_ui_probe.json"), JSON.stringify(out, null, 2) + "\n");
-    console.log(JSON.stringify({
+    console.log(JSON.stringify(redactArtifact({
       ok: true,
       before,
       after: {
@@ -328,7 +343,7 @@ async function main() {
         clickResult,
         controls: after.controls.slice(0, 40),
       },
-    }, null, 2));
+    }), null, 2));
   } finally {
     chrome.kill("SIGTERM");
     cleanupProfile(profile);

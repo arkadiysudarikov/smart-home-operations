@@ -157,6 +157,22 @@ function parseCookies(cookieHeader) {
     .filter(Boolean);
 }
 
+function redactText(value) {
+  return String(value)
+    .replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "[redacted-email]")
+    .replace(/\b(?:\+?1[\s.-]?)?(?:\(?\d{3}\)?[\s.-]?)\d{3}[\s.-]?\d{4}\b/g, "[redacted-phone]")
+    .replace(/\b(?:Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}\b/g, "[redacted-token]");
+}
+
+function redactArtifact(value) {
+  if (typeof value === "string") return redactText(value);
+  if (Array.isArray(value)) return value.map(redactArtifact);
+  if (value && typeof value === "object") {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, redactArtifact(item)]));
+  }
+  return value;
+}
+
 async function clickText(cdp, text) {
   const result = await evalJson(cdp, `(() => {
     const wanted = ${JSON.stringify(text)};
@@ -294,17 +310,17 @@ async function main() {
     }
     const afterSave = await snapshot(cdp);
 
-    const out = {
+    const out = redactArtifact({
       ok: true,
       dryRun,
       generatedAt: new Date().toISOString(),
       actions,
       beforeSave,
       afterSave,
-    };
+    });
     fs.mkdirSync(DATA_DIR, { recursive: true });
     fs.writeFileSync(path.join(DATA_DIR, "alarm_sensor_saver_apply.json"), JSON.stringify(out, null, 2) + "\n");
-    console.log(JSON.stringify({
+    console.log(JSON.stringify(redactArtifact({
       ok: true,
       dryRun,
       beforeSave: {
@@ -319,7 +335,7 @@ async function main() {
         url: afterSave.url,
         textSample: afterSave.text.slice(0, 1200),
       },
-    }, null, 2));
+    }), null, 2));
   } finally {
     if (cdp) cdp.close();
     chrome.kill("SIGTERM");

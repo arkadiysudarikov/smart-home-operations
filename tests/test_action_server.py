@@ -65,6 +65,27 @@ class ActionServerTest(unittest.TestCase):
 
             self.assertTrue(status["ok"])
 
+    def test_read_json_status_preserves_refresh_failure_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "latest_energy_refresh.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "status": "complete",
+                        "stepSummary": {"total": 3, "complete": 2, "skipped": 1, "failed": 1},
+                        "requiredFailures": [],
+                        "optionalFailures": ["capture_sense_now"],
+                    }
+                )
+                + "\n"
+            )
+
+            status = action_server.read_json_status(path)
+
+            self.assertEqual(status["stepSummary"]["failed"], 1)
+            self.assertEqual(status["optionalFailures"], ["capture_sense_now"])
+
     def test_main_refuses_to_expose_actions_outside_runtime_root_by_default(self) -> None:
         self.patch_module(ROOT=Path("/repo"), RUNTIME_ROOT=Path("/runtime"))
         stderr = io.StringIO()

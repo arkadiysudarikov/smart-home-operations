@@ -170,6 +170,15 @@ def acquire_refresh_lock() -> Any | None:
     return lock_file
 
 
+def summarize_steps(steps: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "total": len(steps),
+        "complete": sum(1 for step in steps if step.get("ok") is True),
+        "skipped": sum(1 for step in steps if step.get("skipped") is True),
+        "failed": sum(1 for step in steps if step.get("ok") is not True),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fast", action="store_true", help="refresh live source status without full historical reconciliation")
@@ -280,6 +289,7 @@ def main() -> int:
         write_status(payload)
 
     required_failed = [step for step in steps if not step.get("ok") and not step.get("optional")]
+    optional_failed = [step for step in steps if not step.get("ok") and step.get("optional")]
     sce_api = load_json(DATA_DIR / "latest_sce_api.json")
     combined = load_json(DATA_DIR / "latest_combined_energy_monitor.json")
     payload.update(
@@ -290,7 +300,9 @@ def main() -> int:
             "currentStep": None,
             "finishedAt": now(),
             "steps": steps,
+            "stepSummary": summarize_steps(steps),
             "requiredFailures": [step["name"] for step in required_failed],
+            "optionalFailures": [step["name"] for step in optional_failed],
             "sceCoverageEnd": sce_api.get("coverageEnd"),
             "sceIntervalRows": sce_api.get("intervalRows"),
             "combinedEnergyGeneratedAt": combined.get("generatedAt"),
