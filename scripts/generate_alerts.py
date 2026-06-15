@@ -24,6 +24,8 @@ LATEST_CHARACTERISTICS_PATH = DATA_DIR / "latest_characteristics.json"
 ALARM_STATE_COMPARISON_PATH = DATA_DIR / "latest_alarm_homebridge_state.json"
 ACTION_STATUS_URL = "http://127.0.0.1:18765/status"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+HOMEBRIDGE_DIR = Path.home() / ".homebridge"
+HOMEBRIDGE_CONFIG_PATH = HOMEBRIDGE_DIR / "config.json"
 
 
 def load_config() -> dict[str, Any]:
@@ -61,6 +63,15 @@ def load_latest_characteristics() -> dict[str, Any]:
     except json.JSONDecodeError:
         return {}
     return data if isinstance(data, dict) else {}
+
+
+def load_json_file(path: Path) -> Any:
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
 
 
 def load_alarm_state_comparison() -> dict[str, Any]:
@@ -1085,6 +1096,100 @@ def update_homekit_virtual_sensors(config: dict[str, Any], alerts: list[dict[str
     return updates
 
 
+def visible_homekit_label(item: dict[str, Any]) -> str | None:
+    service = item.get("service")
+    accessory = item.get("accessory")
+    if service in {"OccupancySensor", "MotionSensor", "ContactSensor", "Switch", "Outlet", "Lightbulb"}:
+        return str(accessory) if accessory else None
+    return str(service) if service else str(accessory) if accessory else None
+
+
+def disabled_enphase_service_names(homebridge_config: dict[str, Any]) -> set[str]:
+    disabled: set[str] = set()
+    for platform in homebridge_config.get("platforms", []):
+        if not isinstance(platform, dict) or platform.get("platform") != "enphaseEnvoy":
+            continue
+        for device in platform.get("devices", []):
+            if not isinstance(device, dict):
+                continue
+            for value in device.values():
+                if isinstance(value, list):
+                    for entry in value:
+                        if isinstance(entry, dict) and entry.get("displayType") == 0 and entry.get("name"):
+                            disabled.add(str(entry["name"]))
+                elif isinstance(value, dict) and value.get("displayType") == 0 and value.get("name"):
+                    disabled.add(str(value["name"]))
+    return disabled
+
+
+def cached_enphase_service_names() -> set[str]:
+    names: set[str] = set()
+    for path in sorted((HOMEBRIDGE_DIR / "accessories").glob("cachedAccessories*")):
+        data = load_json_file(path)
+        if not isinstance(data, list):
+            continue
+        for accessory in data:
+            if not isinstance(accessory, dict) or accessory.get("displayName") != "Envoy":
+                continue
+            for service in accessory.get("services", []):
+                if isinstance(service, dict) and service.get("displayName"):
+                    names.add(str(service["displayName"]))
+    return names
+
+
+def audit_homekit_surface(updates: list[dict[str, Any]]) -> dict[str, Any]:
+    characteristics = load_latest_characteristics()
+    homebridge_config = load_json_file(HOMEBRIDGE_CONFIG_PATH)
+    homebridge_config = homebridge_config if isinstance(homebridge_config, dict) else {}
+
+    duplicate_visible_labels: dict[str, list[dict[str, Any]]] = {}
+    labels: dict[str, list[dict[str, Any]]] = {}
+    visible_characteristics = {"OccupancyDetected", "MotionDetected", "ContactSensorState", "On"}
+    for item in characteristics.values():
+        if not isinstance(item, dict) or item.get("characteristic") not in visible_characteristics:
+            continue
+        label = visible_homekit_label(item)
+        if not label:
+            continue
+        labels.setdefault(label, []).append(
+            {
+                "platform": item.get("platform"),
+                "accessory": item.get("accessory"),
+                "service": item.get("service"),
+                "characteristic": item.get("characteristic"),
+                "value": item.get("value"),
+            }
+        )
+
+    for label, entries in labels.items():
+        surfaces = {
+            (entry.get("platform"), entry.get("accessory"), entry.get("service"))
+            for entry in entries
+        }
+        platforms = {entry.get("platform") for entry in entries}
+        if len(surfaces) > 1 and len(platforms) > 1:
+            duplicate_visible_labels[label] = entries
+
+    disabled = disabled_enphase_service_names(homebridge_config)
+    cached_disabled = sorted(disabled.intersection(cached_enphase_service_names()))
+    webhook_mismatches = [
+        {
+            "name": update.get("name"),
+            "active": update.get("active"),
+            "readback": update.get("readback"),
+            "error": update.get("error"),
+        }
+        for update in updates
+        if not update.get("ok")
+    ]
+
+    return {
+        "duplicateVisibleLabels": duplicate_visible_labels,
+        "cachedDisabledEnphaseServices": cached_disabled,
+        "webhookMismatches": webhook_mismatches,
+    }
+
+
 def write_homekit_report(updates: list[dict[str, Any]]) -> None:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     alarm_com = load_alarm_com()
@@ -1106,6 +1211,7 @@ def write_homekit_report(updates: list[dict[str, Any]]) -> None:
         "generatedAt": generated_at,
         "freshness": freshness,
         "updates": updates,
+        "surfaceAudit": audit_homekit_surface(updates),
     }
     (DATA_DIR / "latest_homekit_virtual_sensors.json").write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
     lines = [
@@ -1131,6 +1237,35 @@ def write_homekit_report(updates: list[dict[str, Any]]) -> None:
                 + (f" readback=`{update.get('readback')}`" if "readback" in update else "")
                 + (f" error=`{update.get('error')}`" if update.get("error") else "")
             )
+    audit = payload["surfaceAudit"]
+    lines.extend(["", "## Surface Audit", ""])
+    if not audit["webhookMismatches"]:
+        lines.append("- `ok` Virtual tile webhook readback matches requested state.")
+    else:
+        for item in audit["webhookMismatches"]:
+            lines.append(
+                f"- `mismatch` `{item.get('name')}` active=`{item.get('active')}` "
+                f"readback=`{item.get('readback')}`"
+                + (f" error=`{item.get('error')}`" if item.get("error") else "")
+            )
+    if not audit["cachedDisabledEnphaseServices"]:
+        lines.append("- `ok` Disabled Enphase services are absent from the Homebridge cache.")
+    else:
+        lines.append(
+            "- `warning` Disabled Enphase services still cached: "
+            + ", ".join(f"`{name}`" for name in audit["cachedDisabledEnphaseServices"])
+        )
+    if not audit["duplicateVisibleLabels"]:
+        lines.append("- `ok` No cross-platform duplicate visible labels in current HomeKit characteristics.")
+    else:
+        for label, entries in sorted(audit["duplicateVisibleLabels"].items()):
+            surfaces = sorted(
+                {
+                    f"{entry.get('platform')}:{entry.get('accessory')}:{entry.get('service')}"
+                    for entry in entries
+                }
+            )
+            lines.append(f"- `warning` `{label}` appears on " + ", ".join(f"`{surface}`" for surface in surfaces))
     (REPORT_DIR / "homekit_virtual_sensors.md").write_text("\n".join(lines) + "\n")
 
 
