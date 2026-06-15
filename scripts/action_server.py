@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import html
 import os
@@ -17,6 +18,7 @@ from typing import Any
 
 
 ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor"
 CONFIG_PATH = ROOT / "config" / "sources.json"
 DATA_DIR = ROOT / "data"
 REPORT_DIR = ROOT / "reports"
@@ -51,6 +53,10 @@ GARAGE_LIGHT_HOLD_SECONDS = 300
 GARAGE_LIGHT_CONTROLLER_BRIGHTNESS = 100
 NODE_BIN = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
 BUNDLED_PYTHON = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
+
+
+def running_from_runtime_root() -> bool:
+    return ROOT.resolve() == RUNTIME_ROOT.resolve()
 
 
 def load_config() -> dict[str, Any]:
@@ -109,8 +115,8 @@ def read_json_status(path: Path) -> dict[str, Any]:
         "exists": True,
         "path": str(path),
         "ok": payload.get("ok"),
-        "startedAt": payload.get("startedAt") or payload.get("timestamp"),
-        "finishedAt": payload.get("finishedAt") or payload.get("generatedAt") or payload.get("captured_at") or payload.get("capturedAt"),
+        "startedAt": payload.get("startedAt") or payload.get("checkedAt") or payload.get("timestamp"),
+        "finishedAt": payload.get("finishedAt") or payload.get("generatedAt") or payload.get("captured_at") or payload.get("capturedAt") or payload.get("checkedAt"),
         "returncode": payload.get("returncode"),
         "status": payload.get("status"),
         "error": payload.get("error"),
@@ -119,6 +125,10 @@ def read_json_status(path: Path) -> dict[str, Any]:
         launchd = payload["homebridge"].get("launchd")
         if isinstance(launchd, dict) and "ok" in launchd:
             status["ok"] = bool(launchd["ok"])
+    if status["ok"] is None and payload.get("status") in {"restored", "manual-change-detected"}:
+        status["ok"] = True
+    if status["ok"] is None and isinstance(payload.get("lastError"), str) and payload.get("lastError"):
+        status["ok"] = False
     passthrough_keys = (
         "staleBefore",
         "staleAfter",
@@ -1224,6 +1234,29 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Run the Smart Home action server.")
+    parser.add_argument(
+        "--force-outside-runtime",
+        action="store_true",
+        help="allow the action server to expose live actions outside the runtime root",
+    )
+    args = parser.parse_args()
+    if not args.force_outside_runtime and not running_from_runtime_root():
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error": "refusing to expose live Smart Home actions outside the runtime root",
+                    "sourceRoot": str(ROOT),
+                    "runtimeRoot": str(RUNTIME_ROOT),
+                },
+                indent=2,
+                sort_keys=True,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
     config = load_config()["actions"]
     host = str(config["bind_host"])
     port = int(config["port"])
