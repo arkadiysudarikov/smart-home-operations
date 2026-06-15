@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import argparse
+import fcntl
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 REPORT_DIR = ROOT / "reports"
 STATUS_PATH = DATA_DIR / "latest_energy_refresh.json"
+LOCK_PATH = DATA_DIR / "refresh_energy.lock"
 BUNDLED_PYTHON = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
 FAST_SCE_MIN_AGE_SECONDS = 3600
 FAST_ALARM_MIN_AGE_SECONDS = 900
@@ -155,6 +157,19 @@ def write_status(payload: dict[str, Any]) -> None:
     STATUS_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def acquire_refresh_lock() -> Any | None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    lock_file = LOCK_PATH.open("w")
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_file.close()
+        return None
+    lock_file.write(f"{os.getpid()} {now()}\n")
+    lock_file.flush()
+    return lock_file
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fast", action="store_true", help="refresh live source status without full historical reconciliation")
@@ -163,6 +178,10 @@ def main() -> int:
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    lock_file = acquire_refresh_lock()
+    if lock_file is None:
+        print("refresh_energy already running; skipping overlapping launch")
+        return 0
     py = python_path()
     payload: dict[str, Any] = {
         "ok": None,
@@ -219,6 +238,7 @@ def main() -> int:
                 "recent ChargePoint capture is still fresh",
             ),
             ("generate_alerts", [py, "scripts/generate_alerts.py"], 300, True, False, None),
+            ("analyze_energy_automation", [py, "scripts/analyze_energy_automation_opportunities.py"], 120, True, False, None),
         ]
     else:
         plan = [
@@ -241,6 +261,7 @@ def main() -> int:
                 ("analyze_energy_costs", [py, "scripts/analyze_energy_costs.py"], 300, False, False, None),
                 ("analyze_combined_energy", [py, "scripts/analyze_combined_energy_monitor.py"], 300, False, False, None),
                 ("generate_alerts", [py, "scripts/generate_alerts.py"], 300, True, False, None),
+                ("analyze_energy_automation", [py, "scripts/analyze_energy_automation_opportunities.py"], 120, True, False, None),
                 ("install_homekit_virtual_sensors", [py, "scripts/install_homekit_virtual_sensors.py"], 120, True, False, None),
             ]
         )
@@ -275,6 +296,7 @@ def main() -> int:
             "combinedEnergy": str(REPORT_DIR / "combined_energy_monitor.md"),
             "energyCosts": str(REPORT_DIR / "energy_costs.md"),
             "alerts": str(REPORT_DIR / "alerts.md"),
+            "energyAutomationOpportunities": str(REPORT_DIR / "energy_automation_opportunities.md"),
         }
     )
     write_status(payload)

@@ -97,6 +97,25 @@ def status_label(age: float | None, stale_hours: float) -> str:
     return "fresh"
 
 
+def effective_sce_summary(all_energy: dict[str, Any]) -> dict[str, Any]:
+    green_button = dict((all_energy.get("sceGreenButton") or {}).get("summary", {}) or {})
+    api = load_json(DATA_DIR / "latest_sce_api.json")
+    api_end = parse_dt(api.get("coverageEnd"))
+    green_end = parse_dt(green_button.get("coverageEnd"))
+    if api.get("ok") is True and api_end and (not green_end or api_end > green_end):
+        return {
+            **green_button,
+            "coverageStart": api.get("coverageStart") or green_button.get("coverageStart"),
+            "coverageEnd": api.get("coverageEnd"),
+            "intervalCount": api.get("intervalRows") or green_button.get("intervalCount"),
+            "source": "UtilityAPI",
+            "sourceFile": api.get("file"),
+            "sourceFinishedAt": api.get("finishedAt"),
+        }
+    green_button.setdefault("source", "Green Button")
+    return green_button
+
+
 def build_source_status(
     now: datetime,
     thresholds: dict[str, Any],
@@ -110,7 +129,7 @@ def build_source_status(
     stale_hours = float(thresholds.get("source_status_stale_hours", 24))
     chargepoint_stale_hours = float(thresholds.get("chargepoint_refresh_stale_hours", 24))
     sce_stale_hours = float(thresholds.get("sce_interval_stale_hours", thresholds.get("sce_interval_stale_days", 30) * 24))
-    sce_summary = (all_energy.get("sceGreenButton") or {}).get("summary", {})
+    sce_summary = effective_sce_summary(all_energy)
     sce_age = age_hours(now, sce_summary.get("coverageEnd"))
     sce_status = status_label(sce_age, sce_stale_hours)
 
@@ -305,16 +324,17 @@ def build_payload() -> dict[str, Any]:
     states: list[str] = []
     insights: list[str] = []
 
-    sce_summary = (all_energy.get("sceGreenButton") or {}).get("summary", {})
+    sce_summary = effective_sce_summary(all_energy)
     sce_overlap_count = int(all_energy.get("overlapPairCount") or 0)
     sce_age = age_hours(now, sce_summary.get("coverageEnd"))
     sce_stale_hours = float(thresholds.get("sce_interval_stale_hours", thresholds.get("sce_interval_stale_days", 30) * 24))
     if sce_age is None or sce_age >= sce_stale_hours:
+        source_name = sce_summary.get("source") or "SCE"
         alerts.append(
             alert(
                 "warning",
                 "SCE interval data is stale",
-                f"Newest SCE Green Button interval ends `{sce_summary.get('coverageEnd') or 'n/a'}`; current bill/home matching is bill-level only.",
+                f"Newest SCE {source_name} interval ends `{sce_summary.get('coverageEnd') or 'n/a'}`; current bill/home matching is bill-level only.",
             )
         )
 
@@ -524,7 +544,7 @@ def write_report(payload: dict[str, Any]) -> None:
         "",
         f"- Envoy: `{(sources.get('envoy') or {}).get('start') or 'n/a'}` to `{(sources.get('envoy') or {}).get('end') or 'n/a'}`",
         f"- Sense: `{(sources.get('sense') or {}).get('start') or 'n/a'}` to `{(sources.get('sense') or {}).get('end') or 'n/a'}`",
-        f"- SCE Green Button: `{(sources.get('sce') or {}).get('coverageStart') or 'n/a'}` to `{(sources.get('sce') or {}).get('coverageEnd') or 'n/a'}`",
+        f"- SCE {(sources.get('sce') or {}).get('source') or 'intervals'}: `{(sources.get('sce') or {}).get('coverageStart') or 'n/a'}` to `{(sources.get('sce') or {}).get('coverageEnd') or 'n/a'}`",
         f"- ChargePoint latest session: `{((sources.get('chargepoint') or {}).get('latestSession') or {}).get('startAt') or 'n/a'}` to `{((sources.get('chargepoint') or {}).get('latestSession') or {}).get('endAt') or 'n/a'}`",
         f"- Alarm.com captured: `{(sources.get('alarm') or {}).get('capturedAtLocal') or 'n/a'}`",
         f"- Energy costs: `{(sources.get('energyCosts') or {}).get('generatedAt') or 'n/a'}`",

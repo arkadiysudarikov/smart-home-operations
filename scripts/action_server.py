@@ -136,6 +136,7 @@ def read_json_status(path: Path) -> dict[str, Any]:
         "combinedEnergy",
         "energyCosts",
         "alerts",
+        "energyAutomationOpportunities",
     )
     for key in passthrough_keys:
         if key in payload:
@@ -252,6 +253,7 @@ def energy_status() -> dict[str, Any]:
     sense = read_json_status(DATA_DIR / "sense_trends_latest.json")
     sense_now = read_json_status(DATA_DIR / "sense_now_latest.json")
     envoy = read_json_status(DATA_DIR / "latest_envoy_direct.json")
+    automation = read_json_status(DATA_DIR / "latest_energy_automation_opportunities.json")
     payload = {
         "ok": True,
         "generatedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
@@ -263,6 +265,7 @@ def energy_status() -> dict[str, Any]:
         "sense": sense,
         "senseNow": sense_now,
         "envoy": envoy,
+        "automationOpportunities": automation,
         "combined": combined,
         "operationalSourceStatus": operational_source_status(),
     }
@@ -271,6 +274,9 @@ def energy_status() -> dict[str, Any]:
         payload["sourceStatus"] = combined_payload.get("sourceStatus", [])
         payload["alerts"] = combined_payload.get("alerts", [])
         payload["dailySummary"] = combined_payload.get("dailySummary", [])[-10:]
+    automation_payload = load_json_file(DATA_DIR / "latest_energy_automation_opportunities.json")
+    if automation_payload:
+        payload["opportunities"] = automation_payload.get("opportunities", [])
     return payload
 
 
@@ -292,6 +298,7 @@ def render_energy_page() -> bytes:
     status = energy_status()
     sources = status.get("operationalSourceStatus") or status.get("sourceStatus") or []
     alerts = status.get("alerts") or []
+    opportunities = status.get("opportunities") or []
     refresh = status.get("refresh") or {}
     source_rows = "\n".join(
         "<tr>"
@@ -306,6 +313,15 @@ def render_energy_page() -> bytes:
         f"<li><strong>{html_escape(item.get('severity'))}</strong> {html_escape(item.get('title'))}: {html_escape(item.get('detail'))}</li>"
         for item in alerts
     ) or "<li>No combined-energy alerts.</li>"
+    opportunity_rows = "\n".join(
+        "<tr>"
+        f"<td><span class='pill {html_escape(item.get('priority'))}'>{html_escape(item.get('priority'))}</span></td>"
+        f"<td>{html_escape(item.get('area'))}</td>"
+        f"<td>{html_escape(item.get('recommendation'))}</td>"
+        f"<td>{html_escape(item.get('automation'))}</td>"
+        "</tr>"
+        for item in opportunities
+    ) or "<tr><td colspan='4'>No automation recommendations generated yet.</td></tr>"
     body = f"""<!doctype html>
 <html>
 <head>
@@ -326,6 +342,9 @@ def render_energy_page() -> bytes:
     .pill.fresh, .pill.complete {{ background: #dcfce7; color: #166534; }}
     .pill.stale, .pill.failed, .pill.missing, .pill.auth_required, .pill.unreachable, .pill.credentials_missing {{ background: #fee2e2; color: #991b1b; }}
     .pill.downloaded, .pill.fallback, .pill.reachable {{ background: #fef3c7; color: #92400e; }}
+    .pill.high {{ background: #fee2e2; color: #991b1b; }}
+    .pill.medium {{ background: #fef3c7; color: #92400e; }}
+    .pill.low {{ background: #e0f2fe; color: #075985; }}
     .panel {{ margin-top: 24px; }}
     code {{ background: #f1f5f9; padding: 2px 4px; border-radius: 4px; }}
   </style>
@@ -354,6 +373,13 @@ def render_energy_page() -> bytes:
   <div class="panel">
     <h2>Alerts</h2>
     <ul>{alert_rows}</ul>
+  </div>
+  <div class="panel">
+    <h2>Automation Opportunities</h2>
+    <table>
+      <thead><tr><th>Priority</th><th>Area</th><th>Recommendation</th><th>Automation Path</th></tr></thead>
+      <tbody>{opportunity_rows}</tbody>
+    </table>
   </div>
   <p class="muted">JSON: <code>/status/energy</code></p>
   <script>
@@ -520,6 +546,7 @@ def energy_refresh_summary() -> dict[str, Any]:
         "sceCoverageEnd": latest.get("sceCoverageEnd"),
         "sceIntervalRows": latest.get("sceIntervalRows"),
         "combinedEnergyGeneratedAt": latest.get("combinedEnergyGeneratedAt"),
+        "energyAutomationOpportunities": latest.get("energyAutomationOpportunities"),
     }
 
 
@@ -541,6 +568,7 @@ def run_sce_refresh_background(started_at: str) -> None:
                 "energyCosts": str(REPORT_DIR / "energy_costs.md"),
                 "combinedEnergy": str(REPORT_DIR / "combined_energy_monitor.md"),
                 "alerts": str(REPORT_DIR / "alerts.md"),
+                "energyAutomationOpportunities": str(REPORT_DIR / "energy_automation_opportunities.md"),
                 "stdout": result["stdout"],
                 "stderr": result["stderr"],
                 "sceApiOk": sce_api.get("ok"),
@@ -589,6 +617,7 @@ def run_energy_reconcile_background(started_at: str) -> None:
                 "chargepointRefresh": str(DATA_DIR / "latest_chargepoint_refresh.json"),
                 "combinedEnergy": str(REPORT_DIR / "combined_energy_monitor.md"),
                 "alerts": str(REPORT_DIR / "alerts.md"),
+                "energyAutomationOpportunities": str(REPORT_DIR / "energy_automation_opportunities.md"),
                 "homekitVirtualSensors": str(REPORT_DIR / "homekit_virtual_sensors.md"),
                 "stdout": result["stdout"],
                 "stderr": result["stderr"],
@@ -770,6 +799,7 @@ def refresh_sce_data() -> dict[str, Any]:
         "energyCosts": str(REPORT_DIR / "energy_costs.md"),
         "combinedEnergy": str(REPORT_DIR / "combined_energy_monitor.md"),
         "alerts": str(REPORT_DIR / "alerts.md"),
+        "energyAutomationOpportunities": str(REPORT_DIR / "energy_automation_opportunities.md"),
         "status": str(SCE_REFRESH_STATUS_PATH),
     }
 
@@ -798,6 +828,7 @@ def refresh_and_reconcile_energy() -> dict[str, Any]:
         "energyCosts": str(REPORT_DIR / "energy_costs.md"),
         "combinedEnergy": str(REPORT_DIR / "combined_energy_monitor.md"),
         "alerts": str(REPORT_DIR / "alerts.md"),
+        "energyAutomationOpportunities": str(REPORT_DIR / "energy_automation_opportunities.md"),
         "homekitVirtualSensors": str(REPORT_DIR / "homekit_virtual_sensors.md"),
         "status": str(ENERGY_RECONCILE_STATUS_PATH),
     }

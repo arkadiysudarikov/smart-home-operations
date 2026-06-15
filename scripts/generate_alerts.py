@@ -393,6 +393,10 @@ def comparable_alarm_state(homebridge_state: str, portal_state: str) -> bool:
     equivalent = {
         ("Idle", "Closed"),
         ("Closed", "Idle"),
+        ("Open", "Active"),
+        ("Open", "Activated"),
+        ("Active", "Open"),
+        ("Activated", "Open"),
     }
     return (homebridge_state, portal_state) in equivalent
 
@@ -945,6 +949,7 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
 def active_state_titles(config: dict[str, Any], latest: dict[str, Any]) -> set[str]:
     metrics = latest.get("homebridge", {}).get("logs", {}).get("latestMetrics", {})
     states: set[str] = set()
+    live_energy_state_titles: set[str] = set()
 
     production_kw = metrics.get("enphase_production_kw")
     net_kw = metrics.get("enphase_consumption_net_kw")
@@ -955,15 +960,21 @@ def active_state_titles(config: dict[str, Any], latest: dict[str, Any]) -> set[s
 
     if isinstance(net_kw, (int, float)):
         if net_kw >= float(config["alerts"]["grid_import_kw"]):
-            states.add("Grid importing")
+            live_energy_state_titles.add("Grid importing")
         if net_kw <= float(config["alerts"]["grid_export_kw"]):
-            states.add("Grid exporting")
+            live_energy_state_titles.add("Grid exporting")
 
     if isinstance(production_kw, (int, float)) and isinstance(total_kw, (int, float)):
         if production_kw >= total_kw + float(config["alerts"]["solar_surplus_margin_kw"]):
-            states.add("Solar surplus")
+            live_energy_state_titles.add("Solar surplus")
 
-    states.update(str(item) for item in load_combined_energy().get("states", []))
+    states.update(live_energy_state_titles)
+    live_energy_titles = {"Grid importing", "Grid exporting", "Solar surplus"}
+    for item in load_combined_energy().get("states", []):
+        title = str(item)
+        if live_energy_state_titles and title in live_energy_titles:
+            continue
+        states.add(title)
     for source in load_combined_energy().get("sourceStatus", []):
         if source.get("source") == "SCE" and source.get("status") == "fresh":
             states.add("SCE fresh")

@@ -21,6 +21,8 @@ ALARM_PATH = ROOT / "config" / "alarm_energy_readings.json"
 LEGACY_ALARM_PATH = DATA_DIR / "alarm_energy_readings.json"
 ALL_ENERGY_PATH = DATA_DIR / "latest_all_energy_pairs.json"
 SENSE_NOW_PAIRING_PATH = DATA_DIR / "sense_now_pairing_latest.json"
+ENVOY_DIRECT_PATH = DATA_DIR / "latest_envoy_direct.json"
+SENSE_NOW_PATH = DATA_DIR / "sense_now_latest.json"
 OUT_JSON = DATA_DIR / "latest_meter_reconciliation.json"
 OUT_REPORT = REPORT_DIR / "meter_reconciliation.md"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
@@ -227,6 +229,69 @@ def load_sense_now_pairing() -> dict[str, Any]:
         return {}
 
 
+def load_json_file(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def live_envoy_sense_pairing() -> dict[str, Any]:
+    envoy = load_json_file(ENVOY_DIRECT_PATH)
+    sense = load_json_file(SENSE_NOW_PATH)
+    reachable = next((item for item in envoy.get("probes") or [] if item.get("reachable")), {})
+    production_payload = reachable.get("production") or {}
+    production_rows = production_payload.get("production") or []
+    consumption_rows = production_payload.get("consumption") or []
+    rows = production_rows + consumption_rows
+
+    def row_kw(measurement_type: str) -> float | None:
+        for row in rows:
+            if row.get("measurementType") == measurement_type:
+                return (row.get("wNow") or 0) / 1000.0
+        return None
+
+    def inverter_kw() -> float | None:
+        for row in production_rows:
+            if row.get("type") == "inverters":
+                return (row.get("wNow") or 0) / 1000.0
+        return None
+
+    envoy_production_kw = row_kw("production") or inverter_kw()
+    envoy_total_kw = row_kw("total-consumption")
+    envoy_net_kw = row_kw("net-consumption")
+    sense_kw = (sense.get("watts") or 0) / 1000.0 if sense.get("watts") is not None else None
+    sense_solar_kw = None
+    for device in sense.get("devices") or []:
+        if device.get("id") == "solar":
+            sense_solar_kw = (device.get("watts") or 0) / 1000.0
+            break
+
+    pairing = {
+        "envoyStatus": envoy.get("status"),
+        "envoyCapturedAt": envoy.get("finishedAt"),
+        "envoyTokenSource": envoy.get("tokenSource"),
+        "envoyHost": envoy.get("host"),
+        "senseCapturedAt": sense.get("capturedAt"),
+        "envoyProductionKw": envoy_production_kw,
+        "envoyTotalConsumptionKw": envoy_total_kw,
+        "envoyNetConsumptionKw": envoy_net_kw,
+        "senseLoadKw": sense_kw,
+        "senseSolarKw": sense_solar_kw,
+    }
+    if envoy_total_kw is not None and sense_kw is not None:
+        pairing["envoyTotalMinusSenseKw"] = envoy_total_kw - sense_kw
+        pairing["senseToEnvoyTotalRatio"] = sense_kw / envoy_total_kw if envoy_total_kw else None
+    if envoy_production_kw is not None and sense_solar_kw is not None:
+        pairing["envoyProductionMinusSenseSolarKw"] = envoy_production_kw - sense_solar_kw
+    if envoy_net_kw is not None:
+        pairing["gridState"] = "exporting" if envoy_net_kw < 0 else "importing"
+    return pairing
+
+
 def pct_delta(a: float, b: float) -> float | None:
     if b == 0:
         return None
@@ -365,6 +430,7 @@ def build_reconciliation() -> dict[str, Any]:
         "instantPairs": instant_pairs,
         "instantChildSummary": child_instants,
         "senseNowPairing": load_sense_now_pairing(),
+        "liveEnvoySensePairing": live_envoy_sense_pairing(),
         "senseEnvoySummary": summarize_pairs(sense_envoy_pairs),
         "dailyRows": daily_rows,
         "childSummary": child_summary,
@@ -397,11 +463,42 @@ def write_report(payload: dict[str, Any]) -> None:
         f"- Alarm.com source captured: `{payload['alarmSource'].get('capturedAtLocal')}`",
         f"- Alarm.com timestamp assumption: {payload['alarmSource'].get('timeZoneAssumption')}",
         "",
-        "## Instantaneous Pairing",
+        "## Live Envoy / Sense Pairing",
         "",
-        "| Alarm time | Alarm kW | Envoy total kW | Envoy - Alarm kW | Alarm / Envoy | Sense kW | Alarm - Sense kW | Envoy net kW | Production kW | Storage kW |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| Envoy status | Envoy total kW | Envoy production kW | Envoy net kW | Grid | Sense load kW | Sense solar kW | Total gap kW | Solar gap kW |",
+        "|---|---:|---:|---:|---|---:|---:|---:|---:|",
     ]
+    live = payload.get("liveEnvoySensePairing") or {}
+    lines.append(
+        "| "
+        + " | ".join(
+            [
+                f"`{live.get('envoyStatus') or 'n/a'}`",
+                fmt(live.get("envoyTotalConsumptionKw")),
+                fmt(live.get("envoyProductionKw")),
+                fmt(live.get("envoyNetConsumptionKw")),
+                str(live.get("gridState") or "n/a"),
+                fmt(live.get("senseLoadKw")),
+                fmt(live.get("senseSolarKw")),
+                fmt(live.get("envoyTotalMinusSenseKw")),
+                fmt(live.get("envoyProductionMinusSenseSolarKw")),
+            ]
+        )
+        + " |"
+    )
+    lines.extend(
+        [
+            "",
+            f"- Envoy captured: `{live.get('envoyCapturedAt') or 'n/a'}` via `{live.get('envoyTokenSource') or 'n/a'}`.",
+            f"- Sense captured: `{live.get('senseCapturedAt') or 'n/a'}`.",
+            "- Treat Envoy as the live site-energy source of truth; Sense is useful as a secondary load/device-classifier signal.",
+            "",
+            "## Instantaneous Pairing",
+            "",
+            "| Alarm time | Alarm kW | Envoy total kW | Envoy - Alarm kW | Alarm / Envoy | Sense kW | Alarm - Sense kW | Envoy net kW | Production kW | Storage kW |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        ]
+    )
     for row in payload["instantPairs"]:
         lines.append(
             "| "

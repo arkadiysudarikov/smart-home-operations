@@ -23,6 +23,16 @@ TOKEN_CACHE_PATH = DATA_DIR / "envoy_token.json"
 HOMEBRIDGE_CONFIG_PATH = Path.home() / ".homebridge" / "config.json"
 ENLIGHTEN_BASE = "https://enlighten.enphaseenergy.com"
 ENLIGHTEN_PREFS_GLOB = "*/Data/Library/Preferences/com.enphaseenergy.MyEnlighten.plist"
+ENLIGHTEN_PREFS_KNOWN_PATHS = (
+    Path.home()
+    / "Library"
+    / "Containers"
+    / "3816A446-32F5-4CA2-BDA7-50D50D942869"
+    / "Data"
+    / "Library"
+    / "Preferences"
+    / "com.enphaseenergy.MyEnlighten.plist",
+)
 
 
 def now() -> str:
@@ -93,18 +103,36 @@ def configured_token(config: dict[str, Any]) -> tuple[str | None, str, dict[str,
     envoy = config.get("envoy") or {}
     if isinstance(envoy, dict) and envoy.get("token"):
         return str(envoy["token"]), "sources_config", {}
-    value, metadata = enlighten_site_data_token()
-    if value:
-        return value, "enlighten_site_data", metadata
     value, metadata = cached_token()
     if value:
         return value, "cache", metadata
+    if os.environ.get("ENPHASE_READ_APP_CONTAINER") != "1":
+        return None, "none", {"skippedAppContainer": True}
+    value, metadata = enlighten_site_data_token()
+    if value:
+        return value, "enlighten_site_data", metadata
     return None, "none", {}
+
+
+def jwt_expiry(token_value: str) -> int | None:
+    parts = token_value.split(".")
+    if len(parts) < 2:
+        return None
+    payload = parts[1] + "=" * (-len(parts[1]) % 4)
+    try:
+        decoded = json.loads(base64.urlsafe_b64decode(payload.encode()).decode("utf-8"))
+    except Exception:
+        return None
+    exp = decoded.get("exp")
+    return int(exp) if isinstance(exp, (int, float)) else None
 
 
 def enlighten_site_data_token() -> tuple[str | None, dict[str, Any]]:
     containers = Path.home() / "Library" / "Containers"
-    for prefs_path in containers.glob(ENLIGHTEN_PREFS_GLOB):
+    prefs_paths = [path for path in ENLIGHTEN_PREFS_KNOWN_PATHS if path.exists()]
+    if os.environ.get("ENPHASE_SCAN_CONTAINERS") == "1":
+        prefs_paths.extend(containers.glob(ENLIGHTEN_PREFS_GLOB))
+    for prefs_path in prefs_paths:
         try:
             payload = plistlib.load(prefs_path.open("rb"))
             encoded = payload.get("site_data")
@@ -119,14 +147,23 @@ def enlighten_site_data_token() -> tuple[str | None, dict[str, Any]]:
         for envoy in site_data.get("envoy") or []:
             token_value = envoy.get("entrez_token")
             if token_value:
-                return str(token_value), {
+                expires_at = jwt_expiry(str(token_value))
+                metadata = {
                     "ok": True,
                     "source": "enlighten_site_data",
                     "serialNumber": envoy.get("serialNumber"),
                     "partNumber": envoy.get("part_num"),
                     "siteId": site_data.get("site_id"),
                     "userId": site_data.get("user_id"),
+                    "expires_at": expires_at,
+                    "expiresAt": epoch_to_local(expires_at),
                 }
+                if expires_at:
+                    DATA_DIR.mkdir(parents=True, exist_ok=True)
+                    TOKEN_CACHE_PATH.write_text(
+                        json.dumps({**metadata, "token": str(token_value)}, indent=2, sort_keys=True) + "\n"
+                    )
+                return str(token_value), metadata
     return None, {}
 
 
