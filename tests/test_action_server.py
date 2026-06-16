@@ -211,6 +211,23 @@ class ActionServerTest(unittest.TestCase):
 
         self.assertEqual(handler.status, 200)
 
+    def test_send_json_ignores_disconnect_during_headers(self) -> None:
+        class FakeHandler:
+            def send_response(self, status: int) -> None:
+                self.status = status
+
+            def send_header(self, name: str, value: str) -> None:
+                return None
+
+            def end_headers(self) -> None:
+                raise BrokenPipeError()
+
+        handler = FakeHandler()
+
+        action_server.Handler.send_json(handler, 200, {"ok": True})
+
+        self.assertEqual(handler.status, 200)
+
     def test_send_html_ignores_client_disconnect(self) -> None:
         class BrokenWriter:
             def write(self, body: bytes) -> None:
@@ -227,6 +244,23 @@ class ActionServerTest(unittest.TestCase):
 
             def end_headers(self) -> None:
                 return None
+
+        handler = FakeHandler()
+
+        action_server.Handler.send_html(handler, 200, b"ok")
+
+        self.assertEqual(handler.status, 200)
+
+    def test_send_html_ignores_disconnect_during_headers(self) -> None:
+        class FakeHandler:
+            def send_response(self, status: int) -> None:
+                self.status = status
+
+            def send_header(self, name: str, value: str) -> None:
+                return None
+
+            def end_headers(self) -> None:
+                raise ConnectionResetError()
 
         handler = FakeHandler()
 
