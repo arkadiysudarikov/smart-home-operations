@@ -999,7 +999,8 @@ def active_state_titles(config: dict[str, Any], latest: dict[str, Any]) -> set[s
     if comparison and int(comparison.get("staleCount") or 0) == 0:
         states.add("Alarm cache clean")
 
-    if load_action_status().get("ok") is True:
+    action_status = load_action_status()
+    if action_status.get("ok") is True and not action_status.get("degraded"):
         states.add("Actions online")
 
     return states

@@ -86,6 +86,71 @@ class ActionServerTest(unittest.TestCase):
             self.assertEqual(status["stepSummary"]["failed"], 1)
             self.assertEqual(status["optionalFailures"], ["capture_sense_now"])
 
+    def test_action_status_marks_optional_refresh_failures_degraded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            refresh = data_dir / "latest_energy_refresh.json"
+            refresh.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "status": "complete",
+                        "stepSummary": {"total": 2, "complete": 1, "skipped": 0, "failed": 1},
+                        "optionalFailures": ["capture_sense_now"],
+                    }
+                )
+                + "\n"
+            )
+            self.patch_module(ACTION_STATUS_PATHS={"refreshEnergy": refresh})
+
+            status = action_server.action_status()
+
+            self.assertTrue(status["ok"])
+            self.assertTrue(status["degraded"])
+            self.assertEqual(status["status"], "degraded")
+            self.assertEqual(status["degradedActions"], ["refreshEnergy"])
+
+    def test_action_status_marks_failed_child_not_ok(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            refresh = data_dir / "latest_energy_refresh.json"
+            refresh.write_text(json.dumps({"ok": False, "status": "failed"}) + "\n")
+            self.patch_module(ACTION_STATUS_PATHS={"refreshEnergy": refresh})
+
+            status = action_server.action_status()
+
+            self.assertFalse(status["ok"])
+            self.assertEqual(status["status"], "failed")
+            self.assertEqual(status["failedActions"], ["refreshEnergy"])
+
+    def test_energy_status_marks_optional_refresh_failures_degraded(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            data_dir = root / "data"
+            config_dir = root / "config"
+            data_dir.mkdir()
+            config_dir.mkdir()
+            refresh = data_dir / "latest_energy_refresh.json"
+            refresh.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "status": "complete",
+                        "stepSummary": {"total": 2, "complete": 1, "skipped": 0, "failed": 1},
+                        "optionalFailures": ["capture_sense_now"],
+                    }
+                )
+                + "\n"
+            )
+            self.patch_module(ROOT=root, DATA_DIR=data_dir, ENERGY_REFRESH_STATUS_PATH=refresh, SCE_API_STATUS_PATH=data_dir / "latest_sce_api.json")
+
+            status = action_server.energy_status()
+
+            self.assertTrue(status["ok"])
+            self.assertTrue(status["degraded"])
+            self.assertEqual(status["status"], "degraded")
+            self.assertEqual(status["degradedSources"], ["refresh"])
+
     def test_main_refuses_to_expose_actions_outside_runtime_root_by_default(self) -> None:
         self.patch_module(ROOT=Path("/repo"), RUNTIME_ROOT=Path("/runtime"))
         stderr = io.StringIO()

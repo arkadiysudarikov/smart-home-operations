@@ -156,6 +156,24 @@ def read_json_status(path: Path) -> dict[str, Any]:
     return status
 
 
+def status_is_failure(status: dict[str, Any]) -> bool:
+    if status.get("ok") is False:
+        return True
+    summary = status.get("stepSummary")
+    if isinstance(summary, dict) and status.get("ok") is not True:
+        return int(summary.get("failed") or 0) > 0
+    return False
+
+
+def status_is_degraded(status: dict[str, Any]) -> bool:
+    if status_is_failure(status):
+        return True
+    if status.get("optionalFailures"):
+        return True
+    summary = status.get("stepSummary")
+    return isinstance(summary, dict) and int(summary.get("failed") or 0) > 0
+
+
 def parse_status_dt(value: Any) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -248,10 +266,17 @@ def operational_source_status() -> list[dict[str, Any]]:
 
 
 def action_status() -> dict[str, Any]:
+    actions = {name: read_json_status(path) for name, path in ACTION_STATUS_PATHS.items()}
+    failed = [name for name, status in actions.items() if status_is_failure(status)]
+    degraded = [name for name, status in actions.items() if status_is_degraded(status)]
     return {
-        "ok": True,
+        "ok": not failed,
+        "status": "failed" if failed else "degraded" if degraded else "ok",
+        "degraded": bool(degraded),
+        "failedActions": failed,
+        "degradedActions": degraded,
         "generatedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
-        "actions": {name: read_json_status(path) for name, path in ACTION_STATUS_PATHS.items()},
+        "actions": actions,
     }
 
 
@@ -266,8 +291,26 @@ def energy_status() -> dict[str, Any]:
     sense_now = read_json_status(DATA_DIR / "sense_now_latest.json")
     envoy = read_json_status(DATA_DIR / "latest_envoy_direct.json")
     automation = read_json_status(DATA_DIR / "latest_energy_automation_opportunities.json")
+    statuses = {
+        "refresh": refresh,
+        "sce": sce,
+        "chargepoint": chargepoint,
+        "alarm": alarm,
+        "alarmEnergy": alarm_energy,
+        "sense": sense,
+        "senseNow": sense_now,
+        "envoy": envoy,
+        "automationOpportunities": automation,
+        "combined": combined,
+    }
+    failed = [name for name, status in statuses.items() if status_is_failure(status)]
+    degraded = [name for name, status in statuses.items() if status_is_degraded(status)]
     payload = {
-        "ok": True,
+        "ok": not failed,
+        "status": "failed" if failed else "degraded" if degraded else "ok",
+        "degraded": bool(degraded),
+        "failedSources": failed,
+        "degradedSources": degraded,
         "generatedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
         "refresh": refresh,
         "sce": sce,
