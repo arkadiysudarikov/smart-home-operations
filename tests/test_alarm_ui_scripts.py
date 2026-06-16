@@ -50,6 +50,7 @@ class AlarmUiScriptsTest(unittest.TestCase):
             self.assertIn("function redactArtifact", source)
             self.assertIn("[redacted-email]", source)
             self.assertIn("[redacted-phone]", source)
+            self.assertIn("console.error(redactText(", source)
 
     def test_sensor_probe_does_not_persist_raw_html_sample(self) -> None:
         source = (ROOT / "scripts" / "probe_alarm_sensor_saver_ui.js").read_text()
