@@ -692,13 +692,17 @@ def run_gate_test_background(started_at: str) -> None:
                 existing = json.loads(GATE_TEST_STATUS_PATH.read_text())
             except json.JSONDecodeError:
                 existing = {}
+        producer_finished = bool(existing.get("finishedAt"))
+        producer_ok = existing.get("ok") if isinstance(existing.get("ok"), bool) else result["ok"]
         write_gate_test_status(
             {
                 **existing,
-                "ok": result["ok"],
+                "ok": producer_ok,
                 "scheduled": False,
                 "startedAt": existing.get("startedAt") or started_at,
-                "finishedAt": existing.get("finishedAt") or datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                "finishedAt": existing.get("finishedAt")
+                or datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                "status": existing.get("status") if producer_finished else ("complete" if result["ok"] else "failed"),
                 "returncode": result["returncode"],
                 "report": str(REPORT_DIR / "alarm_gate_test.md"),
                 "stdout": result["stdout"],

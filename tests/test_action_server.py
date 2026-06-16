@@ -151,6 +151,74 @@ class ActionServerTest(unittest.TestCase):
             self.assertEqual(status["status"], "degraded")
             self.assertEqual(status["degradedSources"], ["refresh"])
 
+    def test_gate_test_background_preserves_finished_producer_status(self) -> None:
+        class FakeLock:
+            def release(self) -> None:
+                self.released = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            status_path = data_dir / "latest_alarm_gate_test.json"
+            report_dir = data_dir / "reports"
+            report_dir.mkdir()
+            status_path.write_text(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "status": "timeout",
+                        "startedAt": "2026-06-15T17:00:00-07:00",
+                        "finishedAt": "2026-06-15T17:10:00-07:00",
+                    }
+                )
+                + "\n"
+            )
+            lock = FakeLock()
+            self.patch_module(
+                GATE_TEST_STATUS_PATH=status_path,
+                REPORT_DIR=report_dir,
+                GATE_TEST_LOCK=lock,
+                run=lambda command, timeout: {"ok": False, "returncode": 2, "stdout": "status path", "stderr": ""},
+            )
+
+            action_server.run_gate_test_background("2026-06-15T17:00:00-07:00")
+
+            payload = json.loads(status_path.read_text())
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["status"], "timeout")
+            self.assertEqual(payload["finishedAt"], "2026-06-15T17:10:00-07:00")
+            self.assertEqual(payload["returncode"], 2)
+            self.assertTrue(lock.released)
+
+    def test_gate_test_background_marks_unfinished_producer_as_failed(self) -> None:
+        class FakeLock:
+            def release(self) -> None:
+                self.released = True
+
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            status_path = data_dir / "latest_alarm_gate_test.json"
+            report_dir = data_dir / "reports"
+            report_dir.mkdir()
+            status_path.write_text(
+                json.dumps({"ok": None, "status": "running", "startedAt": "2026-06-15T17:00:00-07:00"}) + "\n"
+            )
+            lock = FakeLock()
+            self.patch_module(
+                GATE_TEST_STATUS_PATH=status_path,
+                REPORT_DIR=report_dir,
+                GATE_TEST_LOCK=lock,
+                run=lambda command, timeout: {"ok": False, "returncode": None, "stdout": "", "stderr": "timed out"},
+            )
+
+            action_server.run_gate_test_background("2026-06-15T17:00:00-07:00")
+
+            payload = json.loads(status_path.read_text())
+            self.assertFalse(payload["ok"])
+            self.assertEqual(payload["status"], "failed")
+            self.assertIsNotNone(payload["finishedAt"])
+            self.assertEqual(payload["stderr"], "timed out")
+            self.assertTrue(lock.released)
+
     def test_main_refuses_to_expose_actions_outside_runtime_root_by_default(self) -> None:
         self.patch_module(ROOT=Path("/repo"), RUNTIME_ROOT=Path("/runtime"))
         stderr = io.StringIO()
