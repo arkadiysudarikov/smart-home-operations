@@ -181,7 +181,22 @@ def has_sense_live_auth_warning(warnings: list[Any]) -> bool:
     return False
 
 
-def warning_trend(rows: list[sqlite3.Row]) -> dict[str, Any]:
+def distinct_warning_messages(rows: list[sqlite3.Row], category: str, current_warnings: list[Any] | None = None) -> set[str]:
+    messages = {str(item) for item in current_warnings or [] if warning_category(str(item)) == category}
+    for row in rows:
+        try:
+            raw = json.loads(row["raw_json"])
+        except Exception:
+            continue
+        for item in raw.get("homebridge", {}).get("logs", {}).get("recentWarnings", []) or []:
+            message = str(item)
+            if warning_category(message) == category:
+                messages.add(message)
+    return messages
+
+
+def warning_trend(rows: list[sqlite3.Row], excluded_categories: set[str] | None = None) -> dict[str, Any]:
+    excluded_categories = excluded_categories or set()
     categories: Counter[str] = Counter()
     examples: dict[str, str] = {}
     mentions = 0
@@ -193,6 +208,8 @@ def warning_trend(rows: list[sqlite3.Row]) -> dict[str, Any]:
         for item in raw.get("homebridge", {}).get("logs", {}).get("recentWarnings", []) or []:
             message = str(item)
             category = warning_category(message)
+            if category in excluded_categories:
+                continue
             categories[category] += 1
             mentions += 1
             examples.setdefault(category, message)
@@ -906,15 +923,17 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
 
     warning_window = rows[: int(config["alerts"]["warning_recent_window"])]
     trend = warning_trend(warning_window)
-    trend_counts = {item.get("category"): int(item.get("count") or 0) for item in trend.get("leaders") or []}
-    sense_live_401_count = trend_counts.get("Sense live websocket auth", 0)
-    if has_sense_live_auth_warning(recent_warning_items) and sense_live_401_count >= int(config["alerts"].get("sense_live_401_warning_min", 3)):
+    sense_live_401_threshold = int(config["alerts"].get("sense_live_401_warning_min", 3))
+    sense_live_401_distinct_count = len(
+        distinct_warning_messages(warning_window, "Sense live websocket auth", recent_warning_items)
+    )
+    if has_sense_live_auth_warning(recent_warning_items) and sense_live_401_distinct_count >= sense_live_401_threshold:
         alerts.append(
             {
                 "severity": "warning",
                 "title": "Sense live websocket auth is noisy",
                 "detail": (
-                    f"`{sense_live_401_count}` recent Sense live-websocket auth warnings; "
+                    f"`{sense_live_401_distinct_count}` distinct recent Sense live-websocket auth warnings; "
                     "daily Sense trend capture is tracked separately and may still be healthy."
                 ),
             }
@@ -1011,7 +1030,11 @@ def write_reports(alerts: list[dict[str, str]], latest: dict[str, Any]) -> None:
     alerts = enrich_alerts(alerts)
     config = load_config()
     warning_rows = recent_rows(int(config["alerts"]["warning_recent_window"]))
-    trend = warning_trend(warning_rows)
+    active_titles = {alert.get("title") for alert in alerts}
+    excluded_trend_categories = set()
+    if "Sense live websocket auth is noisy" not in active_titles:
+        excluded_trend_categories.add("Sense live websocket auth")
+    trend = warning_trend(warning_rows, excluded_categories=excluded_trend_categories)
     alarm_com = load_alarm_com()
     if (alarm_com.get("alarmState") or {}).get("ok"):
         write_alarm_state_comparison_report(compare_alarm_portal_to_homebridge(alarm_com, latest))
