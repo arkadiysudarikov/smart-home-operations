@@ -65,6 +65,71 @@ class ActionServerTest(unittest.TestCase):
 
             self.assertTrue(status["ok"])
 
+    def test_garage_activity_report_surfaces_recent_events_and_off_result(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            event_path = Path(tmp) / "garage_activity_events.jsonl"
+            event_path.write_text(
+                "\n".join(
+                    [
+                        json.dumps(
+                            {
+                                "timestamp": "2026-06-17T08:00:00-07:00",
+                                "type": "activation",
+                                "ok": True,
+                                "trigger": "Garage Door Contact Opens",
+                                "holdUntil": "2026-06-17T08:05:00-07:00",
+                            }
+                        ),
+                        json.dumps(
+                            {
+                                "timestamp": "2026-06-17T08:05:00-07:00",
+                                "type": "expiry",
+                                "ok": True,
+                                "status": "restored",
+                                "restoreResult": {"on": False, "brightness": 0},
+                            }
+                        ),
+                    ]
+                )
+                + "\n"
+            )
+            self.patch_module(GARAGE_ACTIVITY_EVENTS_PATH=event_path)
+
+            report = action_server.garage_activity_report({"active": False, "status": "restored"})
+
+            self.assertIn("Garage Door Contact Opens", report["knownTriggers"])
+            self.assertEqual(report["recentActivationCount"], 1)
+            self.assertEqual(report["lastActivation"]["trigger"], "Garage Door Contact Opens")
+            self.assertTrue(report["lightsTurnedOffAfterLastActivity"])
+
+    def test_trigger_garage_light_activity_appends_activation_event(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            hold_path = data_dir / "garage_light_hold.json"
+            event_path = data_dir / "garage_activity_events.jsonl"
+            self.patch_module(
+                DATA_DIR=data_dir,
+                GARAGE_LIGHT_HOLD_STATUS_PATH=hold_path,
+                GARAGE_ACTIVITY_EVENTS_PATH=event_path,
+                garage_light_status=lambda: {"ok": True, "light": {"on": False, "brightness": 0}},
+                set_garage_light_on_100=lambda: {"ok": True, "light": {"on": True, "brightness": 100}},
+                schedule_garage_light_hold_check=lambda state=None: None,
+            )
+
+            result = action_server.trigger_garage_light_activity(
+                trigger="Garage Door Contact Opens",
+                source="test",
+                remote_addr="127.0.0.1",
+            )
+
+            state = json.loads(hold_path.read_text())
+            events = [json.loads(line) for line in event_path.read_text().splitlines()]
+            self.assertTrue(result["ok"])
+            self.assertEqual(state["activationCount"], 1)
+            self.assertEqual(state["lastTrigger"], "Garage Door Contact Opens")
+            self.assertEqual(events[-1]["type"], "activation")
+            self.assertEqual(events[-1]["trigger"], "Garage Door Contact Opens")
+
     def test_read_json_status_preserves_refresh_failure_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "latest_energy_refresh.json"
