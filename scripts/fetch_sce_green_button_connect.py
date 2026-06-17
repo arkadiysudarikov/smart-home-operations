@@ -429,6 +429,23 @@ def main() -> int:
         try:
             result = fetch_with_auto_historical_collection(utilityapi_config)
         except urllib.error.HTTPError as exc:
+            if exc.code == 402:
+                write_status(
+                    {
+                        "ok": None,
+                        "status": "utilityapi_payment_required",
+                        "startedAt": started_at,
+                        "finishedAt": now(),
+                        "statusCode": exc.code,
+                        "reason": exc.reason,
+                        "detail": (
+                            "UtilityAPI returned 402 Payment Required. Treating SCE as source-side degraded "
+                            "so the monitor can complete while stale-interval alerts remain active."
+                        ),
+                        "requiredAction": "Check UtilityAPI billing or collection entitlement, then rerun Refresh SCE.",
+                    }
+                )
+                return 0
             write_status(
                 {
                     "ok": False,
