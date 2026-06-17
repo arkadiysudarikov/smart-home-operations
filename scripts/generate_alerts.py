@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import urllib.parse
 import urllib.request
@@ -152,6 +153,10 @@ def warning_category(message: str) -> str:
     if "smarthq" in lower:
         return "SmartHQ"
     if "enphase" in lower or "envoy" in lower:
+        if any(token in lower for token in ("timeout", "etimedout", "enetunreach", "econnrefused")):
+            return "Enphase Envoy local communication"
+        if "valid finite number" in lower or "nan" in lower:
+            return "Enphase Envoy invalid characteristic"
         return "Enphase Envoy"
     return "Other"
 
@@ -179,6 +184,23 @@ def has_sense_live_auth_warning(warnings: list[Any]) -> bool:
         if warning_category(str(warning)) == "Sense live websocket auth":
             return True
     return False
+
+
+def has_envoy_local_comm_warning(warnings: list[Any]) -> bool:
+    for warning in warnings:
+        if warning_category(str(warning)) == "Enphase Envoy local communication":
+            return True
+    return False
+
+
+def count_envoy_local_comm_warnings(warnings: list[Any]) -> int:
+    total = 0
+    for warning in warnings:
+        message = str(warning)
+        collapsed = re.search(r"Collapsed (\d+) Envoy warning lines", message)
+        if warning_category(message) == "Enphase Envoy local communication":
+            total += int(collapsed.group(1)) if collapsed else 1
+    return total
 
 
 def warning_trend(rows: list[sqlite3.Row]) -> dict[str, Any]:
@@ -252,6 +274,8 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         return "Recreate the missing Alarm.com Recording Rules for Entry Door, Sideyard Gate, and related cameras; then run a post-rule door or gate trip test."
     if title == "Office TaHoma child bridge is unreachable":
         return "Check the Office TaHoma power, Wi-Fi, and IP reservation; then rerun the Office child bridge check or restart."
+    if title == "Enphase Envoy local communication is degraded":
+        return "Check the Envoy gateway at 192.168.1.71, local network reachability, and Enphase child bridge logs; live power may recover before cached warning history clears."
     if title == "Recent Homebridge warning volume is high":
         return "Use the Warning Trend section below and fix the top non-dedicated category first; if Alarm.com dominates, refresh the portal cookie and websocket path."
     if title == "Alarm.com websocket is unreliable":
@@ -715,6 +739,19 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
             }
         )
 
+    if has_envoy_local_comm_warning(recent_warning_items):
+        envoy_warning_count = count_envoy_local_comm_warnings(recent_warning_items)
+        alerts.append(
+            {
+                "severity": "warning",
+                "title": "Enphase Envoy local communication is degraded",
+                "detail": (
+                    f"Homebridge saw `{envoy_warning_count}` Envoy local update failures in the sampled log window; "
+                    "timeouts/refusals to `192.168.1.71:443` point at Envoy or local-network reachability, not energy math."
+                ),
+            }
+        )
+
     alarm_platform = next(
         (
             item
@@ -923,7 +960,13 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
     current_warning_count = int(latest.get("homebridge", {}).get("logs", {}).get("warningCount", 0))
     warning_total = sum(int(row["warning_count"]) for row in warning_window)
     if current_warning_count > 0 and warning_total >= int(config["alerts"]["warning_high_count"]):
-        dedicated_categories = {"Office TaHoma", "Sense live websocket auth", "SmartHQ remaining duration"}
+        dedicated_categories = {
+            "Enphase Envoy local communication",
+            "Enphase Envoy invalid characteristic",
+            "Office TaHoma",
+            "Sense live websocket auth",
+            "SmartHQ remaining duration",
+        }
         if alarm_portal_state_clean:
             dedicated_categories.add("Alarm.com auth/websocket")
         non_dedicated_total = warning_count_excluding(
