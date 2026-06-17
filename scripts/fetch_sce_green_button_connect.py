@@ -73,7 +73,7 @@ def configured_utilityapi() -> dict[str, Any]:
         "auto_historical_collection": parse_bool(
             os.environ.get("UTILITYAPI_AUTO_HISTORICAL_COLLECTION")
             if os.environ.get("UTILITYAPI_AUTO_HISTORICAL_COLLECTION") is not None
-            else config.get("utilityapi_auto_historical_collection", True)
+            else config.get("utilityapi_auto_historical_collection", False)
         ),
         "stale_hours": float(
             os.environ.get("UTILITYAPI_AUTO_COLLECTION_STALE_HOURS")
@@ -465,7 +465,7 @@ def main() -> int:
                     "startedAt": started_at,
                     "finishedAt": now(),
                     "detail": str(exc),
-                    "requiredAction": "Refresh SCE will auto-trigger UtilityAPI historical collection when configured meter data is stale; otherwise trigger collection manually and rerun Refresh SCE.",
+                    "requiredAction": "UtilityAPI returned no intervals. Enable utilityapi_auto_historical_collection only if you want Refresh SCE to trigger UtilityAPI collection jobs; otherwise trigger collection manually and rerun Refresh SCE.",
                 }
             )
             return 0

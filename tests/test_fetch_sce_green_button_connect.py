@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import unittest
 import urllib.error
 from pathlib import Path
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -28,6 +30,76 @@ class FetchSceGreenButtonConnectTest(unittest.TestCase):
     def tearDown(self) -> None:
         for name, original in getattr(self, "_restore", {}).items():
             setattr(fetch_sce, name, original)
+
+    def test_utilityapi_historical_collection_defaults_to_disabled(self) -> None:
+        self.patch_module(load_config=lambda: {"utilityapi_api_token": "token"})
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            config = fetch_sce.configured_utilityapi()
+
+        self.assertFalse(config["auto_historical_collection"])
+
+    def test_utilityapi_historical_collection_can_be_enabled_by_config(self) -> None:
+        self.patch_module(
+            load_config=lambda: {
+                "utilityapi_api_token": "token",
+                "utilityapi_auto_historical_collection": True,
+            }
+        )
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            config = fetch_sce.configured_utilityapi()
+
+        self.assertTrue(config["auto_historical_collection"])
+
+    def test_utilityapi_historical_collection_can_be_enabled_by_env(self) -> None:
+        self.patch_module(
+            load_config=lambda: {
+                "utilityapi_api_token": "token",
+                "utilityapi_auto_historical_collection": False,
+            }
+        )
+
+        with mock.patch.dict(os.environ, {"UTILITYAPI_AUTO_HISTORICAL_COLLECTION": "true"}, clear=True):
+            config = fetch_sce.configured_utilityapi()
+
+        self.assertTrue(config["auto_historical_collection"])
+
+    def test_stale_download_does_not_trigger_collection_when_disabled(self) -> None:
+        triggered = False
+
+        def trigger_collection(*_args: object) -> dict[str, object]:
+            nonlocal triggered
+            triggered = True
+            return {"ok": True}
+
+        self.patch_module(
+            fetch_utilityapi_intervals=lambda _config: {
+                "path": Path("/tmp/SCE_Usage_UtilityAPI_test.csv"),
+                "rowCount": 1,
+                "coverageStart": "2026-06-15T00:00:00-07:00",
+                "coverageEnd": "2026-06-16T00:00:00-07:00",
+                "requestedEnd": "2026-06-18",
+                "meters": ["meter-1"],
+                "authorizations": [],
+            },
+            coverage_age_hours=lambda _coverage_end: 48.0,
+            trigger_historical_collection=trigger_collection,
+        )
+
+        result = fetch_sce.fetch_with_auto_historical_collection(
+            {
+                "api_token": "token",
+                "base_url": "https://utilityapi.example",
+                "meter_uids": ["meter-1"],
+                "auto_historical_collection": False,
+                "stale_hours": 36,
+            }
+        )
+
+        self.assertFalse(triggered)
+        self.assertNotIn("historicalCollection", result)
+        self.assertEqual(result["rowCount"], 1)
 
     def test_utilityapi_payment_required_is_degraded_not_failed(self) -> None:
         statuses: list[dict[str, object]] = []

@@ -5,6 +5,7 @@
   "utilityapi_authorization_uids": [],
   "utilityapi_interval_start": "2025-05-09",
   "utilityapi_interval_end": "auto",
+  "utilityapi_auto_historical_collection": false,
   "resource_url": "https://sce-approved-resource-endpoint.example/espi/1_1/resource/...",
   "access_token": "replace-with-oauth-access-token"
 }

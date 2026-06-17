@@ -124,14 +124,14 @@ The API path supports either UtilityAPI JSON API credentials
 (`utilityapi_api_token` plus `utilityapi_meter_uids` or
 `utilityapi_authorization_uids`) or a direct SCE Green Button Connect
 `resource_url`/`access_token`. UtilityAPI imports default to an automatic moving
-end date so scheduled refreshes keep asking for the newest interval rows. When
-UtilityAPI returns intervals older than the local stale threshold, `Refresh SCE`
-automatically triggers a one-time UtilityAPI historical collection for the
-configured meter, waits briefly for it to finish, then refetches intervals. This
-does not enable UtilityAPI ongoing monitoring. Each run writes downloaded file,
-row count, requested end, returned coverage, and any collection attempt to
-`data/latest_sce_api.json`. Until one of those credential sets is configured,
-the status is written there as a registration-required fallback. `Reconcile
+end date so scheduled refreshes keep asking for the newest interval rows.
+`Refresh SCE` does not trigger UtilityAPI historical collection jobs by default;
+those can require UtilityAPI balance or collection entitlement. Set
+`utilityapi_auto_historical_collection` to `true` only when you explicitly want
+stale interval data to trigger a UtilityAPI collection attempt. Each run writes
+downloaded file, row count, requested end, returned coverage, and any collection
+attempt to `data/latest_sce_api.json`. Until one of those credential sets is
+configured, the status is written there as a registration-required fallback. `Reconcile
 Energy` runs a full local energy refresh: current snapshot, storage cleanup,
 pattern analysis, SCE/Envoy/Sense/ChargePoint/Alarm.com reconciliation,
 combined energy report, alerts, and HomeKit virtual sensor updates. `Gate Test` runs the passive
