@@ -64,6 +64,71 @@ class FetchSceGreenButtonConnectTest(unittest.TestCase):
         self.assertEqual(statuses[-1]["ok"], False)
         self.assertEqual(statuses[-1]["status"], "utilityapi_http_error")
 
+    def test_historical_collection_payment_required_preserves_fetched_intervals(self) -> None:
+        self.patch_module(
+            fetch_utilityapi_intervals=lambda _config: {
+                "path": Path("/tmp/SCE_Usage_UtilityAPI_test.csv"),
+                "rowCount": 1,
+                "coverageStart": "2026-06-15T00:00:00-07:00",
+                "coverageEnd": "2026-06-16T00:00:00-07:00",
+                "requestedEnd": "2026-06-18",
+                "meters": ["meter-1"],
+                "authorizations": [],
+            },
+            coverage_age_hours=lambda _coverage_end: 48.0,
+            api_post_json=lambda *_args: (_ for _ in ()).throw(
+                urllib.error.HTTPError("https://utilityapi.example", 402, "Payment Required", {}, None)
+            ),
+        )
+
+        result = fetch_sce.fetch_with_auto_historical_collection(
+            {
+                "api_token": "token",
+                "base_url": "https://utilityapi.example",
+                "meter_uids": ["meter-1"],
+                "auto_historical_collection": True,
+                "stale_hours": 36,
+            }
+        )
+
+        self.assertEqual(result["rowCount"], 1)
+        self.assertEqual(result["coverageEnd"], "2026-06-16T00:00:00-07:00")
+        self.assertEqual(result["historicalCollection"]["status"], "payment_required")
+        self.assertEqual(result["historicalCollection"]["statusCode"], 402)
+
+    def test_main_reports_downloaded_intervals_when_collection_payment_required(self) -> None:
+        statuses: list[dict[str, object]] = []
+        csv_path = Path("/tmp/SCE_Usage_UtilityAPI_test.csv")
+        csv_path.write_text("start,end\n")
+        self.patch_module(
+            configured_request=lambda: (None, None),
+            configured_utilityapi=lambda: {"api_token": "token"},
+            fetch_with_auto_historical_collection=lambda _config: {
+                "path": csv_path,
+                "rowCount": 1,
+                "coverageStart": "2026-06-15T00:00:00-07:00",
+                "coverageEnd": "2026-06-16T00:00:00-07:00",
+                "requestedEnd": "2026-06-18",
+                "coverageAgeHours": 48.0,
+                "historicalCollection": {
+                    "triggered": True,
+                    "status": "payment_required",
+                    "ok": False,
+                    "statusCode": 402,
+                    "requiredAction": "Check UtilityAPI billing or collection entitlement, then rerun Refresh SCE.",
+                },
+            },
+            write_status=statuses.append,
+        )
+
+        rc = fetch_sce.main()
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(statuses[-1]["ok"], True)
+        self.assertEqual(statuses[-1]["status"], "utilityapi_downloaded")
+        self.assertEqual(statuses[-1]["coverageEnd"], "2026-06-16T00:00:00-07:00")
+        self.assertEqual(statuses[-1]["autoHistoricalCollection"]["status"], "payment_required")
+
 
 if __name__ == "__main__":
     unittest.main()
