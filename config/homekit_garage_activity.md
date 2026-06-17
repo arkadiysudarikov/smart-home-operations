@@ -37,15 +37,26 @@ These garage-only automations should trigger `Garage Activity`; they should not
 directly set `Garage Light`:
 
 - `When Motion Detected in Garage`
-- `When Motion Detected in Garage 2`
-- `Garage Door Lock Unlocks 2`
+- `Garage Door Contact Opens`
+- `Garage Door Lock Unlocks`
 - `Garage Door Opener 2207 Opens`
-- `Garage Door Opener 2210 Opens 2`
-- `Garage Door Contact Opens 2`
+- `Garage Door Opener 2210 Opens`
+
+This arrival automation also currently targets `Garage Activity`, along with
+`Panel Off`:
+
+- `When The First Person Arrives Home`
 
 The controller endpoint then turns `Garage Light` on to 100%, holds it until at
 least five minutes after the latest activity, and restores the pre-hold state
 only if the light is still in the controller-owned 100% state.
+
+Each endpoint activation and hold expiry is tracked in
+`data/garage_activity_events.jsonl` and summarized in `/status` under
+`actions.garageActivity.activityReport`. HomeKit does not pass the upstream
+automation name to a shared action switch, so source-specific attribution is
+limited to the intended trigger list above unless a caller includes
+`?trigger=...&source=...` on the action URL.
 
 ## Files Not Stored In Git
 

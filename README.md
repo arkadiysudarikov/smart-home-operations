@@ -139,9 +139,13 @@ Sideyard Gate validation helper and writes its status/report without creating a
 new bridge. `Alarm Refresh` recaptures Alarm.com portal state, restarts only the
 Alarm.com child bridge, then resamples Homebridge characteristics and refreshes
 the Alarm Cache tile/report. `Garage Activity` is the local action switch used
-by garage-only Home automations to invoke the Garage Light last-activity hold;
-see `config/homekit_garage_activity.md` for the intended bridge and automation
-wiring.
+by garage-only Home automations to invoke the Garage Light last-activity hold.
+Each activation and hold expiry is logged to `data/garage_activity_events.jsonl`
+and summarized under `actions.garageActivity.activityReport` in `/status`.
+HomeKit action-switch calls do not expose the upstream automation name, so the
+report lists the intended trigger set and records exact `trigger`/`source`
+values only when callers include them as query parameters. See
+`config/homekit_garage_activity.md` for the intended bridge and automation wiring.
 
 Install the periodic local monitor:
 
