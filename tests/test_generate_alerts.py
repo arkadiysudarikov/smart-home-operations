@@ -311,6 +311,13 @@ class GenerateAlertsTest(unittest.TestCase):
         self.assertIn("mac=504074958A80", alert["detail"])
         self.assertIn("Power-cycle", generate_alerts.recommended_action(alert) or "")
 
+    def test_sce_stale_action_does_not_claim_auto_collection_by_default(self) -> None:
+        action = generate_alerts.recommended_action({"title": "SCE interval data is stale", "detail": ""})
+
+        self.assertIn("download already-available UtilityAPI intervals", action or "")
+        self.assertIn("enable UtilityAPI historical collection explicitly", action or "")
+        self.assertNotIn("auto-triggers", action or "")
+
     def test_old_sense_live_auth_warnings_do_not_alert_when_current_snapshot_is_clean(self) -> None:
         current = latest_snapshot()
         current["homebridge"]["logs"]["recentWarnings"] = [
