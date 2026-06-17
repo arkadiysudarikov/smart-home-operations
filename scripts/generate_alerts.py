@@ -416,6 +416,7 @@ def homebridge_alarm_states() -> dict[str, dict[str, Any]]:
             "rawValue": item.get("value"),
             "service": item.get("service"),
             "cacheFile": item.get("cacheFile"),
+            "accessoryId": item.get("accessoryId"),
         }
     return states
 
@@ -451,6 +452,9 @@ def compare_alarm_portal_to_homebridge(alarm_com: dict[str, Any], latest: dict[s
             "matches": matches,
             "homebridgeCharacteristic": hb_item.get("characteristic"),
             "homebridgeRawValue": hb_item.get("rawValue"),
+            "homebridgeService": hb_item.get("service"),
+            "homebridgeCacheFile": hb_item.get("cacheFile"),
+            "homebridgeAccessoryId": hb_item.get("accessoryId"),
             "portalGroup": portal_item.get("group"),
             "portalDeviceId": portal_item.get("id"),
             "portalSourceName": portal_item.get("sourceName"),
