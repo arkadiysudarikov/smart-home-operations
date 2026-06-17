@@ -8,6 +8,8 @@ import subprocess
 import sys
 import argparse
 import fcntl
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,6 +25,8 @@ FAST_SCE_MIN_AGE_SECONDS = 3600
 FAST_ALARM_MIN_AGE_SECONDS = 900
 FAST_SENSE_NOW_MIN_AGE_SECONDS = 300
 FAST_CHARGEPOINT_MIN_AGE_SECONDS = 3600
+ALARM_CACHE_AUTO_REFRESH_MIN_AGE_SECONDS = 900
+ACTION_SERVER_BASE_URL = os.environ.get("SMART_HOME_ACTION_SERVER_URL", "http://127.0.0.1:18765").rstrip("/")
 
 
 def now() -> str:
@@ -179,6 +183,83 @@ def summarize_steps(steps: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def alarm_cache_stale_count() -> int | None:
+    payload = load_json(DATA_DIR / "latest_alarm_homebridge_state.json")
+    stale_count = payload.get("staleCount")
+    return int(stale_count) if isinstance(stale_count, (int, float)) else None
+
+
+def alarm_cache_refresh_is_recent_or_running(max_age_seconds: int = ALARM_CACHE_AUTO_REFRESH_MIN_AGE_SECONDS) -> bool:
+    payload = load_json(DATA_DIR / "latest_alarm_cache_refresh.json")
+    if payload.get("status") == "running":
+        return True
+    if payload.get("ok") is None and payload.get("startedAt") and not payload.get("finishedAt"):
+        age = age_seconds(payload.get("startedAt"))
+        if age is not None and age < max_age_seconds:
+            return True
+    for key in ("finishedAt", "startedAt"):
+        age = age_seconds(payload.get(key))
+        if age is not None and age < max_age_seconds:
+            return True
+    return False
+
+
+def maybe_auto_refresh_alarm_cache() -> dict[str, Any]:
+    started_at = now()
+    stale_count = alarm_cache_stale_count()
+    base = {
+        "name": "auto_refresh_alarm_cache",
+        "optional": True,
+        "startedAt": started_at,
+        "finishedAt": now(),
+        "staleCount": stale_count,
+    }
+    if stale_count is None:
+        return {**base, "ok": True, "skipped": True, "reason": "Alarm.com/Homebridge comparison is not available yet"}
+    if stale_count <= 0:
+        return {**base, "ok": True, "skipped": True, "reason": "Alarm.com/Homebridge cache is already clean"}
+    if alarm_cache_refresh_is_recent_or_running():
+        return {**base, "ok": True, "skipped": True, "reason": "Alarm cache refresh is already running or was triggered recently"}
+
+    url = f"{ACTION_SERVER_BASE_URL}/action/refresh-alarm-cache"
+    request = urllib.request.Request(url, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        return {
+            **base,
+            "ok": False,
+            "finishedAt": now(),
+            "returncode": exc.code,
+            "stdout": body[-4000:],
+            "stderr": f"HTTP {exc.code}",
+            "url": url,
+        }
+    except Exception as exc:
+        return {
+            **base,
+            "ok": False,
+            "finishedAt": now(),
+            "returncode": None,
+            "stdout": "",
+            "stderr": str(exc),
+            "url": url,
+        }
+
+    return {
+        **base,
+        "ok": 200 <= status < 300,
+        "finishedAt": now(),
+        "returncode": status,
+        "stdout": body[-4000:],
+        "stderr": "",
+        "url": url,
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fast", action="store_true", help="refresh live source status without full historical reconciliation")
@@ -287,6 +368,11 @@ def main() -> int:
         steps.append(step)
         payload.update({"steps": steps, "currentStep": None if step.get("ok") else name})
         write_status(payload)
+        if name == "generate_alerts":
+            auto_step = maybe_auto_refresh_alarm_cache()
+            steps.append(auto_step)
+            payload.update({"steps": steps, "currentStep": None if auto_step.get("ok") else auto_step["name"]})
+            write_status(payload)
 
     required_failed = [step for step in steps if not step.get("ok") and not step.get("optional")]
     optional_failed = [step for step in steps if not step.get("ok") and step.get("optional")]

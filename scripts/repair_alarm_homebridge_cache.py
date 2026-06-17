@@ -22,6 +22,15 @@ MOTION_FALSE_STATES = {"Idle", "Closed"}
 MOTION_TRUE_STATES = {"Active", "Activated", "Open"}
 CONTACT_CLOSED_STATES = {"Idle", "Closed"}
 CONTACT_OPEN_STATES = {"Open", "Active", "Activated"}
+LIGHT_OFF_STATES = {"Off"}
+LIGHT_ON_STATES = {"On"}
+SECURITY_SYSTEM_STATES = {
+    "Armed stay": 0,
+    "Armed away": 1,
+    "Armed night": 2,
+    "Disarmed": 3,
+    "Alarm triggered": 4,
+}
 
 
 def running_from_runtime_root() -> bool:
@@ -46,6 +55,13 @@ def desired_value(characteristic: str, portal_state: str) -> Any:
             return 0
         if portal_state in CONTACT_OPEN_STATES:
             return 1
+    if characteristic == "On":
+        if portal_state in LIGHT_OFF_STATES:
+            return False
+        if portal_state in LIGHT_ON_STATES:
+            return True
+    if characteristic == "SecuritySystemCurrentState":
+        return SECURITY_SYSTEM_STATES.get(portal_state)
     return None
 
 
@@ -53,6 +69,8 @@ def characteristic_display_name(characteristic: str) -> str | None:
     return {
         "MotionDetected": "Motion Detected",
         "ContactSensorState": "Contact Sensor State",
+        "On": "On",
+        "SecuritySystemCurrentState": "Security System Current State",
     }.get(characteristic)
 
 
@@ -102,6 +120,10 @@ def repair_cache_file(cache_path: Path, device_id: str, display_name: str, chara
     BACKUP_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%dT%H%M%S")
     backup_path = BACKUP_DIR / f"{cache_path.name}.{stamp}.bak"
+    suffix = 1
+    while backup_path.exists():
+        backup_path = BACKUP_DIR / f"{cache_path.name}.{stamp}.{suffix}.bak"
+        suffix += 1
     shutil.copy2(cache_path, backup_path)
 
     tmp_path = cache_path.with_suffix(cache_path.suffix + ".tmp")
@@ -141,8 +163,8 @@ def repair_from_latest_comparison(*, allow_outside_runtime: bool = False) -> dic
     for row in comparison.get("stale") or []:
         if not isinstance(row, dict):
             continue
-        if row.get("portalGroup") != "sensors":
-            skipped.append({"device": row.get("device"), "reason": "not a sensor"})
+        if row.get("portalGroup") not in {"sensors", "lights", "partitions"}:
+            skipped.append({"device": row.get("device"), "reason": "unsupported portal group"})
             continue
         characteristic = str(row.get("homebridgeCharacteristic") or "")
         portal_state = str(row.get("portalState") or "")

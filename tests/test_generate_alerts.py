@@ -94,6 +94,8 @@ def latest_characteristics(value: int = 0) -> dict[str, Any]:
             "characteristic": "ContactSensorState",
             "value": value,
             "plugin": "homebridge-node-alarm-dot-com",
+            "cacheFile": "cachedAccessories.alarm",
+            "accessoryId": "accessory-1",
         }
     }
 
@@ -175,6 +177,15 @@ class GenerateAlertsTest(unittest.TestCase):
         alerts = generate_alerts.build_alerts(base_config(), latest_snapshot(), [])
         titles = {item["title"] for item in alerts}
         self.assertIn("Alarm.com Homebridge cache is stale", titles)
+
+    def test_alarm_state_comparison_includes_cache_metadata_for_repair(self) -> None:
+        self.patch_module(load_latest_characteristics=lambda: latest_characteristics(value=1))
+
+        comparison = generate_alerts.compare_alarm_portal_to_homebridge(alarm_com_payload(activity_ok=True), latest_snapshot())
+
+        stale = comparison["stale"][0]
+        self.assertEqual(stale["homebridgeCacheFile"], "cachedAccessories.alarm")
+        self.assertEqual(stale["homebridgeAccessoryId"], "accessory-1")
 
     def test_unifi_auth_alert_requires_unifi_401_line(self) -> None:
         latest = latest_snapshot()
