@@ -108,10 +108,11 @@ def alarm_warning_row() -> dict[str, Any]:
     return {"raw_json": json.dumps(raw), "alarm_websocket": 0, "warning_count": 1}
 
 
-def sense_auth_warning_row() -> dict[str, Any]:
+def sense_auth_warning_row(message: str | None = None) -> dict[str, Any]:
+    message = message or "[Sense Energy Meter] Error event on sense: Unexpected server response: 401."
     raw = {
         "homebridge": {
-            "logs": {"recentWarnings": ["[Sense Energy Meter] Error event on sense: Unexpected server response: 401."]},
+            "logs": {"recentWarnings": [message]},
         }
     }
     return {"raw_json": json.dumps(raw), "alarm_websocket": 1, "warning_count": 1}
@@ -283,6 +284,56 @@ class GenerateAlertsTest(unittest.TestCase):
         )
         titles = {item["title"] for item in alerts}
         self.assertNotIn("Sense live websocket auth is noisy", titles)
+
+    def test_repeated_same_sense_live_auth_warning_does_not_alert(self) -> None:
+        message = "[6/17/2026, 2:26:31 PM] [Sense Energy Meter] Error event on sense: Unexpected server response: 401."
+        current = latest_snapshot()
+        current["homebridge"]["logs"]["recentWarnings"] = [message]
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+        )
+        alerts = generate_alerts.build_alerts(
+            base_config(),
+            current,
+            [sense_auth_warning_row(message), sense_auth_warning_row(message), sense_auth_warning_row(message)],
+        )
+        titles = {item["title"] for item in alerts}
+        self.assertNotIn("Sense live websocket auth is noisy", titles)
+
+    def test_distinct_current_sense_live_auth_warnings_alert(self) -> None:
+        current = latest_snapshot()
+        current["homebridge"]["logs"]["recentWarnings"] = [
+            "[6/17/2026, 2:36:31 PM] [Sense Energy Meter] Error event on sense: Unexpected server response: 401.",
+        ]
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+        )
+        alerts = generate_alerts.build_alerts(
+            base_config(),
+            current,
+            [
+                sense_auth_warning_row(
+                    "[6/17/2026, 2:26:31 PM] [Sense Energy Meter] Error event on sense: Unexpected server response: 401."
+                ),
+                sense_auth_warning_row(
+                    "[6/17/2026, 2:31:31 PM] [Sense Energy Meter] Error event on sense: Unexpected server response: 401."
+                ),
+            ],
+        )
+        alert = next(item for item in alerts if item["title"] == "Sense live websocket auth is noisy")
+        self.assertIn("`3` distinct recent Sense live-websocket auth warnings", alert["detail"])
+
+    def test_inactive_sense_live_auth_category_can_be_filtered_from_trend(self) -> None:
+        trend = generate_alerts.warning_trend(
+            [sense_auth_warning_row(), sense_auth_warning_row()],
+            excluded_categories={"Sense live websocket auth"},
+        )
+        self.assertEqual(trend["warningMentions"], 0)
+        self.assertEqual(trend["leaders"], [])
 
     def test_age_label_handles_alarm_com_utc_timestamps(self) -> None:
         self.assertEqual(
