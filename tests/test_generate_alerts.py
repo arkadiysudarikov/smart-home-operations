@@ -120,6 +120,19 @@ def sense_auth_warning_row(message: str | None = None) -> dict[str, Any]:
     return {"raw_json": json.dumps(raw), "alarm_websocket": 1, "warning_count": 1}
 
 
+def envoy_warning_row() -> dict[str, Any]:
+    raw = {
+        "homebridge": {
+            "logs": {
+                "recentWarnings": [
+                    "[Enphase Envoy] Collapsed 37 Envoy warning lines (ECONNREFUSED, timeout; operations: home, inventory). Example: [6/17/2026, 9:50:06 AM] [Enphase Envoy] Device: 192.168.1.71 Envoy, Impulse generator: Error: Update meters error: Error: connect ECONNREFUSED 192.168.1.71:443"
+                ],
+            },
+        }
+    }
+    return {"raw_json": json.dumps(raw), "alarm_websocket": 1, "warning_count": 1}
+
+
 class GenerateAlertsTest(unittest.TestCase):
     def patch_module(self, **replacements: Any) -> None:
         self._restore = getattr(self, "_restore", {})
@@ -232,6 +245,26 @@ class GenerateAlertsTest(unittest.TestCase):
         titles = {item["title"] for item in alerts}
         self.assertIn("UniFi occupancy authentication is failing", titles)
         self.assertNotIn("UniFi occupancy API is failing", titles)
+
+    def test_envoy_local_comm_gets_dedicated_alert_without_high_warning_flood(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["warningCount"] = 1
+        latest["homebridge"]["logs"]["recentWarnings"] = [
+            "[Enphase Envoy] Collapsed 37 Envoy warning lines (ECONNREFUSED, timeout; operations: home, inventory). Example: [6/17/2026, 9:50:06 AM] [Enphase Envoy] Device: 192.168.1.71 Envoy, Impulse generator: Error: Update meters error: Error: connect ECONNREFUSED 192.168.1.71:443",
+        ]
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), latest, [envoy_warning_row(), envoy_warning_row(), envoy_warning_row()])
+        titles = {item["title"] for item in alerts}
+        envoy_alert = next(item for item in alerts if item["title"] == "Enphase Envoy local communication is degraded")
+
+        self.assertIn("Enphase Envoy local communication is degraded", titles)
+        self.assertNotIn("Recent Homebridge warning volume is high", titles)
+        self.assertIn("`37` Envoy local update failures", envoy_alert["detail"])
 
     def test_sideyard_gate_media_validation_alert_names_open_edge(self) -> None:
         alarm = alarm_com_payload(activity_ok=True)

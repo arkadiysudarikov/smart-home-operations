@@ -92,6 +92,10 @@ STATIC_INFO_CHARACTERISTICS = {
     "Name",
     "SerialNumber",
 }
+ENVOY_SEVEN_DAY_ENERGY_RE = re.compile(
+    r"Device: .* Envoy, (?:Meter|Power And Energy), (?P<meter>[^,]+), energy last seven days: (?P<value>[\d.-]+) kWh"
+)
+ENVOY_WARNING_RE = re.compile(r"\[(?:Enphase Envoy|homebridge-enphase-envoy)\]", re.I)
 
 
 def run(cmd: list[str], timeout: int = 12) -> dict[str, Any]:
@@ -331,12 +335,13 @@ def current_homebridge_run_lines(lines: list[str]) -> list[str]:
 
 def collect_log_signals(lines: list[str]) -> dict[str, Any]:
     joined = "\n".join(lines)
-    warnings = [
+    raw_warnings = [
         line
         for line in lines
         if TS_RE.search(line)
         and WARNING_RE.search(line)
     ]
+    warnings = summarize_warning_lines(raw_warnings)
     latest: dict[str, Any] = {}
     for key, pattern in {
         "enphase_production_kw": r"Live Data, Production, power: ([\d.-]+) kW",
@@ -372,8 +377,49 @@ def collect_log_signals(lines: list[str]) -> dict[str, Any]:
         },
         "latestMetrics": latest,
         "warningCount": len(warnings),
+        "rawWarningCount": len(raw_warnings),
         "recentWarnings": warnings[-40:],
     }
+
+
+def summarize_warning_lines(lines: list[str]) -> list[str]:
+    summarized: list[str] = []
+    envoy_total = 0
+    envoy_examples: dict[str, str] = {}
+    envoy_operations: set[str] = set()
+    envoy_errors: set[str] = set()
+    for line in lines:
+        if ENVOY_WARNING_RE.search(line):
+            envoy_total += 1
+            operation_match = re.search(r"Error: Update ([^:]+?) error:", line)
+            if operation_match:
+                envoy_operations.add(operation_match.group(1).strip())
+            if "ECONNREFUSED" in line:
+                envoy_errors.add("ECONNREFUSED")
+                envoy_examples.setdefault("ECONNREFUSED", line)
+            elif "ENETUNREACH" in line:
+                envoy_errors.add("ENETUNREACH")
+                envoy_examples.setdefault("ENETUNREACH", line)
+            elif "timeout" in line.lower() or "ETIMEDOUT" in line:
+                envoy_errors.add("timeout")
+                envoy_examples.setdefault("timeout", line)
+            elif "valid finite number" in line or "NaN" in line:
+                envoy_errors.add("invalid numeric characteristic")
+                envoy_examples.setdefault("invalid numeric characteristic", line)
+            else:
+                envoy_errors.add("other")
+                envoy_examples.setdefault("other", line)
+            continue
+        summarized.append(line)
+    if envoy_total:
+        operations = ", ".join(sorted(envoy_operations)[:6]) or "unknown operations"
+        errors = ", ".join(sorted(envoy_errors))
+        example = next(iter(envoy_examples.values()))
+        summarized.append(
+            f"[Enphase Envoy] Collapsed {envoy_total} Envoy warning lines "
+            f"({errors}; operations: {operations}). Example: {example[-180:]}"
+        )
+    return summarized
 
 
 def parse_log_timestamp(raw: str) -> str | None:
@@ -403,6 +449,12 @@ def classify_home_event(component: str | None, message: str) -> str:
     return "homebridge"
 
 
+def should_ignore_home_event(component: str | None, message: str) -> bool:
+    if component != "Enphase Envoy":
+        return False
+    return ENVOY_SEVEN_DAY_ENERGY_RE.search(message) is not None
+
+
 def collect_home_events(lines: list[str], limit: int) -> list[dict[str, Any]]:
     events: list[dict[str, Any]] = []
     for line in lines:
@@ -414,6 +466,8 @@ def collect_home_events(lines: list[str], limit: int) -> list[dict[str, Any]]:
         if not message:
             continue
         component = match.group("component")
+        if should_ignore_home_event(component, message):
+            continue
         captured_at = parse_log_timestamp(match.group("ts")) or match.group("ts")
         event_key = hashlib.sha256(f"{captured_at}|{component or ''}|{message}".encode()).hexdigest()
         events.append(
