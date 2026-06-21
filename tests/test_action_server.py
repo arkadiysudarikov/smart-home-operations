@@ -296,6 +296,35 @@ class ActionServerTest(unittest.TestCase):
             self.assertEqual(status["status"], "failed")
             self.assertEqual(status["failedActions"], ["refreshEnergy"])
 
+    def test_action_status_keeps_blocked_unifi_recovery_online(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            recovery = Path(tmp) / "latest_unifi_occupancy_recovery.json"
+            recovery.write_text(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "checkedAt": "2026-06-21T10:37:42-07:00",
+                        "action": "none",
+                        "classification": "api",
+                        "reason": "UniFi API is not healthy; not restarting child bridge",
+                    }
+                )
+                + "\n"
+            )
+            self.patch_module(ACTION_STATUS_PATHS={"unifiOccupancyRecovery": recovery})
+
+            status = action_server.action_status()
+
+            self.assertTrue(status["ok"])
+            self.assertEqual(status["status"], "ok")
+            self.assertEqual(status["failedActions"], [])
+            self.assertEqual(status["degradedActions"], [])
+            recovery_status = status["actions"]["unifiOccupancyRecovery"]
+            self.assertEqual(recovery_status["status"], "blocked")
+            self.assertEqual(recovery_status["blockedBy"], "unifi_api")
+            self.assertEqual(recovery_status["classification"], "api")
+            self.assertEqual(recovery_status["action"], "none")
+
     def test_alarm_refresh_accepts_complete_cache_repair_when_captures_time_out(self) -> None:
         statuses: list[dict[str, Any]] = []
 

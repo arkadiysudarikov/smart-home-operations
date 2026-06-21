@@ -222,6 +222,10 @@ def read_json_status(path: Path) -> dict[str, Any]:
         "staleRefreshPid",
         "supersededBy",
         "currentStaleCount",
+        "action",
+        "classification",
+        "reason",
+        "blockedBy",
     )
     for key in passthrough_keys:
         if key in payload:
@@ -335,6 +339,17 @@ def normalize_action_statuses(actions: dict[str, dict[str, Any]]) -> None:
         reconcile["ok"] = True
         reconcile["status"] = "superseded"
         reconcile["supersededBy"] = "refreshEnergy"
+
+    unifi_recovery = actions.get("unifiOccupancyRecovery")
+    if (
+        isinstance(unifi_recovery, dict)
+        and unifi_recovery.get("ok") is False
+        and unifi_recovery.get("action") == "none"
+        and unifi_recovery.get("classification") in {"api", "auth", "login_unavailable"}
+    ):
+        unifi_recovery["ok"] = True
+        unifi_recovery["status"] = "blocked"
+        unifi_recovery["blockedBy"] = "unifi_api"
 
     alarm_refresh = actions.get("alarmRefresh")
     if not isinstance(alarm_refresh, dict) or alarm_refresh.get("ok") is not False:
