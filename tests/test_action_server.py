@@ -159,6 +159,35 @@ class ActionServerTest(unittest.TestCase):
             self.assertEqual(status["stepSummary"]["failed"], 1)
             self.assertEqual(status["optionalFailures"], ["capture_sense_now"])
 
+    def test_read_json_status_recovers_stale_running_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            refresh = Path(tmp) / "latest_energy_refresh.json"
+            lock = Path(tmp) / "refresh_energy.lock"
+            refresh.write_text(
+                json.dumps(
+                    {
+                        "ok": None,
+                        "status": "running",
+                        "startedAt": "2026-06-21T10:09:30-07:00",
+                        "steps": [],
+                    }
+                )
+                + "\n"
+            )
+            lock.write_text("999999 2026-06-21T10:09:30-07:00\n")
+            self.patch_module(ENERGY_REFRESH_STATUS_PATH=refresh, ENERGY_REFRESH_LOCK_PATH=lock)
+
+            status = action_server.read_json_status(refresh)
+
+            self.assertIsNone(status["ok"])
+            self.assertEqual(status["status"], "interrupted")
+            self.assertTrue(status["staleRunningRecovered"])
+            self.assertEqual(status["staleRefreshPid"], 999999)
+            self.assertFalse(lock.exists())
+            stored = json.loads(refresh.read_text())
+            self.assertEqual(stored["status"], "interrupted")
+            self.assertIn("finishedAt", stored)
+
     def test_action_status_keeps_optional_refresh_failures_online(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
