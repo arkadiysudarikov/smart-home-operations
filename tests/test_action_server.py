@@ -221,6 +221,39 @@ class ActionServerTest(unittest.TestCase):
             self.assertEqual(status["actions"]["reconcileEnergy"]["status"], "superseded")
             self.assertEqual(status["actions"]["reconcileEnergy"]["supersededBy"], "refreshEnergy")
 
+    def test_action_status_supersedes_overlapped_reconcile_when_refresh_is_running(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            reconcile = data_dir / "latest_energy_reconcile.json"
+            refresh = data_dir / "latest_energy_refresh.json"
+            reconcile.write_text(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "finishedAt": "2026-06-21T09:26:57-07:00",
+                    }
+                )
+                + "\n"
+            )
+            refresh.write_text(
+                json.dumps(
+                    {
+                        "ok": None,
+                        "status": "running",
+                        "startedAt": "2026-06-21T09:58:52-07:00",
+                    }
+                )
+                + "\n"
+            )
+            self.patch_module(ACTION_STATUS_PATHS={"refreshEnergy": refresh, "reconcileEnergy": reconcile})
+
+            status = action_server.action_status()
+
+            self.assertTrue(status["ok"])
+            self.assertEqual(status["status"], "ok")
+            self.assertEqual(status["failedActions"], [])
+            self.assertEqual(status["actions"]["reconcileEnergy"]["status"], "superseded")
+
     def test_action_status_marks_failed_child_not_ok(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
