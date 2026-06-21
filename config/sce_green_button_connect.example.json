@@ -1,11 +1,25 @@
 {
-  "notes": "Copy to config/sce_green_button_connect.json after UtilityAPI authorization/API setup or direct SCE Green Button Connect registration is complete.",
+  "notes": "Copy to config/sce_green_button_connect.json after UtilityAPI authorization/API setup or direct SCE Green Button Connect registration is complete. Do not commit the copied file.",
   "utilityapi_api_token": "replace-with-utilityapi-api-token",
   "utilityapi_meter_uids": ["replace-with-utilityapi-meter-uid"],
   "utilityapi_authorization_uids": [],
   "utilityapi_interval_start": "2025-05-09",
   "utilityapi_interval_end": "auto",
   "utilityapi_auto_historical_collection": false,
-  "resource_url": "https://sce-approved-resource-endpoint.example/espi/1_1/resource/...",
-  "access_token": "replace-with-oauth-access-token"
+  "third_party_registration": {
+    "sce_registration_url": "https://www.sce.com/user-registration?userType=4",
+    "vendor_user_email": "shared-sce-green-button-vendor@example.com",
+    "organization_name": "replace-with-organization-legal-name",
+    "connectivity_test_status": "not_started"
+  },
+  "green_button_connect": {
+    "client_id": "replace-after-sce-registration",
+    "client_secret": "replace-after-sce-registration",
+    "redirect_uri": "https://replace-with-public-callback.example/sce/green-button/callback",
+    "authorization_url": "replace-with-sce-issued-authorization-url",
+    "token_url": "replace-with-sce-issued-token-url",
+    "scope": "FB=4_5_15;IntervalDuration=3600;BlockDuration=monthly;HistoryLength=13",
+    "resource_url": "https://sce-approved-resource-endpoint.example/espi/1_1/resource/...",
+    "access_token": "replace-with-oauth-access-token"
+  }
 }

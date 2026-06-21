@@ -65,6 +65,14 @@ class ActionServerTest(unittest.TestCase):
 
             self.assertTrue(status["ok"])
 
+    def test_sce_refresh_command_scans_local_exports(self) -> None:
+        command = action_server.sce_refresh_command()
+
+        self.assertEqual(command[:2], ["/bin/zsh", "-lc"])
+        self.assertIn("SMART_HOME_SCAN_EXTERNAL_FILES=true", command[2])
+        self.assertIn("fetch_sce_green_button_connect.py", command[2])
+        self.assertIn("refresh_energy.py --fast", command[2])
+
     def test_garage_activity_report_surfaces_recent_events_and_off_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             event_path = Path(tmp) / "garage_activity_events.jsonl"
@@ -151,7 +159,7 @@ class ActionServerTest(unittest.TestCase):
             self.assertEqual(status["stepSummary"]["failed"], 1)
             self.assertEqual(status["optionalFailures"], ["capture_sense_now"])
 
-    def test_action_status_marks_optional_refresh_failures_degraded(self) -> None:
+    def test_action_status_keeps_optional_refresh_failures_online(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
             refresh = data_dir / "latest_energy_refresh.json"
@@ -171,9 +179,47 @@ class ActionServerTest(unittest.TestCase):
             status = action_server.action_status()
 
             self.assertTrue(status["ok"])
-            self.assertTrue(status["degraded"])
-            self.assertEqual(status["status"], "degraded")
-            self.assertEqual(status["degradedActions"], ["refreshEnergy"])
+            self.assertFalse(status["degraded"])
+            self.assertEqual(status["status"], "ok")
+            self.assertEqual(status["degradedActions"], [])
+            self.assertEqual(status["actions"]["refreshEnergy"]["optionalFailures"], ["capture_sense_now"])
+
+    def test_action_status_supersedes_overlapped_reconcile_when_refresh_finishes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            reconcile = data_dir / "latest_energy_reconcile.json"
+            refresh = data_dir / "latest_energy_refresh.json"
+            reconcile.write_text(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "status": None,
+                        "finishedAt": "2026-06-21T09:26:57-07:00",
+                        "stdout": "refresh_energy already running; skipping overlapping launch\n",
+                    }
+                )
+                + "\n"
+            )
+            refresh.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "status": "complete",
+                        "finishedAt": "2026-06-21T09:51:59-07:00",
+                        "requiredFailures": [],
+                    }
+                )
+                + "\n"
+            )
+            self.patch_module(ACTION_STATUS_PATHS={"refreshEnergy": refresh, "reconcileEnergy": reconcile})
+
+            status = action_server.action_status()
+
+            self.assertTrue(status["ok"])
+            self.assertEqual(status["status"], "ok")
+            self.assertEqual(status["failedActions"], [])
+            self.assertEqual(status["actions"]["reconcileEnergy"]["status"], "superseded")
+            self.assertEqual(status["actions"]["reconcileEnergy"]["supersededBy"], "refreshEnergy")
 
     def test_action_status_marks_failed_child_not_ok(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

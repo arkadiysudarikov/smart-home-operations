@@ -296,6 +296,14 @@ def main() -> int:
                 False,
                 "recent SCE API capture is still fresh",
             ),
+            (
+                "analyze_all_energy",
+                [py, "scripts/analyze_all_energy_readings.py", "--scan-external-files"],
+                300,
+                False,
+                False,
+                None,
+            ),
             ("capture_envoy_direct", [py, "scripts/capture_envoy_direct.py"], 60, True, False, None),
             (
                 "capture_sense_now",
@@ -340,7 +348,14 @@ def main() -> int:
             plan.append(("extract_sce_bills", [py, "scripts/extract_sce_bills.py"], 300, True, False, None))
         plan.extend(
             [
-                ("analyze_all_energy", [py, "scripts/analyze_all_energy_readings.py"], 300, False, False, None),
+                (
+                    "analyze_all_energy",
+                    [py, "scripts/analyze_all_energy_readings.py", "--scan-external-files"],
+                    300,
+                    False,
+                    False,
+                    None,
+                ),
                 ("capture_envoy_direct", [py, "scripts/capture_envoy_direct.py"], 60, True, False, None),
                 ("capture_alarm_com", "scripts/capture_alarm_com.js", 300, True, True, None),
                 ("capture_sense_trends", "scripts/capture_sense_trends.js", 300, True, True, None),
@@ -378,6 +393,7 @@ def main() -> int:
     optional_failed = [step for step in steps if not step.get("ok") and step.get("optional")]
     sce_api = load_json(DATA_DIR / "latest_sce_api.json")
     combined = load_json(DATA_DIR / "latest_combined_energy_monitor.json")
+    sce_summary = (combined.get("sources") or {}).get("sce") or sce_api
     payload.update(
         {
             "ok": not required_failed,
@@ -389,8 +405,8 @@ def main() -> int:
             "stepSummary": summarize_steps(steps),
             "requiredFailures": [step["name"] for step in required_failed],
             "optionalFailures": [step["name"] for step in optional_failed],
-            "sceCoverageEnd": sce_api.get("coverageEnd"),
-            "sceIntervalRows": sce_api.get("intervalRows"),
+            "sceCoverageEnd": sce_summary.get("coverageEnd"),
+            "sceIntervalRows": sce_summary.get("intervalCount") or sce_api.get("intervalRows"),
             "combinedEnergyGeneratedAt": combined.get("generatedAt"),
             "combinedEnergy": str(REPORT_DIR / "combined_energy_monitor.md"),
             "energyCosts": str(REPORT_DIR / "energy_costs.md"),

@@ -252,6 +252,32 @@ def status_is_degraded(status: dict[str, Any]) -> bool:
     return isinstance(summary, dict) and int(summary.get("failed") or 0) > 0
 
 
+def status_is_action_degraded(status: dict[str, Any]) -> bool:
+    return status_is_failure(status)
+
+
+def reconcile_was_superseded_by_refresh(reconcile: dict[str, Any], refresh: dict[str, Any]) -> bool:
+    if reconcile.get("ok") is not False or refresh.get("ok") is not True:
+        return False
+    reconcile_finished = parse_status_dt(reconcile.get("finishedAt"))
+    refresh_finished = parse_status_dt(refresh.get("finishedAt"))
+    if reconcile_finished is None or refresh_finished is None:
+        return False
+    return refresh_finished >= reconcile_finished
+
+
+def normalize_action_statuses(actions: dict[str, dict[str, Any]]) -> None:
+    reconcile = actions.get("reconcileEnergy")
+    refresh = actions.get("refreshEnergy")
+    if not isinstance(reconcile, dict) or not isinstance(refresh, dict):
+        return
+    if not reconcile_was_superseded_by_refresh(reconcile, refresh):
+        return
+    reconcile["ok"] = True
+    reconcile["status"] = "superseded"
+    reconcile["supersededBy"] = "refreshEnergy"
+
+
 def parse_status_dt(value: Any) -> datetime | None:
     if not isinstance(value, str):
         return None
@@ -345,10 +371,11 @@ def operational_source_status() -> list[dict[str, Any]]:
 
 def action_status() -> dict[str, Any]:
     actions = {name: read_json_status(path) for name, path in ACTION_STATUS_PATHS.items()}
+    normalize_action_statuses(actions)
     if "garageActivity" in actions:
         actions["garageActivity"]["activityReport"] = garage_activity_report(actions["garageActivity"])
     failed = [name for name, status in actions.items() if status_is_failure(status)]
-    degraded = [name for name, status in actions.items() if status_is_degraded(status)]
+    degraded = [name for name, status in actions.items() if status_is_action_degraded(status)]
     return {
         "ok": not failed,
         "status": "failed" if failed else "degraded" if degraded else "ok",
@@ -603,7 +630,11 @@ def sce_refresh_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        f'"{python_bin()}" ./scripts/fetch_sce_green_button_connect.py && "{python_bin()}" ./scripts/refresh_energy.py --fast',
+        (
+            'export SMART_HOME_SCAN_EXTERNAL_FILES=true; '
+            f'"{python_bin()}" ./scripts/fetch_sce_green_button_connect.py && '
+            f'"{python_bin()}" ./scripts/refresh_energy.py --fast'
+        ),
     ]
 
 
