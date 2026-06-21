@@ -21,6 +21,7 @@ DB_PATH = DATA_DIR / "smart_home.sqlite"
 REPORT_DIR = ROOT / "reports"
 SILENCE_PATH = DATA_DIR / "alerts_silenced_until.json"
 COMBINED_ENERGY_PATH = DATA_DIR / "latest_combined_energy_monitor.json"
+SCE_API_STATUS_PATH = DATA_DIR / "latest_sce_api.json"
 ALARM_COM_PATH = DATA_DIR / "latest_alarm_com.json"
 LATEST_CHARACTERISTICS_PATH = DATA_DIR / "latest_characteristics.json"
 ALARM_STATE_COMPARISON_PATH = DATA_DIR / "latest_alarm_homebridge_state.json"
@@ -50,6 +51,16 @@ def load_combined_energy() -> dict[str, Any]:
         return json.loads(COMBINED_ENERGY_PATH.read_text())
     except json.JSONDecodeError:
         return {}
+
+
+def load_sce_api_status() -> dict[str, Any]:
+    if not SCE_API_STATUS_PATH.exists():
+        return {}
+    try:
+        data = json.loads(SCE_API_STATUS_PATH.read_text())
+    except json.JSONDecodeError:
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
 def load_alarm_com() -> dict[str, Any]:
@@ -312,7 +323,9 @@ def recommended_action(alert: dict[str, str]) -> str | None:
             return "Power-cycle the named Alarm.com camera(s), verify Wi-Fi/network connectivity, then recapture Alarm.com after the portal clears the camera trouble."
         return "Open Alarm.com Issues, resolve the listed trouble condition, then recapture Alarm.com."
     if title == "SCE interval data is stale":
-        return "Run Refresh SCE to download already-available UtilityAPI intervals. If coverage stays stale, either enable UtilityAPI historical collection explicitly or import a fresh Green Button export."
+        if "utilityapi_payment_required" in detail:
+            return "Skip paid UtilityAPI collection; import a fresh SCE Green Button export, or wait for a no-cost UtilityAPI collection entitlement, then rerun Refresh SCE."
+        return "Run Refresh SCE to download already-available UtilityAPI intervals. If coverage stays stale, import a fresh SCE Green Button export; paid UtilityAPI collection should stay off unless explicitly approved."
     if title in {"Alarm.com energy is stale", "Alarm.com energy totals disagree"}:
         return "Recapture Alarm.com energy and compare the updated Energy Clamp totals against Envoy and SCE in the combined report."
     if title == "Energy readings need reconciliation":
@@ -1010,11 +1023,14 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
                 }
             )
 
+    sce_api_status = load_sce_api_status()
     for item in load_combined_energy().get("alerts", []):
         title = item.get("title")
         detail = item.get("detail")
         severity = item.get("severity", "warning")
         if title and detail:
+            if title == "SCE interval data is stale" and sce_api_status.get("status") == "utilityapi_payment_required":
+                detail = f"{detail} UtilityAPI historical collection status: `utilityapi_payment_required`."
             alerts.append({"severity": severity, "title": title, "detail": detail})
 
     if not alerts:

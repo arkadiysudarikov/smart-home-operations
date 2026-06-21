@@ -39,6 +39,37 @@ class FetchSceGreenButtonConnectTest(unittest.TestCase):
 
         self.assertFalse(config["auto_historical_collection"])
 
+    def test_green_button_connect_nested_config_is_supported(self) -> None:
+        self.patch_module(
+            load_config=lambda: {
+                "green_button_connect": {
+                    "resource_url": "https://sce.example/resource",
+                    "access_token": "token",
+                }
+            }
+        )
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            resource_url, access_token = fetch_sce.configured_request()
+
+        self.assertEqual(resource_url, "https://sce.example/resource")
+        self.assertEqual(access_token, "token")
+
+    def test_green_button_registration_plan_reports_missing_parts(self) -> None:
+        plan = fetch_sce.green_button_registration_plan(
+            {
+                "green_button_connect": {
+                    "redirect_uri": "https://example.test/callback",
+                    "client_id": "client",
+                }
+            }
+        )
+
+        self.assertEqual(plan["localCallbackUrl"], "https://example.test/callback")
+        self.assertTrue(plan["clientConfigured"])
+        self.assertFalse(plan["tokenConfigured"])
+        self.assertFalse(plan["resourceConfigured"])
+
     def test_utilityapi_historical_collection_can_be_enabled_by_config(self) -> None:
         self.patch_module(
             load_config=lambda: {
@@ -117,7 +148,8 @@ class FetchSceGreenButtonConnectTest(unittest.TestCase):
         self.assertEqual(rc, 0)
         self.assertEqual(statuses[-1]["ok"], None)
         self.assertEqual(statuses[-1]["status"], "utilityapi_payment_required")
-        self.assertIn("UtilityAPI billing", statuses[-1]["requiredAction"])
+        self.assertIn("Do not use paid UtilityAPI collection", statuses[-1]["requiredAction"])
+        self.assertIn("SCE Green Button", statuses[-1]["requiredAction"])
 
     def test_other_utilityapi_http_errors_still_fail(self) -> None:
         statuses: list[dict[str, object]] = []

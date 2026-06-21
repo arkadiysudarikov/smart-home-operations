@@ -42,9 +42,50 @@ def load_config() -> dict[str, Any]:
 
 def configured_request() -> tuple[str | None, str | None]:
     config = load_config()
-    resource_url = os.environ.get("SCE_GBC_RESOURCE_URL") or config.get("resource_url")
-    access_token = os.environ.get("SCE_GBC_ACCESS_TOKEN") or config.get("access_token")
+    gbc_config = config.get("green_button_connect") or config
+    resource_url = (
+        os.environ.get("SCE_GBC_RESOURCE_URL")
+        or gbc_config.get("resource_url")
+        or config.get("resource_url")
+    )
+    access_token = (
+        os.environ.get("SCE_GBC_ACCESS_TOKEN")
+        or gbc_config.get("access_token")
+        or config.get("access_token")
+    )
     return resource_url, access_token
+
+
+def green_button_registration_plan(config: dict[str, Any]) -> dict[str, Any]:
+    registration = config.get("third_party_registration") or {}
+    oauth_client = config.get("green_button_connect") or {}
+    return {
+        "sceRegistrationUrl": registration.get(
+            "sce_registration_url",
+            "https://www.sce.com/user-registration?userType=4",
+        ),
+        "sceThirdPartyInfoUrl": "https://www.sce.com/partners/partnerships/thirdpartylandingpage",
+        "sceDataAccessInfoUrl": "https://www.sce.com/partners/3rd-party-energy-providers/access-energy-usage-data",
+        "requiredManualRegistrationFields": [
+            "third-party vendor first name",
+            "third-party vendor last name",
+            "shared vendor email not already registered as an SCE.com User ID",
+            "password entered directly on SCE.com",
+            "organization legal name",
+            "organization TIN",
+            "SCE terms acceptance by an authorized person",
+            "connectivity-test endpoint details",
+        ],
+        "localCallbackUrl": oauth_client.get("redirect_uri"),
+        "clientConfigured": bool(oauth_client.get("client_id")),
+        "tokenConfigured": bool(oauth_client.get("access_token") or config.get("access_token")),
+        "resourceConfigured": bool(oauth_client.get("resource_url") or config.get("resource_url")),
+        "notes": (
+            "This project can store issued OAuth/resource values and fetch SCE Green Button data, "
+            "but SCE account creation, TIN entry, terms acceptance, and connectivity testing must "
+            "be completed manually on SCE.com."
+        ),
+    }
 
 
 def split_csv(value: Any) -> list[str]:
@@ -454,7 +495,7 @@ def main() -> int:
                             "UtilityAPI returned 402 Payment Required. Treating SCE as source-side degraded "
                             "so the monitor can complete while stale-interval alerts remain active."
                         ),
-                        "requiredAction": "Check UtilityAPI billing or collection entitlement, then rerun Refresh SCE.",
+                        "requiredAction": "Do not use paid UtilityAPI collection. Import a fresh SCE Green Button CSV/XML export, then rerun Refresh SCE.",
                     }
                 )
                 return 0
@@ -477,7 +518,7 @@ def main() -> int:
                     "startedAt": started_at,
                     "finishedAt": now(),
                     "detail": str(exc),
-                    "requiredAction": "UtilityAPI returned no intervals. Enable utilityapi_auto_historical_collection only if you want Refresh SCE to trigger UtilityAPI collection jobs; otherwise trigger collection manually and rerun Refresh SCE.",
+                    "requiredAction": "UtilityAPI returned no intervals. Import a fresh SCE Green Button CSV/XML export, then rerun Refresh SCE; paid UtilityAPI collection remains disabled unless explicitly approved.",
                 }
             )
             return 0
@@ -524,9 +565,10 @@ def main() -> int:
                 "finishedAt": now(),
                 "detail": "Configure UtilityAPI API credentials, or direct SCE Green Button Connect resource URL and OAuth token, before API pulls can run.",
                 "configPath": str(CONFIG_PATH),
+                "registrationPlan": green_button_registration_plan(load_config()),
                 "requiredConfig": [
                     "utilityapi_api_token with utilityapi_meter_uids or utilityapi_authorization_uids",
-                    "or resource_url with access_token",
+                    "or green_button_connect.resource_url with green_button_connect.access_token",
                 ],
                 "sceInfo": "https://www.sce.com/partners/3rd-party-energy-providers/access-energy-usage-data",
                 "sceThirdPartyRegistration": "https://www.sce.com/partners/partnerships/thirdpartylandingpage",

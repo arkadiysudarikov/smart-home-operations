@@ -315,8 +315,20 @@ class GenerateAlertsTest(unittest.TestCase):
         action = generate_alerts.recommended_action({"title": "SCE interval data is stale", "detail": ""})
 
         self.assertIn("download already-available UtilityAPI intervals", action or "")
-        self.assertIn("enable UtilityAPI historical collection explicitly", action or "")
+        self.assertIn("fresh SCE Green Button export", action or "")
+        self.assertIn("paid UtilityAPI collection should stay off", action or "")
         self.assertNotIn("auto-triggers", action or "")
+
+    def test_sce_stale_action_reports_utilityapi_payment_required(self) -> None:
+        action = generate_alerts.recommended_action(
+            {
+                "title": "SCE interval data is stale",
+                "detail": "UtilityAPI historical collection status: `utilityapi_payment_required`.",
+            }
+        )
+
+        self.assertIn("Skip paid UtilityAPI collection", action or "")
+        self.assertIn("fresh SCE Green Button export", action or "")
 
     def test_old_sense_live_auth_warnings_do_not_alert_when_current_snapshot_is_clean(self) -> None:
         current = latest_snapshot()

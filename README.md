@@ -123,15 +123,19 @@ interval exports and regenerates the energy reports and HomeKit alert states.
 The API path supports either UtilityAPI JSON API credentials
 (`utilityapi_api_token` plus `utilityapi_meter_uids` or
 `utilityapi_authorization_uids`) or a direct SCE Green Button Connect
-`resource_url`/`access_token`. UtilityAPI imports default to an automatic moving
-end date so scheduled refreshes keep asking for the newest interval rows.
+`green_button_connect.resource_url`/`green_button_connect.access_token`.
+UtilityAPI imports default to an automatic moving end date so scheduled
+refreshes keep asking for the newest interval rows.
 `Refresh SCE` does not trigger UtilityAPI historical collection jobs by default;
 those can require UtilityAPI balance or collection entitlement. Set
 `utilityapi_auto_historical_collection` to `true` only when you explicitly want
 stale interval data to trigger a UtilityAPI collection attempt. Each run writes
 downloaded file, row count, requested end, returned coverage, and any collection
 attempt to `data/latest_sce_api.json`. Until one of those credential sets is
-configured, the status is written there as a registration-required fallback. `Reconcile
+configured, the status is written there as a registration-required fallback with
+an SCE third-party vendor registration plan. See
+`config/sce_green_button_third_party.md` for the no-paid-UtilityAPI SCE Green
+Button Connect setup notes. `Reconcile
 Energy` runs a full local energy refresh: current snapshot, storage cleanup,
 pattern analysis, SCE/Envoy/Sense/ChargePoint/Alarm.com reconciliation,
 combined energy report, alerts, and HomeKit virtual sensor updates. `Gate Test` runs the passive
@@ -195,19 +199,25 @@ from local SCE bill PDFs named `ViewBill*.pdf` in `~/Downloads` and
 
 `reports/all_energy_pairing.md` compares local SCE Green Button interval
 exports, SCE bill-level readings, Sense readings, and Enphase/Envoy readings.
-Fresh SCE interval files can be pulled by the `Refresh SCE` HomeKit switch after
-UtilityAPI or SCE Green Button Connect credentials are configured in
-`config/sce_green_button_connect.json` or equivalent environment variables:
+The preferred no-cost SCE refresh path is a manual SCE Green Button CSV/XML
+export placed in `~/Downloads`, `~/Documents`, iCloud Drive, or
+`data/sce-downloads/`; the `Refresh SCE` HomeKit switch opts into scanning
+those local locations before rebuilding the energy reports. Fresh SCE interval
+files can also be pulled after UtilityAPI or direct SCE Green Button Connect
+credentials are configured in `config/sce_green_button_connect.json` or
+equivalent environment variables:
 `UTILITYAPI_API_TOKEN`, `UTILITYAPI_METER_UIDS`,
 `UTILITYAPI_AUTHORIZATION_UIDS`, `UTILITYAPI_INTERVAL_START`,
 `UTILITYAPI_INTERVAL_END` (optional, defaults to `auto`),
-`UTILITYAPI_AUTO_HISTORICAL_COLLECTION` (optional, defaults to on),
+`UTILITYAPI_AUTO_HISTORICAL_COLLECTION` (optional, defaults to off; do not
+enable unless paid UtilityAPI collection is explicitly approved),
 `UTILITYAPI_AUTO_COLLECTION_STALE_HOURS` (optional, defaults to `36`),
 `UTILITYAPI_HISTORICAL_COLLECTION_TIMEOUT_SECONDS` (optional, defaults to
 `600`), `UTILITYAPI_HISTORICAL_COLLECTION_POLL_SECONDS` (optional, defaults to
-`30`), `SCE_GBC_RESOURCE_URL`, and `SCE_GBC_ACCESS_TOKEN`. Manual Green Button CSV/XML downloads placed in
-`~/Downloads`, `~/Documents`, or iCloud Drive are still imported by the same
-pipeline.
+`30`), `SCE_GBC_RESOURCE_URL`, and `SCE_GBC_ACCESS_TOKEN`. Direct SCE Green
+Button Connect vendor onboarding needs a third-party SCE.com user, organization
+TIN, terms acceptance, and SCE connectivity testing before SCE issues usable
+OAuth/resource values.
 
 `reports/bill_home_pairing.md` compares SCE bill-period import/export totals
 with the currently available home-side readings from Envoy, Sense, and
