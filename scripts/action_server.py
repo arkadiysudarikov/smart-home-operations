@@ -257,13 +257,15 @@ def status_is_action_degraded(status: dict[str, Any]) -> bool:
 
 
 def reconcile_was_superseded_by_refresh(reconcile: dict[str, Any], refresh: dict[str, Any]) -> bool:
-    if reconcile.get("ok") is not False or refresh.get("ok") is not True:
+    if reconcile.get("ok") is not False:
+        return False
+    if refresh.get("ok") is False:
         return False
     reconcile_finished = parse_status_dt(reconcile.get("finishedAt"))
-    refresh_finished = parse_status_dt(refresh.get("finishedAt"))
-    if reconcile_finished is None or refresh_finished is None:
+    refresh_at = parse_status_dt(refresh.get("finishedAt")) or parse_status_dt(refresh.get("startedAt"))
+    if reconcile_finished is None or refresh_at is None:
         return False
-    return refresh_finished >= reconcile_finished
+    return refresh_at >= reconcile_finished
 
 
 def normalize_action_statuses(actions: dict[str, dict[str, Any]]) -> None:
