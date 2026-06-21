@@ -33,6 +33,7 @@ UNIFI_OCCUPANCY_RECOVERY_STATUS_PATH = DATA_DIR / "latest_unifi_occupancy_recove
 GARAGE_LIGHT_HOLD_STATUS_PATH = DATA_DIR / "garage_light_hold.json"
 GARAGE_ACTIVITY_EVENTS_PATH = DATA_DIR / "garage_activity_events.jsonl"
 ENERGY_REFRESH_STATUS_PATH = DATA_DIR / "latest_energy_refresh.json"
+ENERGY_REFRESH_LOCK_PATH = DATA_DIR / "refresh_energy.lock"
 ACTION_STATUS_PATHS = {
     "check": DATA_DIR / "latest.json",
     "refreshEnergy": ENERGY_REFRESH_STATUS_PATH,
@@ -111,6 +112,56 @@ def json_run(cmd: list[str], timeout: int = 45) -> dict[str, Any]:
     return payload
 
 
+def process_is_running(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def read_refresh_lock_pid() -> int | None:
+    if not ENERGY_REFRESH_LOCK_PATH.exists():
+        return None
+    raw = ENERGY_REFRESH_LOCK_PATH.read_text().strip().split()
+    if not raw:
+        return None
+    try:
+        return int(raw[0])
+    except ValueError:
+        return None
+
+
+def recover_stale_energy_refresh_payload(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    if path != ENERGY_REFRESH_STATUS_PATH:
+        return payload
+    if payload.get("status") != "running" or payload.get("finishedAt"):
+        return payload
+    pid = read_refresh_lock_pid()
+    if pid is not None and process_is_running(pid):
+        return payload
+    updated = dict(payload)
+    updated.update(
+        {
+            "ok": None,
+            "status": "interrupted",
+            "currentStep": None,
+            "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+            "staleRunningRecovered": True,
+        }
+    )
+    if pid is not None:
+        updated["staleRefreshPid"] = pid
+    path.write_text(json.dumps(updated, indent=2, sort_keys=True) + "\n")
+    try:
+        ENERGY_REFRESH_LOCK_PATH.unlink()
+    except FileNotFoundError:
+        pass
+    return updated
+
+
 def read_json_status(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"exists": False, "path": str(path)}
@@ -121,6 +172,7 @@ def read_json_status(path: Path) -> dict[str, Any]:
 
     if not isinstance(payload, dict):
         return {"exists": True, "path": str(path), "ok": False, "error": "status file is not a JSON object"}
+    payload = recover_stale_energy_refresh_payload(path, payload)
 
     status = {
         "exists": True,
@@ -166,6 +218,8 @@ def read_json_status(path: Path) -> dict[str, Any]:
         "energyCosts",
         "alerts",
         "energyAutomationOpportunities",
+        "staleRunningRecovered",
+        "staleRefreshPid",
     )
     for key in passthrough_keys:
         if key in payload:
