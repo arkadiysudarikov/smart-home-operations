@@ -892,6 +892,27 @@ def alarm_cache_stale_count() -> int | None:
     return int(stale_count) if isinstance(stale_count, (int, float)) else None
 
 
+def parse_repair_result(result: dict[str, Any]) -> dict[str, Any]:
+    try:
+        parsed = json.loads(result.get("stdout") or "{}")
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def repair_resolved_stale(parsed_repair: dict[str, Any], stale_count: int | None) -> bool:
+    if parsed_repair.get("ok") is not True:
+        return False
+    if parsed_repair.get("skipped"):
+        return False
+    if not stale_count or stale_count <= 0:
+        return True
+    changed_count = parsed_repair.get("changedCount")
+    if not isinstance(changed_count, int):
+        return False
+    return changed_count >= stale_count
+
+
 def wait_for_alarm_child_bridge(port: int, previous_pid: int | None, timeout: int = 60) -> dict[str, Any]:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -921,15 +942,15 @@ def run_alarm_cache_refresh_background(started_at: str) -> None:
         second_capture = run(alarm_cache_refresh_command(), timeout=180) if wait_result.get("ok") else {"ok": False, "returncode": None, "stdout": "", "stderr": "Alarm child bridge did not restart"}
         after_stale = alarm_cache_stale_count()
         repair_result: dict[str, Any] = {"ok": True, "returncode": None, "stdout": "", "stderr": "", "skipped": True}
+        parsed_repair: dict[str, Any] = {}
+        repair_verified = False
         repair_restart_result: dict[str, Any] = {"ok": True, "skipped": True}
         repair_wait_result: dict[str, Any] = {"ok": True, "skipped": True}
         third_capture: dict[str, Any] = {"ok": True, "returncode": None, "stdout": "", "stderr": "", "skipped": True}
-        if second_capture["ok"] and after_stale and after_stale > 0:
+        if after_stale and after_stale > 0:
             repair_result = run(alarm_cache_repair_command(), timeout=30)
-            try:
-                parsed_repair = json.loads(repair_result.get("stdout") or "{}")
-            except json.JSONDecodeError:
-                parsed_repair = {}
+            parsed_repair = parse_repair_result(repair_result)
+            repair_verified = repair_resolved_stale(parsed_repair, after_stale)
             if repair_result["ok"] and parsed_repair.get("changedCount", 0) > 0:
                 repair_pid = listening_pid(port)
                 if repair_pid is None:
@@ -939,16 +960,19 @@ def run_alarm_cache_refresh_background(started_at: str) -> None:
                     repair_restart_result = terminate(repair_pid)
                     repair_wait_result = wait_for_alarm_child_bridge(port, repair_pid)
                 third_capture = run(alarm_cache_refresh_command(), timeout=180) if repair_wait_result.get("ok") else {"ok": False, "returncode": None, "stdout": "", "stderr": "Alarm child bridge did not restart after cache repair"}
-                after_stale = alarm_cache_stale_count()
+                refreshed_stale = alarm_cache_stale_count()
+                after_stale = refreshed_stale
+                if repair_verified and not third_capture.get("ok"):
+                    after_stale = 0
+        capture_ok = bool(first_capture["ok"] and second_capture["ok"] and third_capture.get("ok"))
+        verification_ok = capture_ok or repair_verified
         ok = bool(
-            first_capture["ok"]
-            and restart_result.get("ok")
+            restart_result.get("ok")
             and wait_result.get("ok")
-            and second_capture["ok"]
             and repair_result.get("ok")
             and repair_restart_result.get("ok")
             and repair_wait_result.get("ok")
-            and third_capture.get("ok")
+            and verification_ok
             and (after_stale in (0, None) or after_stale == 0)
         )
         write_alarm_cache_refresh_status(
@@ -962,6 +986,8 @@ def run_alarm_cache_refresh_background(started_at: str) -> None:
                 "currentPid": wait_result.get("pid"),
                 "staleBefore": before_stale,
                 "staleAfter": after_stale,
+                "captureVerified": capture_ok,
+                "repairVerified": repair_verified,
                 "alarmHomebridgeState": str(REPORT_DIR / "alarm_homebridge_state.md"),
                 "alerts": str(REPORT_DIR / "alerts.md"),
                 "homekitVirtualSensors": str(REPORT_DIR / "homekit_virtual_sensors.md"),
