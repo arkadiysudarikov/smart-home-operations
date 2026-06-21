@@ -46,6 +46,55 @@ class RefreshEnergyTest(unittest.TestCase):
 
         self.assertEqual(summary, {"total": 3, "complete": 2, "skipped": 1, "failed": 1})
 
+    def test_finalize_status_marks_interrupted_with_finished_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            original_data_dir = refresh_energy.DATA_DIR
+            original_report_dir = refresh_energy.REPORT_DIR
+            original_status_path = refresh_energy.STATUS_PATH
+            refresh_energy.DATA_DIR = Path(tmp)
+            refresh_energy.REPORT_DIR = Path(tmp) / "reports"
+            refresh_energy.STATUS_PATH = Path(tmp) / "latest_energy_refresh.json"
+            try:
+                payload = {"ok": None, "status": "running", "startedAt": "2026-06-21T10:00:00-07:00"}
+
+                status = refresh_energy.finalize_status(payload, [], "fast", status="interrupted")
+
+                self.assertIsNone(status["ok"])
+                self.assertEqual(status["status"], "interrupted")
+                self.assertEqual(status["mode"], "fast")
+                self.assertIn("finishedAt", status)
+                self.assertEqual(status["stepSummary"], {"total": 0, "complete": 0, "skipped": 0, "failed": 0})
+                stored = json.loads(refresh_energy.STATUS_PATH.read_text())
+                self.assertEqual(stored["status"], "interrupted")
+            finally:
+                refresh_energy.DATA_DIR = original_data_dir
+                refresh_energy.REPORT_DIR = original_report_dir
+                refresh_energy.STATUS_PATH = original_status_path
+
+    def test_finalize_status_marks_required_failures_failed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            original_data_dir = refresh_energy.DATA_DIR
+            original_report_dir = refresh_energy.REPORT_DIR
+            original_status_path = refresh_energy.STATUS_PATH
+            refresh_energy.DATA_DIR = Path(tmp)
+            refresh_energy.REPORT_DIR = Path(tmp) / "reports"
+            refresh_energy.STATUS_PATH = Path(tmp) / "latest_energy_refresh.json"
+            try:
+                status = refresh_energy.finalize_status(
+                    {"ok": None, "status": "running"},
+                    [{"name": "fetch_sce", "ok": False, "optional": False}],
+                    "full",
+                )
+
+                self.assertFalse(status["ok"])
+                self.assertEqual(status["status"], "failed")
+                self.assertEqual(status["requiredFailures"], ["fetch_sce"])
+                self.assertEqual(status["optionalFailures"], [])
+            finally:
+                refresh_energy.DATA_DIR = original_data_dir
+                refresh_energy.REPORT_DIR = original_report_dir
+                refresh_energy.STATUS_PATH = original_status_path
+
     def test_auto_alarm_cache_refresh_skips_when_cache_is_clean(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             original_data_dir = refresh_energy.DATA_DIR

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -27,6 +28,10 @@ FAST_SENSE_NOW_MIN_AGE_SECONDS = 300
 FAST_CHARGEPOINT_MIN_AGE_SECONDS = 3600
 ALARM_CACHE_AUTO_REFRESH_MIN_AGE_SECONDS = 900
 ACTION_SERVER_BASE_URL = os.environ.get("SMART_HOME_ACTION_SERVER_URL", "http://127.0.0.1:18765").rstrip("/")
+
+
+class RefreshInterrupted(Exception):
+    pass
 
 
 def now() -> str:
@@ -161,6 +166,47 @@ def write_status(payload: dict[str, Any]) -> None:
     STATUS_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
 
 
+def finalize_status(
+    payload: dict[str, Any],
+    steps: list[dict[str, Any]],
+    mode: str,
+    status: str | None = None,
+) -> dict[str, Any]:
+    required_failed = [step for step in steps if not step.get("ok") and not step.get("optional")]
+    optional_failed = [step for step in steps if not step.get("ok") and step.get("optional")]
+    sce_api = load_json(DATA_DIR / "latest_sce_api.json")
+    combined = load_json(DATA_DIR / "latest_combined_energy_monitor.json")
+    sce_summary = (combined.get("sources") or {}).get("sce") or sce_api
+    if status == "interrupted":
+        ok: bool | None = None
+        final_status = "interrupted"
+    else:
+        ok = not required_failed
+        final_status = "failed" if required_failed else "complete"
+    payload.update(
+        {
+            "ok": ok,
+            "status": final_status,
+            "mode": mode,
+            "currentStep": None,
+            "finishedAt": now(),
+            "steps": steps,
+            "stepSummary": summarize_steps(steps),
+            "requiredFailures": [step["name"] for step in required_failed],
+            "optionalFailures": [step["name"] for step in optional_failed],
+            "sceCoverageEnd": sce_summary.get("coverageEnd"),
+            "sceIntervalRows": sce_summary.get("intervalCount") or sce_api.get("intervalRows"),
+            "combinedEnergyGeneratedAt": combined.get("generatedAt"),
+            "combinedEnergy": str(REPORT_DIR / "combined_energy_monitor.md"),
+            "energyCosts": str(REPORT_DIR / "energy_costs.md"),
+            "alerts": str(REPORT_DIR / "alerts.md"),
+            "energyAutomationOpportunities": str(REPORT_DIR / "energy_automation_opportunities.md"),
+        }
+    )
+    write_status(payload)
+    return payload
+
+
 def acquire_refresh_lock() -> Any | None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     lock_file = LOCK_PATH.open("w")
@@ -172,6 +218,19 @@ def acquire_refresh_lock() -> Any | None:
     lock_file.write(f"{os.getpid()} {now()}\n")
     lock_file.flush()
     return lock_file
+
+
+def release_refresh_lock(lock_file: Any | None) -> None:
+    if lock_file is None:
+        return
+    try:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+    finally:
+        lock_file.close()
+    try:
+        LOCK_PATH.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def summarize_steps(steps: list[dict[str, Any]]) -> dict[str, Any]:
@@ -261,6 +320,12 @@ def maybe_auto_refresh_alarm_cache() -> dict[str, Any]:
 
 
 def main() -> int:
+    def handle_interrupt(signum: int, _frame: Any) -> None:
+        raise RefreshInterrupted(f"received signal {signum}")
+
+    signal.signal(signal.SIGTERM, handle_interrupt)
+    signal.signal(signal.SIGINT, handle_interrupt)
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--fast", action="store_true", help="refresh live source status without full historical reconciliation")
     parser.add_argument("--with-bills", action="store_true", help="also rescan local SCE bill PDFs")
@@ -273,6 +338,8 @@ def main() -> int:
         print("refresh_energy already running; skipping overlapping launch")
         return 0
     py = python_path()
+    steps: list[dict[str, Any]] = []
+    mode = "fast" if args.fast else "full"
     payload: dict[str, Any] = {
         "ok": None,
         "status": "running",
@@ -282,72 +349,20 @@ def main() -> int:
         "steps": [],
     }
     write_status(payload)
-
-    if args.fast:
-        plan: list[tuple[str, list[str] | str | None, int, bool, bool, str | None]] = [
-            ("snapshot", [py, "scripts/smart_home_snapshot.py"], 120, True, False, None),
-            (
-                "fetch_sce",
-                None
-                if is_recent_status(DATA_DIR / "latest_sce_api.json", FAST_SCE_MIN_AGE_SECONDS, "finishedAt", "generatedAt")
-                else [py, "scripts/fetch_sce_green_button_connect.py"],
-                600,
-                False,
-                False,
-                "recent SCE API capture is still fresh",
-            ),
-            (
-                "analyze_all_energy",
-                [py, "scripts/analyze_all_energy_readings.py", "--scan-external-files"],
-                300,
-                False,
-                False,
-                None,
-            ),
-            ("capture_envoy_direct", [py, "scripts/capture_envoy_direct.py"], 60, True, False, None),
-            (
-                "capture_sense_now",
-                None
-                if is_recent_status(DATA_DIR / "sense_now_latest.json", FAST_SENSE_NOW_MIN_AGE_SECONDS, "capturedAt", "generatedAt")
-                else "scripts/capture_sense_now.js",
-                120,
-                True,
-                True,
-                "recent Sense realtime capture is still fresh",
-            ),
-            (
-                "capture_alarm_com",
-                None
-                if is_recent_status(DATA_DIR / "latest_alarm_com.json", FAST_ALARM_MIN_AGE_SECONDS, "capturedAtLocal", "finishedAt", "generatedAt")
-                else "scripts/capture_alarm_com.js",
-                300,
-                True,
-                True,
-                "recent Alarm.com capture is still fresh",
-            ),
-            (
-                "fetch_chargepoint",
-                None
-                if is_recent_status(DATA_DIR / "latest_chargepoint_refresh.json", FAST_CHARGEPOINT_MIN_AGE_SECONDS, "finishedAt", "generatedAt")
-                else [py, "scripts/fetch_chargepoint_sessions.py"],
-                300,
-                True,
-                False,
-                "recent ChargePoint capture is still fresh",
-            ),
-            ("analyze_combined_energy", [py, "scripts/analyze_combined_energy_monitor.py"], 300, True, False, None),
-            ("generate_alerts", [py, "scripts/generate_alerts.py"], 300, True, False, None),
-            ("analyze_energy_automation", [py, "scripts/analyze_energy_automation_opportunities.py"], 120, True, False, None),
-        ]
-    else:
-        plan = [
-        ("snapshot", [py, "scripts/smart_home_snapshot.py"], 120, True, False, None),
-        ("fetch_sce", [py, "scripts/fetch_sce_green_button_connect.py"], 600, False, False, None),
-        ]
-        if args.with_bills:
-            plan.append(("extract_sce_bills", [py, "scripts/extract_sce_bills.py"], 300, True, False, None))
-        plan.extend(
-            [
+    try:
+        if args.fast:
+            plan: list[tuple[str, list[str] | str | None, int, bool, bool, str | None]] = [
+                ("snapshot", [py, "scripts/smart_home_snapshot.py"], 120, True, False, None),
+                (
+                    "fetch_sce",
+                    None
+                    if is_recent_status(DATA_DIR / "latest_sce_api.json", FAST_SCE_MIN_AGE_SECONDS, "finishedAt", "generatedAt")
+                    else [py, "scripts/fetch_sce_green_button_connect.py"],
+                    600,
+                    False,
+                    False,
+                    "recent SCE API capture is still fresh",
+                ),
                 (
                     "analyze_all_energy",
                     [py, "scripts/analyze_all_energy_readings.py", "--scan-external-files"],
@@ -357,65 +372,97 @@ def main() -> int:
                     None,
                 ),
                 ("capture_envoy_direct", [py, "scripts/capture_envoy_direct.py"], 60, True, False, None),
-                ("capture_alarm_com", "scripts/capture_alarm_com.js", 300, True, True, None),
-                ("capture_sense_trends", "scripts/capture_sense_trends.js", 300, True, True, None),
-                ("capture_sense_now", "scripts/capture_sense_now.js", 120, True, True, None),
-                ("fetch_chargepoint", [py, "scripts/fetch_chargepoint_sessions.py"], 300, True, False, None),
-                ("analyze_chargepoint", [py, "scripts/analyze_chargepoint_pairing.py"], 300, True, False, None),
-                ("analyze_meter_reconciliation", [py, "scripts/analyze_meter_reconciliation.py"], 300, True, False, None),
-                ("analyze_bill_home_pairing", [py, "scripts/analyze_bill_home_pairing.py"], 300, True, False, None),
-                ("analyze_energy_costs", [py, "scripts/analyze_energy_costs.py"], 300, False, False, None),
-                ("analyze_combined_energy", [py, "scripts/analyze_combined_energy_monitor.py"], 300, False, False, None),
+                (
+                    "capture_sense_now",
+                    None
+                    if is_recent_status(DATA_DIR / "sense_now_latest.json", FAST_SENSE_NOW_MIN_AGE_SECONDS, "capturedAt", "generatedAt")
+                    else "scripts/capture_sense_now.js",
+                    120,
+                    True,
+                    True,
+                    "recent Sense realtime capture is still fresh",
+                ),
+                (
+                    "capture_alarm_com",
+                    None
+                    if is_recent_status(DATA_DIR / "latest_alarm_com.json", FAST_ALARM_MIN_AGE_SECONDS, "capturedAtLocal", "finishedAt", "generatedAt")
+                    else "scripts/capture_alarm_com.js",
+                    300,
+                    True,
+                    True,
+                    "recent Alarm.com capture is still fresh",
+                ),
+                (
+                    "fetch_chargepoint",
+                    None
+                    if is_recent_status(DATA_DIR / "latest_chargepoint_refresh.json", FAST_CHARGEPOINT_MIN_AGE_SECONDS, "finishedAt", "generatedAt")
+                    else [py, "scripts/fetch_chargepoint_sessions.py"],
+                    300,
+                    True,
+                    False,
+                    "recent ChargePoint capture is still fresh",
+                ),
+                ("analyze_combined_energy", [py, "scripts/analyze_combined_energy_monitor.py"], 300, True, False, None),
                 ("generate_alerts", [py, "scripts/generate_alerts.py"], 300, True, False, None),
                 ("analyze_energy_automation", [py, "scripts/analyze_energy_automation_opportunities.py"], 120, True, False, None),
-                ("install_homekit_virtual_sensors", [py, "scripts/install_homekit_virtual_sensors.py"], 120, True, False, None),
             ]
-        )
-
-    steps = []
-    for name, command, timeout, optional, is_node, skip_reason in plan:
-        if command is None:
-            step = skipped_step(name, skip_reason or "recent capture is still fresh", optional=optional)
-        elif is_node:
-            step = run_node_step(name, str(command), timeout=timeout, optional=optional)
         else:
-            step = run_step(name, command if isinstance(command, list) else [command], timeout=timeout, optional=optional)
-        steps.append(step)
-        payload.update({"steps": steps, "currentStep": None if step.get("ok") else name})
-        write_status(payload)
-        if name == "generate_alerts":
-            auto_step = maybe_auto_refresh_alarm_cache()
-            steps.append(auto_step)
-            payload.update({"steps": steps, "currentStep": None if auto_step.get("ok") else auto_step["name"]})
-            write_status(payload)
+            plan = [
+                ("snapshot", [py, "scripts/smart_home_snapshot.py"], 120, True, False, None),
+                ("fetch_sce", [py, "scripts/fetch_sce_green_button_connect.py"], 600, False, False, None),
+            ]
+            if args.with_bills:
+                plan.append(("extract_sce_bills", [py, "scripts/extract_sce_bills.py"], 300, True, False, None))
+            plan.extend(
+                [
+                    (
+                        "analyze_all_energy",
+                        [py, "scripts/analyze_all_energy_readings.py", "--scan-external-files"],
+                        300,
+                        False,
+                        False,
+                        None,
+                    ),
+                    ("capture_envoy_direct", [py, "scripts/capture_envoy_direct.py"], 60, True, False, None),
+                    ("capture_alarm_com", "scripts/capture_alarm_com.js", 300, True, True, None),
+                    ("capture_sense_trends", "scripts/capture_sense_trends.js", 300, True, True, None),
+                    ("capture_sense_now", "scripts/capture_sense_now.js", 120, True, True, None),
+                    ("fetch_chargepoint", [py, "scripts/fetch_chargepoint_sessions.py"], 300, True, False, None),
+                    ("analyze_chargepoint", [py, "scripts/analyze_chargepoint_pairing.py"], 300, True, False, None),
+                    ("analyze_meter_reconciliation", [py, "scripts/analyze_meter_reconciliation.py"], 300, True, False, None),
+                    ("analyze_bill_home_pairing", [py, "scripts/analyze_bill_home_pairing.py"], 300, True, False, None),
+                    ("analyze_energy_costs", [py, "scripts/analyze_energy_costs.py"], 300, False, False, None),
+                    ("analyze_combined_energy", [py, "scripts/analyze_combined_energy_monitor.py"], 300, False, False, None),
+                    ("generate_alerts", [py, "scripts/generate_alerts.py"], 300, True, False, None),
+                    ("analyze_energy_automation", [py, "scripts/analyze_energy_automation_opportunities.py"], 120, True, False, None),
+                    ("install_homekit_virtual_sensors", [py, "scripts/install_homekit_virtual_sensors.py"], 120, True, False, None),
+                ]
+            )
 
-    required_failed = [step for step in steps if not step.get("ok") and not step.get("optional")]
-    optional_failed = [step for step in steps if not step.get("ok") and step.get("optional")]
-    sce_api = load_json(DATA_DIR / "latest_sce_api.json")
-    combined = load_json(DATA_DIR / "latest_combined_energy_monitor.json")
-    sce_summary = (combined.get("sources") or {}).get("sce") or sce_api
-    payload.update(
-        {
-            "ok": not required_failed,
-            "status": "failed" if required_failed else "complete",
-            "mode": "fast" if args.fast else "full",
-            "currentStep": None,
-            "finishedAt": now(),
-            "steps": steps,
-            "stepSummary": summarize_steps(steps),
-            "requiredFailures": [step["name"] for step in required_failed],
-            "optionalFailures": [step["name"] for step in optional_failed],
-            "sceCoverageEnd": sce_summary.get("coverageEnd"),
-            "sceIntervalRows": sce_summary.get("intervalCount") or sce_api.get("intervalRows"),
-            "combinedEnergyGeneratedAt": combined.get("generatedAt"),
-            "combinedEnergy": str(REPORT_DIR / "combined_energy_monitor.md"),
-            "energyCosts": str(REPORT_DIR / "energy_costs.md"),
-            "alerts": str(REPORT_DIR / "alerts.md"),
-            "energyAutomationOpportunities": str(REPORT_DIR / "energy_automation_opportunities.md"),
-        }
-    )
-    write_status(payload)
-    return 0 if payload["ok"] else 1
+        for name, command, timeout, optional, is_node, skip_reason in plan:
+            if command is None:
+                step = skipped_step(name, skip_reason or "recent capture is still fresh", optional=optional)
+            elif is_node:
+                step = run_node_step(name, str(command), timeout=timeout, optional=optional)
+            else:
+                step = run_step(name, command if isinstance(command, list) else [command], timeout=timeout, optional=optional)
+            steps.append(step)
+            payload.update({"steps": steps, "currentStep": None if step.get("ok") else name})
+            write_status(payload)
+            if name == "generate_alerts":
+                auto_step = maybe_auto_refresh_alarm_cache()
+                steps.append(auto_step)
+                payload.update({"steps": steps, "currentStep": None if auto_step.get("ok") else auto_step["name"]})
+                write_status(payload)
+
+        payload = finalize_status(payload, steps, mode)
+        return 0 if payload["ok"] else 1
+    except RefreshInterrupted as exc:
+        payload["interruptReason"] = str(exc)
+        finalize_status(payload, steps, mode, status="interrupted")
+        return 130
+    finally:
+        release_refresh_lock(lock_file)
 
 
 if __name__ == "__main__":
