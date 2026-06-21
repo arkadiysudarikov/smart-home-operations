@@ -220,6 +220,8 @@ def read_json_status(path: Path) -> dict[str, Any]:
         "energyAutomationOpportunities",
         "staleRunningRecovered",
         "staleRefreshPid",
+        "supersededBy",
+        "currentStaleCount",
     )
     for key in passthrough_keys:
         if key in payload:
@@ -322,16 +324,28 @@ def reconcile_was_superseded_by_refresh(reconcile: dict[str, Any], refresh: dict
     return refresh_at >= reconcile_finished
 
 
+def current_alarm_cache_stale_count() -> int | None:
+    return alarm_cache_stale_count()
+
+
 def normalize_action_statuses(actions: dict[str, dict[str, Any]]) -> None:
     reconcile = actions.get("reconcileEnergy")
     refresh = actions.get("refreshEnergy")
-    if not isinstance(reconcile, dict) or not isinstance(refresh, dict):
+    if isinstance(reconcile, dict) and isinstance(refresh, dict) and reconcile_was_superseded_by_refresh(reconcile, refresh):
+        reconcile["ok"] = True
+        reconcile["status"] = "superseded"
+        reconcile["supersededBy"] = "refreshEnergy"
+
+    alarm_refresh = actions.get("alarmRefresh")
+    if not isinstance(alarm_refresh, dict) or alarm_refresh.get("ok") is not False:
         return
-    if not reconcile_was_superseded_by_refresh(reconcile, refresh):
+    current_stale = current_alarm_cache_stale_count()
+    if current_stale != 0:
         return
-    reconcile["ok"] = True
-    reconcile["status"] = "superseded"
-    reconcile["supersededBy"] = "refreshEnergy"
+    alarm_refresh["ok"] = True
+    alarm_refresh["status"] = "superseded"
+    alarm_refresh["supersededBy"] = "currentAlarmCacheComparison"
+    alarm_refresh["currentStaleCount"] = current_stale
 
 
 def parse_status_dt(value: Any) -> datetime | None:

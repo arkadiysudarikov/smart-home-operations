@@ -339,6 +339,33 @@ class ActionServerTest(unittest.TestCase):
         self.assertTrue(statuses[-1]["repairVerified"])
         self.assertTrue(fake_lock.released)
 
+    def test_action_status_supersedes_failed_alarm_refresh_when_current_cache_is_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            alarm_refresh = Path(tmp) / "latest_alarm_cache_refresh.json"
+            alarm_refresh.write_text(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "finishedAt": "2026-06-21T10:29:53-07:00",
+                        "staleAfter": 1,
+                    }
+                )
+                + "\n"
+            )
+            self.patch_module(
+                ACTION_STATUS_PATHS={"alarmRefresh": alarm_refresh},
+                current_alarm_cache_stale_count=lambda: 0,
+            )
+
+            status = action_server.action_status()
+
+            self.assertTrue(status["ok"])
+            self.assertEqual(status["status"], "ok")
+            self.assertEqual(status["failedActions"], [])
+            self.assertEqual(status["actions"]["alarmRefresh"]["status"], "superseded")
+            self.assertEqual(status["actions"]["alarmRefresh"]["supersededBy"], "currentAlarmCacheComparison")
+            self.assertEqual(status["actions"]["alarmRefresh"]["currentStaleCount"], 0)
+
     def test_energy_status_marks_optional_refresh_failures_degraded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
