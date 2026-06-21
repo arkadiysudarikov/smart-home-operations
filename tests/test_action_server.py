@@ -296,6 +296,49 @@ class ActionServerTest(unittest.TestCase):
             self.assertEqual(status["status"], "failed")
             self.assertEqual(status["failedActions"], ["refreshEnergy"])
 
+    def test_alarm_refresh_accepts_complete_cache_repair_when_captures_time_out(self) -> None:
+        statuses: list[dict[str, Any]] = []
+
+        class FakeLock:
+            def release(self) -> None:
+                self.released = True
+
+        fake_lock = FakeLock()
+
+        def fake_run(command: list[str], timeout: int = 45) -> dict[str, Any]:
+            if command == ["repair"]:
+                return {
+                    "ok": True,
+                    "returncode": 0,
+                    "stdout": json.dumps({"ok": True, "staleCount": 1, "changedCount": 1, "repairs": [{}], "skipped": []}),
+                    "stderr": "",
+                }
+            return {"ok": False, "returncode": None, "stdout": "", "stderr": "timed out"}
+
+        stale_counts = iter([1, 1, 1])
+        pids = iter([100, 200])
+
+        self.patch_module(
+            load_config=lambda: {"actions": {"alarm_child_bridge_port": 52230}},
+            alarm_cache_stale_count=lambda: next(stale_counts),
+            listening_pid=lambda _port: next(pids),
+            terminate=lambda _pid: {"ok": True},
+            wait_for_alarm_child_bridge=lambda _port, _pid: {"ok": True, "pid": 200},
+            alarm_cache_refresh_command=lambda: ["capture"],
+            alarm_cache_repair_command=lambda: ["repair"],
+            run=fake_run,
+            write_alarm_cache_refresh_status=lambda payload: statuses.append(payload),
+            ALARM_CACHE_REFRESH_LOCK=fake_lock,
+        )
+
+        action_server.run_alarm_cache_refresh_background("2026-06-21T10:14:03-07:00")
+
+        self.assertTrue(statuses[-1]["ok"])
+        self.assertEqual(statuses[-1]["staleAfter"], 0)
+        self.assertFalse(statuses[-1]["captureVerified"])
+        self.assertTrue(statuses[-1]["repairVerified"])
+        self.assertTrue(fake_lock.released)
+
     def test_energy_status_marks_optional_refresh_failures_degraded(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
