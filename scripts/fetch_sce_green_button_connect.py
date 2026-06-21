@@ -311,7 +311,19 @@ def trigger_historical_collection(config: dict[str, Any], meter_uids: list[str])
         return {"ok": False, "error": "no meter uids available for historical collection"}
     api_token = config["api_token"]
     base_url = config["base_url"].rstrip("/")
-    payload = api_post_json(f"{base_url}/meters/historical-collection", api_token, {"meters": meter_uids})
+    try:
+        payload = api_post_json(f"{base_url}/meters/historical-collection", api_token, {"meters": meter_uids})
+    except urllib.error.HTTPError as exc:
+        if exc.code == 402:
+            return {
+                "ok": False,
+                "status": "payment_required",
+                "statusCode": exc.code,
+                "reason": exc.reason,
+                "meters": meter_uids,
+                "requiredAction": "Check UtilityAPI billing or collection entitlement, then rerun Refresh SCE.",
+            }
+        raise
     return {
         "ok": bool(payload.get("success", True)),
         "meters": meter_uids,
