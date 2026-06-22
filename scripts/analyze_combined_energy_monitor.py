@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import csv
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -67,6 +68,23 @@ def alert(severity: str, title: str, detail: str) -> dict[str, str]:
     return {"severity": severity, "title": title, "detail": detail}
 
 
+def alarm_cache_comparison_status(now: datetime, thresholds: dict[str, Any]) -> dict[str, Any]:
+    payload = load_json(DATA_DIR / "latest_alarm_homebridge_state.json")
+    stale_count = payload.get("staleCount")
+    stale_count_value = int(stale_count) if isinstance(stale_count, (int, float)) else None
+    generated_at = parse_dt(payload.get("generatedAt"))
+    age_hours_value = (now - generated_at).total_seconds() / 3600 if generated_at else None
+    max_age_hours = float(thresholds.get("source_status_stale_hours", 24))
+    current = age_hours_value is not None and age_hours_value < max_age_hours
+    return {
+        "generatedAt": payload.get("generatedAt"),
+        "ageHours": age_hours_value,
+        "staleCount": stale_count_value,
+        "current": current,
+        "healthy": bool(current and stale_count_value == 0),
+    }
+
+
 def latest_charge_session(chargepoint: dict[str, Any]) -> dict[str, Any]:
     sessions = load_json(DATA_DIR / "chargepoint_sessions.json").get("sessions", [])
     if sessions:
@@ -95,6 +113,36 @@ def status_label(age: float | None, stale_hours: float) -> str:
     if age >= stale_hours:
         return "stale"
     return "fresh"
+
+
+def latest_sce_file_modified(all_energy: dict[str, Any]) -> datetime | None:
+    modified: list[datetime] = []
+    for item in (all_energy.get("sceGreenButton") or {}).get("files") or []:
+        parsed = parse_dt(item.get("modified"))
+        if parsed:
+            modified.append(parsed)
+    return max(modified) if modified else None
+
+
+def sce_status_label(
+    now: datetime,
+    all_energy: dict[str, Any],
+    coverage_age: float | None,
+    thresholds: dict[str, Any],
+) -> str:
+    stale_hours = float(thresholds.get("sce_interval_stale_hours", thresholds.get("sce_interval_stale_days", 30) * 24))
+    if coverage_age is None:
+        return "missing"
+    if coverage_age < stale_hours:
+        return "fresh"
+
+    lag_hours = float(thresholds.get("sce_interval_normal_lag_hours", 48))
+    fresh_export_hours = float(thresholds.get("sce_fresh_export_grace_hours", 24))
+    latest_modified = latest_sce_file_modified(all_energy)
+    export_age = (now - latest_modified).total_seconds() / 3600 if latest_modified else None
+    if coverage_age <= lag_hours and export_age is not None and export_age <= fresh_export_hours:
+        return "lagging"
+    return "stale"
 
 
 def effective_sce_summary(all_energy: dict[str, Any]) -> dict[str, Any]:
@@ -153,10 +201,9 @@ def build_source_status(
 ) -> list[dict[str, Any]]:
     stale_hours = float(thresholds.get("source_status_stale_hours", 24))
     chargepoint_stale_hours = float(thresholds.get("chargepoint_refresh_stale_hours", 24))
-    sce_stale_hours = float(thresholds.get("sce_interval_stale_hours", thresholds.get("sce_interval_stale_days", 30) * 24))
     sce_summary = effective_sce_summary(all_energy)
     sce_age = age_hours(now, sce_summary.get("coverageEnd"))
-    sce_status = status_label(sce_age, sce_stale_hours)
+    sce_status = sce_status_label(now, all_energy, sce_age, thresholds)
     envoy_live = live_envoy_source()
     sense_live = live_sense_source()
 
@@ -255,6 +302,25 @@ def add_sum(target: dict[str, Any], key: str, value: Any) -> None:
     target[key] = target.get(key, 0.0) + value
 
 
+def load_sce_daily_totals() -> dict[str, dict[str, Any]]:
+    path = DATA_DIR / "sce_usage_intervals.csv"
+    if not path.exists():
+        return {}
+
+    daily: dict[str, dict[str, Any]] = {}
+    with path.open(encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle)
+        for row in reader:
+            day = str(row.get("start") or "")[:10]
+            if not day:
+                continue
+            item = daily.setdefault(day, {"date": day})
+            add_sum(item, "sceDeliveredKwh", row.get("delivered_kwh"))
+            add_sum(item, "sceReceivedKwh", row.get("received_kwh"))
+            add_sum(item, "sceNetImportKwh", row.get("net_import_kwh"))
+    return daily
+
+
 def build_daily_summary(
     all_energy: dict[str, Any],
     chargepoint: dict[str, Any],
@@ -263,14 +329,19 @@ def build_daily_summary(
     sense_trends: dict[str, Any],
 ) -> list[dict[str, Any]]:
     days: dict[str, dict[str, Any]] = {}
+    sce_daily = load_sce_daily_totals()
+    for day, row in sce_daily.items():
+        days[day] = dict(row)
+
     for row in all_energy.get("overlapPairs") or []:
         day = str(row.get("start") or "")[:10]
         if not day:
             continue
         item = days.setdefault(day, {"date": day})
-        add_sum(item, "sceDeliveredKwh", row.get("sceDeliveredKwh"))
-        add_sum(item, "sceReceivedKwh", row.get("sceReceivedKwh"))
-        add_sum(item, "sceNetImportKwh", row.get("sceNetImportKwh"))
+        if day not in sce_daily:
+            add_sum(item, "sceDeliveredKwh", row.get("sceDeliveredKwh"))
+            add_sum(item, "sceReceivedKwh", row.get("sceReceivedKwh"))
+            add_sum(item, "sceNetImportKwh", row.get("sceNetImportKwh"))
         add_sum(item, "envoySiteLoadKwh", row.get("envoyConsumptionTotalKwhEstimate"))
         add_sum(item, "envoyGridNetKwh", row.get("envoyConsumptionNetKwhEstimate"))
         add_sum(item, "envoySolarProductionKwh", row.get("envoyProductionKwhEstimate"))
@@ -359,8 +430,8 @@ def build_payload() -> dict[str, Any]:
     sce_summary = effective_sce_summary(all_energy)
     sce_overlap_count = int(all_energy.get("overlapPairCount") or 0)
     sce_age = age_hours(now, sce_summary.get("coverageEnd"))
-    sce_stale_hours = float(thresholds.get("sce_interval_stale_hours", thresholds.get("sce_interval_stale_days", 30) * 24))
-    if sce_age is None or sce_age >= sce_stale_hours:
+    sce_status = sce_status_label(now, all_energy, sce_age, thresholds)
+    if sce_status in {"missing", "stale"}:
         source_name = sce_summary.get("source") or "SCE"
         alerts.append(
             alert(
@@ -450,17 +521,32 @@ def build_payload() -> dict[str, Any]:
     alarm_capture_stale_hours = float(thresholds.get("alarm_energy_capture_stale_hours", 24))
     alarm_capture_stale = alarm_capture_age_hours is None or alarm_capture_age_hours >= alarm_capture_stale_hours
     alarm_totals_inconsistent = alarm_mismatch is not None and abs(num(alarm_mismatch) or 0) >= alarm_mismatch_threshold
+    alarm_cache_comparison = alarm_cache_comparison_status(now, thresholds)
+    alarm_capture_stale_downgraded = bool(alarm_capture_stale and alarm_cache_comparison.get("healthy"))
     alarm_recapture_reasons: list[str] = []
     if alarm_capture_stale:
         alarm_recapture_reasons.append("stale capture")
-        states.append("Alarm.com energy stale")
-        alerts.append(
-            alert(
-                "warning",
-                "Alarm.com energy is stale",
-                f"Last captured `{alarm.get('capturedAtLocal') or 'n/a'}`; capture age is `{fmt(alarm_capture_age_hours, 1)}` hours.",
+        if alarm_capture_stale_downgraded:
+            alerts.append(
+                alert(
+                    "info",
+                    "Alarm.com energy capture is stale but cache is clean",
+                    (
+                        f"Last captured `{alarm.get('capturedAtLocal') or 'n/a'}`; capture age is "
+                        f"`{fmt(alarm_capture_age_hours, 1)}` hours, but the current Alarm.com/Homebridge "
+                        "comparison has `0` stale cached devices."
+                    ),
+                )
             )
-        )
+        else:
+            states.append("Alarm.com energy stale")
+            alerts.append(
+                alert(
+                    "warning",
+                    "Alarm.com energy is stale",
+                    f"Last captured `{alarm.get('capturedAtLocal') or 'n/a'}`; capture age is `{fmt(alarm_capture_age_hours, 1)}` hours.",
+                )
+            )
     if alarm_totals_inconsistent:
         alarm_recapture_reasons.append("inconsistent totals")
         states.append("Alarm.com energy inconsistent")
@@ -476,8 +562,10 @@ def build_payload() -> dict[str, Any]:
         "SCE is utility grid exchange, while Envoy Consumption Total, Alarm.com Energy Clamp, and ChargePoint are site-load views."
     )
     if sce_overlap_count > 0:
-        if sce_age is not None and sce_age < sce_stale_hours:
+        if sce_status == "fresh":
             insights.append(f"Fresh SCE interval data overlaps the Smart Home monitor with {sce_overlap_count} paired intervals.")
+        elif sce_status == "lagging":
+            insights.append(f"SCE interval data was freshly exported and overlaps the Smart Home monitor with {sce_overlap_count} paired intervals; latest SCE interval is within normal utility lag.")
         else:
             insights.append(f"SCE interval data overlaps the Smart Home monitor with {sce_overlap_count} paired intervals, but the newest interval is stale.")
     if latest_bill:
@@ -549,6 +637,8 @@ def build_payload() -> dict[str, Any]:
             "captureAgeHours": alarm_capture_age_hours,
             "dailyTotalMinusDashboardMtdKwh": alarm_mismatch,
             "isStale": alarm_capture_stale,
+            "stalenessDowngraded": alarm_capture_stale_downgraded,
+            "cacheComparison": alarm_cache_comparison,
             "isInconsistent": alarm_totals_inconsistent,
             "needsRecapture": alarm_needs_recapture,
             "recaptureReasons": alarm_recapture_reasons,
@@ -643,6 +733,8 @@ def write_report(payload: dict[str, Any]) -> None:
             f"- Capture age: `{fmt(alarm_status.get('captureAgeHours'), 1)}` hours",
             f"- Daily rows minus dashboard current period: `{fmt(alarm_status.get('dailyTotalMinusDashboardMtdKwh'), 1)}` kWh",
             f"- Stale capture: `{alarm_status.get('isStale')}`",
+            f"- Staleness downgraded: `{alarm_status.get('stalenessDowngraded')}`",
+            f"- Cache comparison stale count: `{((alarm_status.get('cacheComparison') or {}).get('staleCount'))}`",
             f"- Inconsistent totals: `{alarm_status.get('isInconsistent')}`",
             f"- Needs recapture: `{alarm_status.get('needsRecapture')}`",
             f"- Recapture reasons: `{', '.join(alarm_status.get('recaptureReasons') or []) or 'none'}`",

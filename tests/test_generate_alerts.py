@@ -133,6 +133,19 @@ def envoy_warning_row() -> dict[str, Any]:
     return {"raw_json": json.dumps(raw), "alarm_websocket": 1, "warning_count": 1}
 
 
+def unifi_api_warning_row() -> dict[str, Any]:
+    raw = {
+        "homebridge": {
+            "logs": {
+                "recentWarnings": [
+                    '[homebridge-unifi-occupancy] ERROR: Failed to load clients: StatusCodeError: 502 - {"error":{"code":502,"message":"Bad Gateway"}}'
+                ],
+            },
+        }
+    }
+    return {"raw_json": json.dumps(raw), "alarm_websocket": 1, "warning_count": 1}
+
+
 class GenerateAlertsTest(unittest.TestCase):
     def patch_module(self, **replacements: Any) -> None:
         self._restore = getattr(self, "_restore", {})
@@ -229,6 +242,28 @@ class GenerateAlertsTest(unittest.TestCase):
         titles = {item["title"] for item in alerts}
         self.assertIn("UniFi occupancy API is failing", titles)
         self.assertNotIn("UniFi occupancy authentication is failing", titles)
+
+    def test_unifi_api_alert_suppresses_duplicate_high_warning_volume(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["warningCount"] = 1
+        latest["homebridge"]["logs"]["recentWarnings"] = [
+            '[homebridge-unifi-occupancy] ERROR: Failed to load device fingerprints StatusCodeError: 504 - {"error":{"code":504,"message":"Gateway Timeout"}}',
+        ]
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+        )
+
+        alerts = generate_alerts.build_alerts(
+            base_config(),
+            latest,
+            [unifi_api_warning_row(), unifi_api_warning_row(), unifi_api_warning_row()],
+        )
+        titles = {item["title"] for item in alerts}
+
+        self.assertIn("UniFi occupancy API is failing", titles)
+        self.assertNotIn("Recent Homebridge warning volume is high", titles)
 
     def test_unifi_auth_alert_takes_precedence_over_api_timeout(self) -> None:
         latest = latest_snapshot()

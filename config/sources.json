@@ -70,6 +70,8 @@
     "warning_high_count": 10,
     "sce_interval_stale_days": 30,
     "sce_interval_stale_hours": 36,
+    "sce_interval_normal_lag_hours": 48,
+    "sce_fresh_export_grace_hours": 24,
     "alarm_energy_capture_stale_hours": 24,
     "alarm_daily_dashboard_mismatch_kwh": 25,
     "alarm_media_sensor_trip_min_events": 10,
