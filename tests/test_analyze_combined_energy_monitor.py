@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import tempfile
 import unittest
 from datetime import datetime
@@ -134,6 +135,104 @@ class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
         )
 
         self.assertEqual(status, "stale")
+
+    def test_stale_alarm_energy_downgrades_when_cache_comparison_is_clean(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            config_dir = Path(tmp) / "config"
+            data_dir.mkdir()
+            config_dir.mkdir()
+            config_path = config_dir / "sources.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "alerts": {
+                            "alarm_daily_dashboard_mismatch_kwh": 25,
+                            "alarm_energy_capture_stale_hours": 24,
+                            "source_status_stale_hours": 24,
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (data_dir / "latest_bill_home_pairing.json").write_text(
+                json.dumps(
+                    {
+                        "alarm": {
+                            "capturedAtLocal": "2020-01-01T00:00:00-08:00",
+                            "dailyTotalMinusDashboardMtdKwh": 0,
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (data_dir / "latest_alarm_homebridge_state.json").write_text(
+                json.dumps(
+                    {
+                        "generatedAt": datetime.now(tz=ZoneInfo("America/Los_Angeles")).isoformat(timespec="seconds"),
+                        "staleCount": 0,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            self.patch_module(DATA_DIR=data_dir, CONFIG_PATH=config_path)
+
+            payload = combined.build_payload()
+
+        titles = {item["title"]: item["severity"] for item in payload["alerts"]}
+        self.assertNotIn("Alarm.com energy stale", payload["states"])
+        self.assertNotIn("Alarm.com energy is stale", titles)
+        self.assertEqual(titles["Alarm.com energy capture is stale but cache is clean"], "info")
+        self.assertTrue(payload["alarmEnergyStatus"]["stalenessDowngraded"])
+        self.assertEqual(payload["alarmEnergyStatus"]["cacheComparison"]["staleCount"], 0)
+
+    def test_stale_alarm_energy_stays_warning_when_cache_comparison_is_old(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            config_dir = Path(tmp) / "config"
+            data_dir.mkdir()
+            config_dir.mkdir()
+            config_path = config_dir / "sources.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "alerts": {
+                            "alarm_daily_dashboard_mismatch_kwh": 25,
+                            "alarm_energy_capture_stale_hours": 24,
+                            "source_status_stale_hours": 24,
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (data_dir / "latest_bill_home_pairing.json").write_text(
+                json.dumps(
+                    {
+                        "alarm": {
+                            "capturedAtLocal": "2020-01-01T00:00:00-08:00",
+                            "dailyTotalMinusDashboardMtdKwh": 0,
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (data_dir / "latest_alarm_homebridge_state.json").write_text(
+                json.dumps({"generatedAt": "2020-01-01T00:00:00-08:00", "staleCount": 0}) + "\n",
+                encoding="utf-8",
+            )
+            self.patch_module(DATA_DIR=data_dir, CONFIG_PATH=config_path)
+
+            payload = combined.build_payload()
+
+        titles = {item["title"]: item["severity"] for item in payload["alerts"]}
+        self.assertIn("Alarm.com energy stale", payload["states"])
+        self.assertEqual(titles["Alarm.com energy is stale"], "warning")
+        self.assertFalse(payload["alarmEnergyStatus"]["stalenessDowngraded"])
 
 
 if __name__ == "__main__":

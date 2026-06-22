@@ -283,6 +283,13 @@ def warning_count_excluding(trend: dict[str, Any], excluded_categories: set[str]
     )
 
 
+def diagnosed_warning_categories(active_titles: set[str]) -> set[str]:
+    categories: set[str] = set()
+    if active_titles & {"UniFi occupancy authentication is failing", "UniFi occupancy API is failing"}:
+        categories.add("UniFi occupancy")
+    return categories
+
+
 def severity_rank(severity: str) -> int:
     return {"critical": 0, "warning": 1, "info": 2}.get(severity, 3)
 
@@ -996,6 +1003,7 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
     current_warning_count = int(latest.get("homebridge", {}).get("logs", {}).get("warningCount", 0))
     warning_total = sum(int(row["warning_count"]) for row in warning_window)
     if current_warning_count > 0 and warning_total >= int(config["alerts"]["warning_high_count"]):
+        active_titles = {alert.get("title", "") for alert in alerts}
         dedicated_categories = {
             "Enphase Envoy local communication",
             "Enphase Envoy invalid characteristic",
@@ -1003,6 +1011,7 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
             "Sense live websocket auth",
             "SmartHQ remaining duration",
         }
+        dedicated_categories.update(diagnosed_warning_categories(active_titles))
         if alarm_portal_state_clean:
             dedicated_categories.add("Alarm.com auth/websocket")
         non_dedicated_total = warning_count_excluding(
@@ -1097,6 +1106,7 @@ def write_reports(alerts: list[dict[str, str]], latest: dict[str, Any]) -> None:
     excluded_trend_categories = set()
     if "Sense live websocket auth is noisy" not in active_titles:
         excluded_trend_categories.add("Sense live websocket auth")
+    excluded_trend_categories.update(diagnosed_warning_categories({str(title) for title in active_titles}))
     trend = warning_trend(warning_rows, excluded_categories=excluded_trend_categories)
     alarm_com = load_alarm_com()
     if (alarm_com.get("alarmState") or {}).get("ok"):

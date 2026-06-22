@@ -68,6 +68,23 @@ def alert(severity: str, title: str, detail: str) -> dict[str, str]:
     return {"severity": severity, "title": title, "detail": detail}
 
 
+def alarm_cache_comparison_status(now: datetime, thresholds: dict[str, Any]) -> dict[str, Any]:
+    payload = load_json(DATA_DIR / "latest_alarm_homebridge_state.json")
+    stale_count = payload.get("staleCount")
+    stale_count_value = int(stale_count) if isinstance(stale_count, (int, float)) else None
+    generated_at = parse_dt(payload.get("generatedAt"))
+    age_hours_value = (now - generated_at).total_seconds() / 3600 if generated_at else None
+    max_age_hours = float(thresholds.get("source_status_stale_hours", 24))
+    current = age_hours_value is not None and age_hours_value < max_age_hours
+    return {
+        "generatedAt": payload.get("generatedAt"),
+        "ageHours": age_hours_value,
+        "staleCount": stale_count_value,
+        "current": current,
+        "healthy": bool(current and stale_count_value == 0),
+    }
+
+
 def latest_charge_session(chargepoint: dict[str, Any]) -> dict[str, Any]:
     sessions = load_json(DATA_DIR / "chargepoint_sessions.json").get("sessions", [])
     if sessions:
@@ -504,17 +521,32 @@ def build_payload() -> dict[str, Any]:
     alarm_capture_stale_hours = float(thresholds.get("alarm_energy_capture_stale_hours", 24))
     alarm_capture_stale = alarm_capture_age_hours is None or alarm_capture_age_hours >= alarm_capture_stale_hours
     alarm_totals_inconsistent = alarm_mismatch is not None and abs(num(alarm_mismatch) or 0) >= alarm_mismatch_threshold
+    alarm_cache_comparison = alarm_cache_comparison_status(now, thresholds)
+    alarm_capture_stale_downgraded = bool(alarm_capture_stale and alarm_cache_comparison.get("healthy"))
     alarm_recapture_reasons: list[str] = []
     if alarm_capture_stale:
         alarm_recapture_reasons.append("stale capture")
-        states.append("Alarm.com energy stale")
-        alerts.append(
-            alert(
-                "warning",
-                "Alarm.com energy is stale",
-                f"Last captured `{alarm.get('capturedAtLocal') or 'n/a'}`; capture age is `{fmt(alarm_capture_age_hours, 1)}` hours.",
+        if alarm_capture_stale_downgraded:
+            alerts.append(
+                alert(
+                    "info",
+                    "Alarm.com energy capture is stale but cache is clean",
+                    (
+                        f"Last captured `{alarm.get('capturedAtLocal') or 'n/a'}`; capture age is "
+                        f"`{fmt(alarm_capture_age_hours, 1)}` hours, but the current Alarm.com/Homebridge "
+                        "comparison has `0` stale cached devices."
+                    ),
+                )
             )
-        )
+        else:
+            states.append("Alarm.com energy stale")
+            alerts.append(
+                alert(
+                    "warning",
+                    "Alarm.com energy is stale",
+                    f"Last captured `{alarm.get('capturedAtLocal') or 'n/a'}`; capture age is `{fmt(alarm_capture_age_hours, 1)}` hours.",
+                )
+            )
     if alarm_totals_inconsistent:
         alarm_recapture_reasons.append("inconsistent totals")
         states.append("Alarm.com energy inconsistent")
@@ -605,6 +637,8 @@ def build_payload() -> dict[str, Any]:
             "captureAgeHours": alarm_capture_age_hours,
             "dailyTotalMinusDashboardMtdKwh": alarm_mismatch,
             "isStale": alarm_capture_stale,
+            "stalenessDowngraded": alarm_capture_stale_downgraded,
+            "cacheComparison": alarm_cache_comparison,
             "isInconsistent": alarm_totals_inconsistent,
             "needsRecapture": alarm_needs_recapture,
             "recaptureReasons": alarm_recapture_reasons,
@@ -699,6 +733,8 @@ def write_report(payload: dict[str, Any]) -> None:
             f"- Capture age: `{fmt(alarm_status.get('captureAgeHours'), 1)}` hours",
             f"- Daily rows minus dashboard current period: `{fmt(alarm_status.get('dailyTotalMinusDashboardMtdKwh'), 1)}` kWh",
             f"- Stale capture: `{alarm_status.get('isStale')}`",
+            f"- Staleness downgraded: `{alarm_status.get('stalenessDowngraded')}`",
+            f"- Cache comparison stale count: `{((alarm_status.get('cacheComparison') or {}).get('staleCount'))}`",
             f"- Inconsistent totals: `{alarm_status.get('isInconsistent')}`",
             f"- Needs recapture: `{alarm_status.get('needsRecapture')}`",
             f"- Recapture reasons: `{', '.join(alarm_status.get('recaptureReasons') or []) or 'none'}`",
