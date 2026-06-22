@@ -188,6 +188,81 @@ class ActionServerTest(unittest.TestCase):
             self.assertEqual(stored["status"], "interrupted")
             self.assertIn("finishedAt", stored)
 
+    def test_read_json_status_finalizes_stale_running_refresh_with_terminal_steps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            refresh = Path(tmp) / "latest_energy_refresh.json"
+            lock = Path(tmp) / "refresh_energy.lock"
+            refresh.write_text(
+                json.dumps(
+                    {
+                        "ok": None,
+                        "status": "running",
+                        "startedAt": "2026-06-22T11:51:00-07:00",
+                        "currentStep": None,
+                        "steps": [
+                            {
+                                "name": "fetch_sce",
+                                "ok": True,
+                                "optional": False,
+                                "finishedAt": "2026-06-22T11:51:10-07:00",
+                            },
+                            {
+                                "name": "analyze_energy_automation",
+                                "ok": True,
+                                "optional": True,
+                                "finishedAt": "2026-06-22T11:52:00-07:00",
+                            },
+                        ],
+                    }
+                )
+                + "\n"
+            )
+            lock.write_text("999999 2026-06-22T11:51:00-07:00\n")
+            self.patch_module(ENERGY_REFRESH_STATUS_PATH=refresh, ENERGY_REFRESH_LOCK_PATH=lock)
+
+            status = action_server.read_json_status(refresh)
+
+            self.assertTrue(status["ok"])
+            self.assertEqual(status["status"], "complete")
+            self.assertTrue(status["staleRunningRecovered"])
+            self.assertEqual(status["stepSummary"], {"total": 2, "complete": 2, "skipped": 0, "failed": 0})
+            self.assertFalse(lock.exists())
+            stored = json.loads(refresh.read_text())
+            self.assertEqual(stored["status"], "complete")
+            self.assertEqual(stored["staleRunningRecoveryReason"], "terminal_steps_recorded")
+
+    def test_read_json_status_does_not_complete_partial_stale_running_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            refresh = Path(tmp) / "latest_energy_refresh.json"
+            lock = Path(tmp) / "refresh_energy.lock"
+            refresh.write_text(
+                json.dumps(
+                    {
+                        "ok": None,
+                        "status": "running",
+                        "startedAt": "2026-06-22T11:51:00-07:00",
+                        "steps": [
+                            {
+                                "name": "fetch_sce",
+                                "ok": True,
+                                "optional": False,
+                                "finishedAt": "2026-06-22T11:51:10-07:00",
+                            }
+                        ],
+                    }
+                )
+                + "\n"
+            )
+            lock.write_text("999999 2026-06-22T11:51:00-07:00\n")
+            self.patch_module(ENERGY_REFRESH_STATUS_PATH=refresh, ENERGY_REFRESH_LOCK_PATH=lock)
+
+            status = action_server.read_json_status(refresh)
+
+            self.assertIsNone(status["ok"])
+            self.assertEqual(status["status"], "interrupted")
+            stored = json.loads(refresh.read_text())
+            self.assertEqual(stored["status"], "interrupted")
+
     def test_action_status_keeps_optional_refresh_failures_online(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

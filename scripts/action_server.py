@@ -134,6 +134,45 @@ def read_refresh_lock_pid() -> int | None:
         return None
 
 
+def summarize_energy_refresh_steps(steps: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "total": len(steps),
+        "complete": sum(1 for step in steps if step.get("ok") is True),
+        "skipped": sum(1 for step in steps if step.get("skipped") is True),
+        "failed": sum(1 for step in steps if step.get("ok") is not True),
+    }
+
+
+def terminal_recorded_energy_refresh_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    if payload.get("status") != "running" or payload.get("finishedAt"):
+        return None
+    steps = payload.get("steps")
+    if not isinstance(steps, list) or not steps:
+        return None
+    if not all(isinstance(step, dict) and step.get("finishedAt") for step in steps):
+        return None
+    if steps[-1].get("name") not in {"analyze_energy_automation", "install_homekit_virtual_sensors"}:
+        return None
+
+    required_failed = [step for step in steps if not step.get("ok") and not step.get("optional")]
+    optional_failed = [step for step in steps if not step.get("ok") and step.get("optional")]
+    updated = dict(payload)
+    updated.update(
+        {
+            "ok": not required_failed,
+            "status": "failed" if required_failed else "complete",
+            "currentStep": None,
+            "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+            "stepSummary": summarize_energy_refresh_steps(steps),
+            "requiredFailures": [step["name"] for step in required_failed],
+            "optionalFailures": [step["name"] for step in optional_failed],
+            "staleRunningRecovered": True,
+            "staleRunningRecoveryReason": "terminal_steps_recorded",
+        }
+    )
+    return updated
+
+
 def recover_stale_energy_refresh_payload(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     if path != ENERGY_REFRESH_STATUS_PATH:
         return payload
@@ -142,16 +181,18 @@ def recover_stale_energy_refresh_payload(path: Path, payload: dict[str, Any]) ->
     pid = read_refresh_lock_pid()
     if pid is not None and process_is_running(pid):
         return payload
-    updated = dict(payload)
-    updated.update(
-        {
-            "ok": None,
-            "status": "interrupted",
-            "currentStep": None,
-            "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
-            "staleRunningRecovered": True,
-        }
-    )
+    updated = terminal_recorded_energy_refresh_payload(payload)
+    if updated is None:
+        updated = dict(payload)
+        updated.update(
+            {
+                "ok": None,
+                "status": "interrupted",
+                "currentStep": None,
+                "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                "staleRunningRecovered": True,
+            }
+        )
     if pid is not None:
         updated["staleRefreshPid"] = pid
     path.write_text(json.dumps(updated, indent=2, sort_keys=True) + "\n")
@@ -778,7 +819,9 @@ def write_sce_refresh_status(payload: dict[str, Any]) -> None:
 
 def latest_energy_refresh_status() -> dict[str, Any]:
     payload = load_json_file(ENERGY_REFRESH_STATUS_PATH)
-    return payload if isinstance(payload, dict) else {}
+    if not isinstance(payload, dict):
+        return {}
+    return recover_stale_energy_refresh_payload(ENERGY_REFRESH_STATUS_PATH, payload)
 
 
 def latest_sce_api_status() -> dict[str, Any]:
