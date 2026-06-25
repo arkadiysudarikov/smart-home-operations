@@ -73,6 +73,22 @@ class ActionServerTest(unittest.TestCase):
         self.assertIn("fetch_sce_green_button_connect.py", command[2])
         self.assertIn("refresh_energy.py --fast", command[2])
 
+    def test_wait_for_energy_refresh_idle_returns_immediately_without_lock_pid(self) -> None:
+        self.patch_module(read_refresh_lock_pid=lambda: None)
+
+        result = action_server.wait_for_energy_refresh_idle(timeout_seconds=1, poll_seconds=1)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["pid"], None)
+
+    def test_wait_for_energy_refresh_idle_times_out_when_pid_stays_running(self) -> None:
+        self.patch_module(read_refresh_lock_pid=lambda: 123, process_is_running=lambda _pid: True)
+
+        result = action_server.wait_for_energy_refresh_idle(timeout_seconds=0, poll_seconds=1)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["pid"], 123)
+
     def test_garage_activity_report_surfaces_recent_events_and_off_result(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             event_path = Path(tmp) / "garage_activity_events.jsonl"

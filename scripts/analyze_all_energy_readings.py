@@ -272,10 +272,46 @@ def parse_sce_xml(path: Path, intervals: dict[tuple[str, str], SceInterval]) -> 
     return count
 
 
+def load_existing_sce_usage_intervals(path: Path, intervals: dict[tuple[str, str], SceInterval]) -> int:
+    if not path.exists():
+        return 0
+    count = 0
+    with path.open(encoding="utf-8-sig", errors="replace", newline="") as handle:
+        for row in csv.DictReader(handle):
+            try:
+                start = parse_local_dt(row["start"])
+                end = parse_local_dt(row["end"])
+                delivered = float(row["delivered_kwh"]) if row.get("delivered_kwh") not in (None, "") else None
+                received = float(row["received_kwh"]) if row.get("received_kwh") not in (None, "") else None
+            except (KeyError, ValueError):
+                continue
+            if delivered is not None:
+                merge_interval(intervals, start, end, "delivered", delivered, row.get("qualities") or "", path)
+            if received is not None:
+                merge_interval(intervals, start, end, "received", received, row.get("qualities") or "", path)
+            count += 1
+    return count
+
+
 def load_sce_intervals(files: list[Path]) -> tuple[list[SceInterval], list[dict[str, Any]]]:
     intervals: dict[tuple[str, str], SceInterval] = {}
     file_stats: list[dict[str, Any]] = []
+    existing_path = DATA_DIR / "sce_usage_intervals.csv"
+    existing_before = len(intervals)
+    existing_rows = load_existing_sce_usage_intervals(existing_path, intervals)
+    if existing_rows:
+        file_stats.append(
+            {
+                "path": str(existing_path),
+                "parsedRows": existing_rows,
+                "newIntervals": len(intervals) - existing_before,
+                "modified": datetime.fromtimestamp(existing_path.stat().st_mtime, tz=LOCAL_TZ).isoformat(timespec="seconds"),
+                "preserved": True,
+            }
+        )
     for path in files:
+        if path == existing_path:
+            continue
         before = len(intervals)
         parsed = parse_sce_csv(path, intervals) if path.suffix.lower() == ".csv" else parse_sce_xml(path, intervals)
         file_stats.append(

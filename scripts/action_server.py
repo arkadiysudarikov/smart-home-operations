@@ -65,6 +65,8 @@ GARAGE_ACTIVITY_KNOWN_TRIGGERS = [
 ]
 NODE_BIN = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
 BUNDLED_PYTHON = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
+SCE_REFRESH_ENERGY_WAIT_SECONDS = 180
+SCE_REFRESH_ENERGY_WAIT_POLL_SECONDS = 5
 
 
 def running_from_runtime_root() -> bool:
@@ -844,15 +846,50 @@ def energy_refresh_summary() -> dict[str, Any]:
     }
 
 
+def wait_for_energy_refresh_idle(
+    timeout_seconds: int = SCE_REFRESH_ENERGY_WAIT_SECONDS,
+    poll_seconds: int = SCE_REFRESH_ENERGY_WAIT_POLL_SECONDS,
+) -> dict[str, Any]:
+    started = time.monotonic()
+    waited = 0.0
+    while True:
+        pid = read_refresh_lock_pid()
+        if pid is None or not process_is_running(pid):
+            return {"ok": True, "waitedSeconds": round(waited, 1), "pid": pid}
+        waited = time.monotonic() - started
+        if waited >= timeout_seconds:
+            return {"ok": False, "waitedSeconds": round(waited, 1), "pid": pid}
+        time.sleep(poll_seconds)
+
+
 def run_sce_refresh_background(started_at: str) -> None:
     try:
-        result = run(sce_refresh_command(), timeout=600)
+        wait_result = wait_for_energy_refresh_idle()
+        if wait_result["ok"]:
+            result = run(sce_refresh_command(), timeout=600)
+        else:
+            result = {
+                "ok": False,
+                "returncode": None,
+                "stdout": "",
+                "stderr": (
+                    "refresh_energy is still running after "
+                    f"{wait_result['waitedSeconds']} seconds; pid={wait_result.get('pid')}"
+                ),
+            }
         latest = latest_energy_refresh_status()
         sce_api = latest_sce_api_status()
-        ok = bool(result["ok"] and sce_api.get("ok"))
+        refresh_summary = energy_refresh_summary()
+        ok = bool(
+            result["ok"]
+            and sce_api.get("ok")
+            and refresh_summary.get("energyRefreshOk") is not False
+            and refresh_summary.get("energyRefreshStatus") != "interrupted"
+        )
         write_sce_refresh_status(
             {
                 "ok": ok,
+                "status": "complete" if ok else "failed",
                 "startedAt": started_at,
                 "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
                 "returncode": result["returncode"],
@@ -865,10 +902,11 @@ def run_sce_refresh_background(started_at: str) -> None:
                 "energyAutomationOpportunities": str(REPORT_DIR / "energy_automation_opportunities.md"),
                 "stdout": result["stdout"],
                 "stderr": result["stderr"],
+                "waitedForEnergyRefresh": wait_result,
                 "sceApiOk": sce_api.get("ok"),
                 "sceApiStatus": sce_api.get("status"),
                 "sceApiFinishedAt": sce_api.get("finishedAt") or sce_api.get("generatedAt"),
-                **energy_refresh_summary(),
+                **refresh_summary,
             }
         )
     finally:

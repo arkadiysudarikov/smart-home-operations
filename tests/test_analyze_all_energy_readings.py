@@ -54,6 +54,37 @@ class AnalyzeAllEnergyReadingsTest(unittest.TestCase):
 
             self.assertEqual([path.name for path in found], ["SCE_Usage_GBC_download.csv", "SCE_Usage_UtilityAPI_data.csv"])
 
+    def test_load_sce_intervals_preserves_existing_interval_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            existing = data_dir / "sce_usage_intervals.csv"
+            existing.write_text(
+                "\n".join(
+                    [
+                        "start,end,delivered_kwh,received_kwh,net_import_kwh,qualities,source_count",
+                        "2026-06-20T23:45:00-07:00,2026-06-21T00:00:00-07:00,0.7,0.0,0.7,,1",
+                    ]
+                )
+                + "\n"
+            )
+            stale_api = data_dir / "SCE_Usage_UtilityAPI_stale.csv"
+            stale_api.write_text(
+                "\n".join(
+                    [
+                        "Energy Consumption Time Period Start,Energy Consumption Time Period End,Delivered,Received",
+                        "2026-06-15 23:45:00,2026-06-16 00:00:00,0.29,0.0",
+                    ]
+                )
+                + "\n"
+            )
+
+            with mock.patch.object(analyze_all_energy_readings, "DATA_DIR", data_dir):
+                intervals, file_stats = analyze_all_energy_readings.load_sce_intervals([stale_api])
+
+            summary = analyze_all_energy_readings.summarize_intervals(intervals)
+            self.assertEqual(summary["coverageEnd"], "2026-06-21T00:00:00-07:00")
+            self.assertTrue(file_stats[0]["preserved"])
+
 
 if __name__ == "__main__":
     unittest.main()
