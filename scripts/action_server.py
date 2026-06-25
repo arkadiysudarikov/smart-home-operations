@@ -426,10 +426,16 @@ def source_age_hours(value: Any) -> float | None:
     return (datetime.now(timezone.utc).astimezone() - parsed).total_seconds() / 3600
 
 
+def alarm_energy_capture_at(alarm: dict[str, Any]) -> str | None:
+    energy = alarm.get("energy") if isinstance(alarm.get("energy"), dict) else {}
+    return alarm.get("capturedAtLocal") or energy.get("capturedAtLocal")
+
+
 def operational_source_status() -> list[dict[str, Any]]:
     sce = load_json_file(SCE_API_STATUS_PATH)
     chargepoint = load_json_file(DATA_DIR / "latest_chargepoint_refresh.json")
     alarm = load_json_file(ROOT / "config" / "alarm_energy_readings.json") or load_json_file(DATA_DIR / "latest_alarm_com.json")
+    alarm_capture = alarm_energy_capture_at(alarm)
     sense_trends = load_json_file(DATA_DIR / "sense_trends_latest.json")
     sense_now = load_json_file(DATA_DIR / "sense_now_latest.json")
     envoy = load_json_file(DATA_DIR / "latest_envoy_direct.json")
@@ -490,9 +496,9 @@ def operational_source_status() -> list[dict[str, Any]]:
         },
         {
             "source": "Alarm.com",
-            "status": "fresh" if alarm.get("capturedAtLocal") and (source_age_hours(alarm.get("capturedAtLocal")) or 999) < 24 else "stale",
-            "ageHours": source_age_hours(alarm.get("capturedAtLocal")),
-            "detail": alarm.get("capturedAtLocal"),
+            "status": "fresh" if alarm_capture and (source_age_hours(alarm_capture) or 999) < 24 else "stale",
+            "ageHours": source_age_hours(alarm_capture),
+            "detail": alarm_capture,
         },
     ]
 
