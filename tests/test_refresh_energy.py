@@ -6,7 +6,7 @@ import json
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 
@@ -34,6 +34,75 @@ class RefreshEnergyTest(unittest.TestCase):
             path.write_text(json.dumps({"capturedAt": datetime.now(timezone.utc).astimezone().isoformat()}) + "\n")
 
             self.assertTrue(refresh_energy.is_recent_status(path, 3600, "capturedAt"))
+
+    def test_recent_sce_api_status_rejects_stale_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            original_data_dir = refresh_energy.DATA_DIR
+            refresh_energy.DATA_DIR = Path(tmp)
+            try:
+                path = Path(tmp) / "latest_sce_api.json"
+                path.write_text(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(),
+                            "coverageEnd": (
+                                datetime.now(timezone.utc).astimezone() - timedelta(days=8)
+                            ).isoformat(),
+                        }
+                    )
+                    + "\n"
+                )
+
+                self.assertFalse(refresh_energy.is_fresh_sce_api_status(path))
+            finally:
+                refresh_energy.DATA_DIR = original_data_dir
+
+    def test_recent_sce_api_status_rejects_coverage_behind_local_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            original_data_dir = refresh_energy.DATA_DIR
+            refresh_energy.DATA_DIR = Path(tmp)
+            try:
+                api_end = datetime.now(timezone.utc).astimezone() - timedelta(hours=6)
+                local_end = api_end + timedelta(hours=3)
+                Path(tmp, "latest_sce_api.json").write_text(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(),
+                            "coverageEnd": api_end.isoformat(),
+                        }
+                    )
+                    + "\n"
+                )
+                Path(tmp, "latest_combined_energy_monitor.json").write_text(
+                    json.dumps({"sources": {"sce": {"coverageEnd": local_end.isoformat()}}}) + "\n"
+                )
+
+                self.assertFalse(refresh_energy.is_fresh_sce_api_status(Path(tmp) / "latest_sce_api.json"))
+            finally:
+                refresh_energy.DATA_DIR = original_data_dir
+
+    def test_recent_sce_api_status_accepts_current_best_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            original_data_dir = refresh_energy.DATA_DIR
+            refresh_energy.DATA_DIR = Path(tmp)
+            try:
+                api_end = datetime.now(timezone.utc).astimezone() - timedelta(hours=6)
+                Path(tmp, "latest_sce_api.json").write_text(
+                    json.dumps(
+                        {
+                            "ok": True,
+                            "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(),
+                            "coverageEnd": api_end.isoformat(),
+                        }
+                    )
+                    + "\n"
+                )
+
+                self.assertTrue(refresh_energy.is_fresh_sce_api_status(Path(tmp) / "latest_sce_api.json"))
+            finally:
+                refresh_energy.DATA_DIR = original_data_dir
 
     def test_summarize_steps_counts_optional_failures_without_hiding_them(self) -> None:
         summary = refresh_energy.summarize_steps(

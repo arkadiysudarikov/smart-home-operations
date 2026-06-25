@@ -23,6 +23,7 @@ STATUS_PATH = DATA_DIR / "latest_energy_refresh.json"
 LOCK_PATH = DATA_DIR / "refresh_energy.lock"
 BUNDLED_PYTHON = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
 FAST_SCE_MIN_AGE_SECONDS = 3600
+FAST_SCE_MAX_COVERAGE_AGE_SECONDS = 36 * 3600
 FAST_ALARM_MIN_AGE_SECONDS = 900
 FAST_SENSE_NOW_MIN_AGE_SECONDS = 300
 FAST_CHARGEPOINT_MIN_AGE_SECONDS = 3600
@@ -159,6 +160,32 @@ def is_recent_status(path: Path, max_age_seconds: int, *timestamp_keys: str) -> 
         if age is not None:
             return age < max_age_seconds
     return False
+
+
+def is_fresh_sce_api_status(path: Path, max_status_age_seconds: int = FAST_SCE_MIN_AGE_SECONDS) -> bool:
+    payload = load_json(path)
+    if "ok" in payload and payload.get("ok") is not True:
+        return False
+    status_age = None
+    for key in ("finishedAt", "generatedAt"):
+        status_age = age_seconds(payload.get(key))
+        if status_age is not None:
+            break
+    if status_age is None or status_age >= max_status_age_seconds:
+        return False
+
+    api_coverage_end = parse_dt(payload.get("coverageEnd"))
+    if api_coverage_end is None:
+        return False
+    api_coverage_age = (datetime.now(timezone.utc).astimezone() - api_coverage_end).total_seconds()
+    if api_coverage_age >= FAST_SCE_MAX_COVERAGE_AGE_SECONDS:
+        return False
+
+    combined = load_json(DATA_DIR / "latest_combined_energy_monitor.json")
+    local_coverage_end = parse_dt(((combined.get("sources") or {}).get("sce") or {}).get("coverageEnd"))
+    if local_coverage_end is not None and api_coverage_end < local_coverage_end:
+        return False
+    return True
 
 
 def write_status(payload: dict[str, Any]) -> None:
@@ -356,7 +383,7 @@ def main() -> int:
                 (
                     "fetch_sce",
                     None
-                    if is_recent_status(DATA_DIR / "latest_sce_api.json", FAST_SCE_MIN_AGE_SECONDS, "finishedAt", "generatedAt")
+                    if is_fresh_sce_api_status(DATA_DIR / "latest_sce_api.json")
                     else [py, "scripts/fetch_sce_green_button_connect.py"],
                     600,
                     False,
