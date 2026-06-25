@@ -8,6 +8,7 @@ import json
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -45,6 +46,24 @@ class ActionServerTest(unittest.TestCase):
 
         self.assertEqual(chargepoint["status"], "fresh")
         self.assertEqual(chargepoint["detail"], "driver_portal")
+
+    def test_operational_source_status_accepts_nested_alarm_energy_capture(self) -> None:
+        captured = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+
+        def fake_load_json_file(path: Path) -> dict[str, Any]:
+            if path.name == "alarm_energy_readings.json":
+                return {}
+            if path.name == "latest_alarm_com.json":
+                return {"energy": {"capturedAtLocal": captured}}
+            return {}
+
+        self.patch_module(load_json_file=fake_load_json_file)
+
+        rows = action_server.operational_source_status()
+        alarm = next(row for row in rows if row["source"] == "Alarm.com")
+
+        self.assertEqual(alarm["status"], "fresh")
+        self.assertEqual(alarm["detail"], captured)
 
     def test_read_json_status_uses_checked_at_as_timestamp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

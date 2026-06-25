@@ -107,6 +107,29 @@ def age_hours(now: datetime, raw: str | None) -> float | None:
     return (now - parsed).total_seconds() / 3600
 
 
+def alarm_energy_capture_at(alarm: dict[str, Any]) -> str | None:
+    energy = alarm.get("energy") if isinstance(alarm.get("energy"), dict) else {}
+    return alarm.get("capturedAtLocal") or energy.get("capturedAtLocal")
+
+
+def fresher_alarm_energy(base_alarm: dict[str, Any], latest_alarm: dict[str, Any]) -> dict[str, Any]:
+    energy = latest_alarm.get("energy") if isinstance(latest_alarm.get("energy"), dict) else {}
+    energy_captured = energy.get("capturedAtLocal")
+    if not energy_captured:
+        return base_alarm
+    base_captured = alarm_energy_capture_at(base_alarm)
+    energy_dt = parse_dt(energy_captured)
+    base_dt = parse_dt(base_captured)
+    if base_dt and (not energy_dt or energy_dt <= base_dt):
+        return base_alarm
+    merged = dict(base_alarm)
+    merged["capturedAtLocal"] = energy_captured
+    if isinstance(energy.get("dashboard"), dict):
+        merged["dashboard"] = energy["dashboard"]
+    merged["sourceCapture"] = "latest_alarm_com.energy"
+    return merged
+
+
 def status_label(age: float | None, stale_hours: float) -> str:
     if age is None:
         return "missing"
@@ -249,9 +272,9 @@ def build_source_status(
         },
         {
             "source": "Alarm.com",
-            "status": status_label(age_hours(now, alarm.get("capturedAtLocal")), stale_hours),
-            "ageHours": age_hours(now, alarm.get("capturedAtLocal")),
-            "detail": alarm.get("capturedAtLocal"),
+            "status": status_label(age_hours(now, alarm_energy_capture_at(alarm)), stale_hours),
+            "ageHours": age_hours(now, alarm_energy_capture_at(alarm)),
+            "detail": alarm_energy_capture_at(alarm),
         },
         {
             "source": "Energy costs",
@@ -421,6 +444,7 @@ def build_payload() -> dict[str, Any]:
     chargepoint_refresh = load_json(DATA_DIR / "latest_chargepoint_refresh.json")
     sense_trends = load_json(DATA_DIR / "sense_trends_latest.json")
     latest = load_json(DATA_DIR / "latest.json")
+    latest_alarm = load_json(DATA_DIR / "latest_alarm_com.json")
 
     now = datetime.now(timezone.utc).astimezone(LOCAL_TZ)
     alerts: list[dict[str, str]] = []
@@ -452,7 +476,7 @@ def build_payload() -> dict[str, Any]:
             )
         )
 
-    alarm = bill_home.get("alarm") or {}
+    alarm = fresher_alarm_energy(bill_home.get("alarm") or {}, latest_alarm)
     alarm_mismatch = alarm.get("dailyTotalMinusDashboardMtdKwh")
     alarm_mismatch_threshold = float(thresholds.get("alarm_daily_dashboard_mismatch_kwh", 25))
     if abs(num(alarm_mismatch) or 0) >= alarm_mismatch_threshold:
@@ -516,7 +540,8 @@ def build_payload() -> dict[str, Any]:
     envoy_meters = (bill_home.get("envoy") or {}).get("meters", {})
     daily_summary = build_daily_summary(all_energy, chargepoint, meter, alarm, sense_trends)
     source_status = build_source_status(now, thresholds, all_energy, bill_home, chargepoint_sessions, chargepoint_refresh, alarm, energy_costs)
-    alarm_capture_dt = parse_dt(alarm.get("capturedAtLocal"))
+    alarm_captured_at = alarm_energy_capture_at(alarm)
+    alarm_capture_dt = parse_dt(alarm_captured_at)
     alarm_capture_age_hours = (now - alarm_capture_dt).total_seconds() / 3600 if alarm_capture_dt else None
     alarm_capture_stale_hours = float(thresholds.get("alarm_energy_capture_stale_hours", 24))
     alarm_capture_stale = alarm_capture_age_hours is None or alarm_capture_age_hours >= alarm_capture_stale_hours
@@ -532,7 +557,7 @@ def build_payload() -> dict[str, Any]:
                     "info",
                     "Alarm.com energy capture is stale but cache is clean",
                     (
-                        f"Last captured `{alarm.get('capturedAtLocal') or 'n/a'}`; capture age is "
+                        f"Last captured `{alarm_captured_at or 'n/a'}`; capture age is "
                         f"`{fmt(alarm_capture_age_hours, 1)}` hours, but the current Alarm.com/Homebridge "
                         "comparison has `0` stale cached devices."
                     ),
@@ -544,7 +569,7 @@ def build_payload() -> dict[str, Any]:
                 alert(
                     "warning",
                     "Alarm.com energy is stale",
-                    f"Last captured `{alarm.get('capturedAtLocal') or 'n/a'}`; capture age is `{fmt(alarm_capture_age_hours, 1)}` hours.",
+                    f"Last captured `{alarm_captured_at or 'n/a'}`; capture age is `{fmt(alarm_capture_age_hours, 1)}` hours.",
                 )
             )
     if alarm_totals_inconsistent:
@@ -633,7 +658,7 @@ def build_payload() -> dict[str, Any]:
         "sourceRoles": SOURCE_ROLES,
         "dailySummary": daily_summary,
         "alarmEnergyStatus": {
-            "capturedAtLocal": alarm.get("capturedAtLocal"),
+            "capturedAtLocal": alarm_captured_at,
             "captureAgeHours": alarm_capture_age_hours,
             "dailyTotalMinusDashboardMtdKwh": alarm_mismatch,
             "isStale": alarm_capture_stale,

@@ -35,6 +35,22 @@ class RefreshEnergyTest(unittest.TestCase):
 
             self.assertTrue(refresh_energy.is_recent_status(path, 3600, "capturedAt"))
 
+    def test_recent_status_accepts_nested_timestamp(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "status.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "energy": {
+                            "capturedAtLocal": datetime.now(timezone.utc).astimezone().isoformat(),
+                        }
+                    }
+                )
+                + "\n"
+            )
+
+            self.assertTrue(refresh_energy.is_recent_status(path, 3600, "capturedAtLocal", "energy.capturedAtLocal"))
+
     def test_recent_sce_api_status_rejects_stale_coverage(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             original_data_dir = refresh_energy.DATA_DIR

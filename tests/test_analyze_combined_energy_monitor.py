@@ -189,6 +189,70 @@ class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
         self.assertTrue(payload["alarmEnergyStatus"]["stalenessDowngraded"])
         self.assertEqual(payload["alarmEnergyStatus"]["cacheComparison"]["staleCount"], 0)
 
+    def test_nested_alarm_energy_capture_overrides_stale_pairing_capture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            config_dir = Path(tmp) / "config"
+            data_dir.mkdir()
+            config_dir.mkdir()
+            config_path = config_dir / "sources.json"
+            fresh_capture = datetime.now(tz=ZoneInfo("America/Los_Angeles")).isoformat(timespec="seconds")
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "alerts": {
+                            "alarm_daily_dashboard_mismatch_kwh": 25,
+                            "alarm_energy_capture_stale_hours": 24,
+                            "source_status_stale_hours": 24,
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (data_dir / "latest_bill_home_pairing.json").write_text(
+                json.dumps(
+                    {
+                        "alarm": {
+                            "capturedAtLocal": "2026-06-23T10:55:15-07:00",
+                            "dailyTotalMinusDashboardMtdKwh": 0,
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (data_dir / "latest_alarm_com.json").write_text(
+                json.dumps(
+                    {
+                        "generatedAt": fresh_capture,
+                        "energy": {
+                            "capturedAtLocal": fresh_capture,
+                            "dashboard": {"monthToDateKwh": 836},
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (data_dir / "latest_alarm_homebridge_state.json").write_text(
+                json.dumps({"generatedAt": fresh_capture, "staleCount": 0}) + "\n",
+                encoding="utf-8",
+            )
+            self.patch_module(DATA_DIR=data_dir, CONFIG_PATH=config_path)
+
+            payload = combined.build_payload()
+
+        titles = {item["title"]: item["severity"] for item in payload["alerts"]}
+        alarm_row = next(item for item in payload["sourceStatus"] if item["source"] == "Alarm.com")
+        self.assertEqual(payload["alarmEnergyStatus"]["capturedAtLocal"], fresh_capture)
+        self.assertFalse(payload["alarmEnergyStatus"]["isStale"])
+        self.assertFalse(payload["alarmEnergyStatus"]["needsRecapture"])
+        self.assertNotIn("Alarm.com energy stale", payload["states"])
+        self.assertNotIn("Alarm.com energy is stale", titles)
+        self.assertEqual(alarm_row["status"], "fresh")
+        self.assertEqual(alarm_row["detail"], fresh_capture)
+
     def test_stale_alarm_energy_stays_warning_when_cache_comparison_is_old(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"

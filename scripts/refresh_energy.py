@@ -151,12 +151,21 @@ def age_seconds(value: Any) -> float | None:
     return (datetime.now(timezone.utc).astimezone() - parsed).total_seconds()
 
 
+def nested_value(payload: dict[str, Any], key: str) -> Any:
+    current: Any = payload
+    for part in key.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
 def is_recent_status(path: Path, max_age_seconds: int, *timestamp_keys: str) -> bool:
     payload = load_json(path)
     if "ok" in payload and payload.get("ok") is not True:
         return False
     for key in timestamp_keys:
-        age = age_seconds(payload.get(key))
+        age = age_seconds(nested_value(payload, key))
         if age is not None:
             return age < max_age_seconds
     return False
@@ -412,7 +421,7 @@ def main() -> int:
                 (
                     "capture_alarm_com",
                     None
-                    if is_recent_status(DATA_DIR / "latest_alarm_com.json", FAST_ALARM_MIN_AGE_SECONDS, "capturedAtLocal", "finishedAt", "generatedAt")
+                    if is_recent_status(DATA_DIR / "latest_alarm_com.json", FAST_ALARM_MIN_AGE_SECONDS, "capturedAtLocal", "energy.capturedAtLocal", "finishedAt", "generatedAt")
                     else "scripts/capture_alarm_com.js",
                     300,
                     True,
