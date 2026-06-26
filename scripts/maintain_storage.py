@@ -6,15 +6,21 @@ import re
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Callable
 
 
 ROOT = Path(__file__).resolve().parents[1]
 CONFIG_PATH = ROOT / "config" / "sources.json"
 DATA_DIR = ROOT / "data"
 SNAPSHOT_DIR = DATA_DIR / "snapshots"
+SCE_DOWNLOAD_DIR = DATA_DIR / "sce-downloads"
 DB_PATH = DATA_DIR / "smart_home.sqlite"
 REPORT_DIR = ROOT / "reports"
 SNAPSHOT_NAME_RE = re.compile(r"^(\d{8})T(\d{6})([+-]\d{4}|Z)\.json$")
+SCE_DOWNLOAD_NAME_RE = re.compile(
+    r"^(?:UtilityAPI_intervals|SCE_Usage_(?:UtilityAPI|GBC))_(\d{8})T(\d{6})([+-]\d{4}|Z)\.(?:json|csv|xml)$",
+    re.I,
+)
 
 
 def load_config() -> dict:
@@ -26,7 +32,15 @@ def cutoff_iso(days: int) -> str:
 
 
 def snapshot_file_datetime(path: Path) -> datetime | None:
-    match = SNAPSHOT_NAME_RE.match(path.name)
+    return datetime_from_filename(path, SNAPSHOT_NAME_RE)
+
+
+def sce_download_datetime(path: Path) -> datetime | None:
+    return datetime_from_filename(path, SCE_DOWNLOAD_NAME_RE)
+
+
+def datetime_from_filename(path: Path, pattern: re.Pattern[str]) -> datetime | None:
+    match = pattern.match(path.name)
     if not match:
         return None
     date_part, time_part, offset = match.groups()
@@ -39,14 +53,47 @@ def snapshot_file_datetime(path: Path) -> datetime | None:
 
 
 def prune_snapshot_files(days: int) -> tuple[int, int]:
-    if not SNAPSHOT_DIR.exists():
+    return prune_files_by_age(SNAPSHOT_DIR, "*.json", days, snapshot_file_datetime)
+
+
+def prune_sce_downloads(days: int, keep_recent_pairs: int) -> tuple[int, int]:
+    if not SCE_DOWNLOAD_DIR.exists():
         return (0, 0)
+    candidates = [
+        path
+        for path in SCE_DOWNLOAD_DIR.iterdir()
+        if path.is_file() and SCE_DOWNLOAD_NAME_RE.match(path.name)
+    ]
+    recent_keep = {
+        path
+        for path in sorted(
+            candidates,
+            key=lambda item: sce_download_datetime(item)
+            or datetime.fromtimestamp(item.stat().st_mtime, tz=timezone.utc).astimezone(),
+            reverse=True,
+        )[: max(0, keep_recent_pairs * 2)]
+    }
+    return prune_files_by_age(SCE_DOWNLOAD_DIR, "*", days, sce_download_datetime, recent_keep)
+
+
+def prune_files_by_age(
+    directory: Path,
+    glob_pattern: str,
+    days: int,
+    parse_datetime: Callable[[Path], datetime | None],
+    keep_paths: set[Path] | None = None,
+) -> tuple[int, int]:
+    if not directory.exists():
+        return (0, 0)
+    keep_paths = keep_paths or set()
     cutoff = datetime.now(timezone.utc).astimezone() - timedelta(days=days)
     deleted = 0
     bytes_deleted = 0
-    for path in SNAPSHOT_DIR.glob("*.json"):
+    for path in directory.glob(glob_pattern):
+        if path in keep_paths or not path.is_file():
+            continue
         try:
-            captured_at = snapshot_file_datetime(path)
+            captured_at = parse_datetime(path)
             if captured_at is None:
                 captured_at = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).astimezone()
             if captured_at >= cutoff:
@@ -110,18 +157,27 @@ def compact_db(config: dict) -> dict:
     }
 
 
-def write_report(file_result: tuple[int, int], db_result: dict, config: dict) -> None:
+def write_report(
+    file_result: tuple[int, int],
+    sce_result: tuple[int, int],
+    db_result: dict,
+    config: dict,
+) -> None:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     deleted_files, deleted_bytes = file_result
+    sce_deleted_files, sce_deleted_bytes = sce_result
     lines = [
         "# Smart Home Storage Maintenance",
         "",
         f"- Generated: `{datetime.now(timezone.utc).astimezone().isoformat(timespec='seconds')}`",
         f"- Snapshot file retention: `{config['retention']['snapshot_files_days']}` days",
+        f"- SCE download retention: `{config['retention'].get('sce_download_files_days', config['retention']['snapshot_files_days'])}` days",
         f"- Snapshot DB retention: `{config['retention']['snapshot_db_days']}` days",
         f"- Home event DB retention: `{config['retention']['home_event_days']}` days",
         f"- Snapshot files deleted: `{deleted_files}`",
         f"- Snapshot file bytes deleted: `{deleted_bytes}`",
+        f"- SCE download files deleted: `{sce_deleted_files}`",
+        f"- SCE download file bytes deleted: `{sce_deleted_bytes}`",
         f"- Snapshot DB rows deleted: `{db_result['snapshotsDeleted']}`",
         f"- Home event rows deleted: `{db_result['eventsDeleted']}`",
         f"- Snapshot raw payload rows compacted: `{db_result['snapshotRawRowsCompacted']}`",
@@ -133,9 +189,14 @@ def write_report(file_result: tuple[int, int], db_result: dict, config: dict) ->
 
 def main() -> int:
     config = load_config()
-    file_result = prune_snapshot_files(int(config["retention"]["snapshot_files_days"]))
+    retention = config["retention"]
+    file_result = prune_snapshot_files(int(retention["snapshot_files_days"]))
+    sce_result = prune_sce_downloads(
+        int(retention.get("sce_download_files_days", retention["snapshot_files_days"])),
+        int(retention.get("sce_download_keep_recent_pairs", 12)),
+    )
     db_result = compact_db(config)
-    write_report(file_result, db_result, config)
+    write_report(file_result, sce_result, db_result, config)
     print(REPORT_DIR / "maintenance.md")
     return 0
 

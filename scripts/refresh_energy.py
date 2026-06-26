@@ -62,8 +62,41 @@ def python_path() -> str:
 
 def run_step(name: str, cmd: list[str], timeout: int = 300, optional: bool = False) -> dict[str, Any]:
     started_at = now()
+    proc: subprocess.Popen[str] | None = None
     try:
-        proc = subprocess.run(cmd, cwd=ROOT, text=True, capture_output=True, timeout=timeout, check=False)
+        proc = subprocess.Popen(
+            cmd,
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                stdout, stderr = proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                try:
+                    os.killpg(proc.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                stdout, stderr = proc.communicate()
+            return {
+                "name": name,
+                "ok": False,
+                "optional": optional,
+                "startedAt": started_at,
+                "finishedAt": now(),
+                "returncode": proc.returncode,
+                "stdout": stdout[-4000:],
+                "stderr": f"timed out after {timeout} seconds\n{stderr[-4000:]}",
+            }
         ok = proc.returncode == 0
         return {
             "name": name,
@@ -72,8 +105,8 @@ def run_step(name: str, cmd: list[str], timeout: int = 300, optional: bool = Fal
             "startedAt": started_at,
             "finishedAt": now(),
             "returncode": proc.returncode,
-            "stdout": proc.stdout[-4000:],
-            "stderr": proc.stderr[-4000:],
+            "stdout": stdout[-4000:],
+            "stderr": stderr[-4000:],
         }
     except Exception as exc:
         return {
@@ -119,6 +152,26 @@ def run_node_step(name: str, script: str, timeout: int = 300, optional: bool = F
             "stderr": "node binary was not found",
         }
     return run_step(name, [node, script], timeout=timeout, optional=optional)
+
+
+def analyzer_cmd(py: str) -> list[str]:
+    script = ROOT / "scripts/analyze_all_energy_readings.py"
+    cmd = [py, str(script)]
+    try:
+        proc = subprocess.run(
+            [py, str(script), "--help"],
+            cwd=ROOT,
+            text=True,
+            capture_output=True,
+            timeout=10,
+            check=False,
+        )
+    except Exception:
+        return cmd
+    help_text = f"{proc.stdout}\n{proc.stderr}"
+    if "--scan-external-files" in help_text:
+        cmd.append("--scan-external-files")
+    return cmd
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -173,8 +226,6 @@ def is_recent_status(path: Path, max_age_seconds: int, *timestamp_keys: str) -> 
 
 def is_fresh_sce_api_status(path: Path, max_status_age_seconds: int = FAST_SCE_MIN_AGE_SECONDS) -> bool:
     payload = load_json(path)
-    if "ok" in payload and payload.get("ok") is not True:
-        return False
     status_age = None
     for key in ("finishedAt", "generatedAt"):
         status_age = age_seconds(payload.get(key))
@@ -182,6 +233,13 @@ def is_fresh_sce_api_status(path: Path, max_status_age_seconds: int = FAST_SCE_M
             break
     if status_age is None or status_age >= max_status_age_seconds:
         return False
+
+    if "ok" in payload and payload.get("ok") is not True:
+        return payload.get("status") in {
+            "utilityapi_payment_required",
+            "utilityapi_no_intervals",
+            "registration_required",
+        }
 
     api_coverage_end = parse_dt(payload.get("coverageEnd"))
     if api_coverage_end is None:
@@ -388,7 +446,7 @@ def main() -> int:
     try:
         if args.fast:
             plan: list[tuple[str, list[str] | str | None, int, bool, bool, str | None]] = [
-                ("snapshot", [py, "scripts/smart_home_snapshot.py"], 120, True, False, None),
+                ("snapshot", [py, "scripts/smart_home_snapshot.py"], 45, True, False, None),
                 (
                     "fetch_sce",
                     None
@@ -401,9 +459,9 @@ def main() -> int:
                 ),
                 (
                     "analyze_all_energy",
-                    [py, "scripts/analyze_all_energy_readings.py", "--scan-external-files"],
-                    300,
-                    False,
+                    analyzer_cmd(py),
+                    120,
+                    True,
                     False,
                     None,
                 ),
@@ -441,6 +499,7 @@ def main() -> int:
                 ("analyze_combined_energy", [py, "scripts/analyze_combined_energy_monitor.py"], 300, True, False, None),
                 ("generate_alerts", [py, "scripts/generate_alerts.py"], 300, True, False, None),
                 ("analyze_energy_automation", [py, "scripts/analyze_energy_automation_opportunities.py"], 120, True, False, None),
+                ("maintain_storage", [py, "scripts/maintain_storage.py"], 300, True, False, None),
             ]
         else:
             plan = [
@@ -453,7 +512,7 @@ def main() -> int:
                 [
                     (
                         "analyze_all_energy",
-                        [py, "scripts/analyze_all_energy_readings.py", "--scan-external-files"],
+                        analyzer_cmd(py),
                         300,
                         False,
                         False,
@@ -472,6 +531,7 @@ def main() -> int:
                     ("generate_alerts", [py, "scripts/generate_alerts.py"], 300, True, False, None),
                     ("analyze_energy_automation", [py, "scripts/analyze_energy_automation_opportunities.py"], 120, True, False, None),
                     ("install_homekit_virtual_sensors", [py, "scripts/install_homekit_virtual_sensors.py"], 120, True, False, None),
+                    ("maintain_storage", [py, "scripts/maintain_storage.py"], 300, True, False, None),
                 ]
             )
 

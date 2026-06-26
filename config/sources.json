@@ -49,6 +49,8 @@
   },
   "retention": {
     "snapshot_files_days": 2,
+    "sce_download_files_days": 2,
+    "sce_download_keep_recent_pairs": 12,
     "snapshot_db_days": 14,
     "home_event_days": 7,
     "keep_recent_snapshot_raw_json_rows": 24,
