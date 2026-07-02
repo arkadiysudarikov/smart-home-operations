@@ -253,6 +253,79 @@ class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
         self.assertEqual(alarm_row["status"], "fresh")
         self.assertEqual(alarm_row["detail"], fresh_capture)
 
+    def test_partial_alarm_21d_window_does_not_require_recapture(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            config_dir = Path(tmp) / "config"
+            data_dir.mkdir()
+            config_dir.mkdir()
+            config_path = config_dir / "sources.json"
+            fresh_capture = datetime.now(tz=ZoneInfo("America/Los_Angeles")).isoformat(timespec="seconds")
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "alerts": {
+                            "alarm_daily_dashboard_mismatch_kwh": 25,
+                            "alarm_energy_capture_stale_hours": 24,
+                            "source_status_stale_hours": 24,
+                        }
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (data_dir / "latest_bill_home_pairing.json").write_text(
+                json.dumps(
+                    {
+                        "overlap": {"closedBillDirectlyOverlapsEnvoySense": True},
+                        "alarm": {
+                            "capturedAtLocal": fresh_capture,
+                            "dashboard": {"monthToDateKwh": 1140},
+                            "dailyRows": [
+                                {"date": "2026-06-12", "meter": "Energy Clamp", "kwh": 45.029},
+                                {"date": "2026-07-02", "meter": "Energy Clamp", "kwh": 7.608},
+                            ],
+                            "dailyTotalKwh": 835.252,
+                            "dailyTotalMinusDashboardMtdKwh": -304.748,
+                            "periodKwh": {"21d": 835.252},
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (data_dir / "latest_alarm_com.json").write_text(
+                json.dumps(
+                    {
+                        "generatedAt": fresh_capture,
+                        "energy": {
+                            "capturedAtLocal": fresh_capture,
+                            "dashboard": {"monthToDateKwh": 1140},
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            (data_dir / "latest_alarm_homebridge_state.json").write_text(
+                json.dumps({"generatedAt": fresh_capture, "staleCount": 0}) + "\n",
+                encoding="utf-8",
+            )
+            self.patch_module(DATA_DIR=data_dir, CONFIG_PATH=config_path)
+
+            payload = combined.build_payload()
+
+        titles = {item["title"]: item["severity"] for item in payload["alerts"]}
+        status = payload["alarmEnergyStatus"]
+        self.assertNotIn("Alarm.com energy totals disagree", titles)
+        self.assertNotIn("Alarm.com energy inconsistent", payload["states"])
+        self.assertTrue(status["dashboardComparison"]["partialCoverage"])
+        self.assertEqual(status["dashboardComparison"]["status"], "partial_21d_window")
+        self.assertIsNone(status["dailyTotalMinusDashboardMtdKwh"])
+        self.assertAlmostEqual(status["rawDailyTotalMinusDashboardMtdKwh"], -304.748)
+        self.assertFalse(status["isInconsistent"])
+        self.assertFalse(status["needsRecapture"])
+
     def test_stale_alarm_energy_stays_warning_when_cache_comparison_is_old(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp) / "data"
