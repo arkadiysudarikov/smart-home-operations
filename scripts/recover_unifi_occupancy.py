@@ -89,9 +89,20 @@ def has_unifi_auth_warning(snapshot: dict[str, Any]) -> bool:
     return any("homebridge-unifi-occupancy" in line and "401" in line for line in recent_warning_lines(snapshot))
 
 
+def restart_when_no_tracked_accessories(recovery_config: dict[str, Any]) -> bool:
+    return bool(recovery_config.get("restart_when_no_tracked_accessories", True))
+
+
+def stale_occupancy_cause(api_warning: bool, tracked_count: int, recovery_config: dict[str, Any]) -> str | None:
+    if api_warning:
+        return "api_warning"
+    if restart_when_no_tracked_accessories(recovery_config) and tracked_count == 0:
+        return "no_tracked_accessories"
+    return None
+
+
 def should_restart_for_stale_occupancy(api_warning: bool, tracked_count: int, recovery_config: dict[str, Any]) -> bool:
-    restart_when_untracked = bool(recovery_config.get("restart_when_no_tracked_accessories", False))
-    return api_warning or (restart_when_untracked and tracked_count == 0)
+    return stale_occupancy_cause(api_warning, tracked_count, recovery_config) is not None
 
 
 def parse_dt(value: Any) -> datetime | None:
@@ -289,8 +300,9 @@ def main() -> int:
     tracked_count = unifi_tracked_count(snapshot)
     api_warning = has_unifi_api_warning(snapshot)
     auth_warning = has_unifi_auth_warning(snapshot)
-    restart_when_untracked = bool(recovery_config.get("restart_when_no_tracked_accessories", False))
-    stale = should_restart_for_stale_occupancy(api_warning, tracked_count, recovery_config)
+    restart_when_untracked = restart_when_no_tracked_accessories(recovery_config)
+    stale_cause = stale_occupancy_cause(api_warning, tracked_count, recovery_config)
+    stale = stale_cause is not None
     probe = probe_unifi_api(platform_config)
     status: dict[str, Any] = {
         "ok": True,
@@ -302,6 +314,7 @@ def main() -> int:
         "apiWarningInRecentLog": api_warning,
         "authWarningInRecentLog": auth_warning,
         "stale": stale,
+        "staleCause": stale_cause,
         "probe": probe,
     }
 
@@ -327,12 +340,17 @@ def main() -> int:
 
     port = int(platform_config.get("_bridge", {}).get("port") or recovery_config.get("child_bridge_port") or 52746)
     restart = restart_child_bridge(port)
+    restart_ok = bool(restart.get("ok"))
     status.update(
         {
+            "ok": restart_ok,
             "action": "restart_child_bridge",
-            "classification": "recovered" if restart.get("ok") else "restart_failed",
+            "classification": "recovered" if restart_ok else "restart_failed",
+            "reason": "restarted UniFi occupancy child bridge"
+            if restart_ok
+            else "failed to restart UniFi occupancy child bridge",
             "restart": restart,
-            "restartedAt": now_iso() if restart.get("ok") else None,
+            "restartedAt": now_iso() if restart_ok else None,
         }
     )
     if restart.get("ok") and recovery_config.get("refresh_snapshot_after_restart", True) is not False:
@@ -350,6 +368,20 @@ def main() -> int:
             "stdout": snapshot_run.stdout[-1000:],
             "stderr": snapshot_run.stderr[-1000:],
         }
+        if snapshot_run.returncode == 0:
+            refreshed_snapshot = latest_snapshot()
+            active_count_after = unifi_active_count(refreshed_snapshot)
+            tracked_count_after = unifi_tracked_count(refreshed_snapshot)
+            status["activeCountAfter"] = active_count_after
+            status["trackedCountAfter"] = tracked_count_after
+            if stale_cause == "no_tracked_accessories" and tracked_count_after == 0:
+                status.update(
+                    {
+                        "ok": False,
+                        "classification": "still_untracked",
+                        "reason": "UniFi occupancy still has no tracked accessories after restarting the child bridge; reload Homebridge or restore occupancy accessory rules.",
+                    }
+                )
     write_status(status)
     return 0
 

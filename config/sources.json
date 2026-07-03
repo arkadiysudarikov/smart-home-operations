@@ -43,6 +43,7 @@
   },
   "unifi_occupancy_recovery": {
     "enabled": true,
+    "restart_when_no_tracked_accessories": true,
     "cooldown_minutes": 20,
     "refresh_snapshot_after_restart": true,
     "post_restart_snapshot_delay_seconds": 8
