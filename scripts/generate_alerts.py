@@ -1592,8 +1592,8 @@ def cached_enphase_service_names() -> set[str]:
     return names
 
 
-def cached_homebridge_dummy_names() -> set[str]:
-    names: set[str] = set()
+def cached_homebridge_dummy_accessories() -> dict[str, str]:
+    accessories: dict[str, str] = {}
     for path in sorted((HOMEBRIDGE_DIR / "accessories").glob("cachedAccessories*")):
         data = load_json_file(path)
         if not isinstance(data, list):
@@ -1602,20 +1602,21 @@ def cached_homebridge_dummy_names() -> set[str]:
             if not isinstance(accessory, dict):
                 continue
             if accessory.get("platform") == "HomebridgeDummy" or accessory.get("plugin") == "homebridge-dummy":
-                if accessory.get("displayName"):
-                    names.add(str(accessory["displayName"]))
-    return names
+                identifier = (accessory.get("context") or {}).get("identifier")
+                if identifier and accessory.get("displayName"):
+                    accessories[str(identifier)] = str(accessory["displayName"])
+    return accessories
 
 
-def configured_homebridge_dummy_names(homebridge_config: dict[str, Any]) -> set[str]:
+def configured_homebridge_dummy_accessories(homebridge_config: dict[str, Any]) -> dict[str, str]:
     for platform in homebridge_config.get("platforms", []):
         if isinstance(platform, dict) and platform.get("platform") == "HomebridgeDummy":
             return {
-                str(item["name"])
+                str(item["id"]): str(item["name"])
                 for item in platform.get("accessories", [])
-                if isinstance(item, dict) and item.get("name")
+                if isinstance(item, dict) and item.get("id") and item.get("name")
             }
-    return set()
+    return {}
 
 
 def homebridge_dummy_switch_cache(characteristics: dict[str, Any]) -> dict[str, Any]:
@@ -1693,11 +1694,13 @@ def audit_homekit_surface(updates: list[dict[str, Any]]) -> dict[str, Any]:
 
     disabled = disabled_enphase_service_names(homebridge_config)
     cached_disabled = sorted(disabled.intersection(cached_enphase_service_names()))
-    configured_dummy = configured_homebridge_dummy_names(homebridge_config)
-    cached_dummy = cached_homebridge_dummy_names()
+    configured_dummy = configured_homebridge_dummy_accessories(homebridge_config)
+    cached_dummy = cached_homebridge_dummy_accessories()
+    missing_dummy_ids = configured_dummy.keys() - cached_dummy.keys()
+    stale_dummy_ids = cached_dummy.keys() - configured_dummy.keys()
     dummy_cache_drift = {
-        "missing": sorted(configured_dummy - cached_dummy),
-        "stale": sorted(cached_dummy - configured_dummy),
+        "missing": sorted(configured_dummy[item_id] for item_id in missing_dummy_ids),
+        "stale": sorted(cached_dummy[item_id] for item_id in stale_dummy_ids),
     }
     switch_cache = homebridge_dummy_switch_cache(characteristics)
     virtual_cache_mismatches: list[dict[str, Any]] = []

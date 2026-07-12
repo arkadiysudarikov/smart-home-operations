@@ -751,8 +751,8 @@ class GenerateAlertsTest(unittest.TestCase):
             load_latest_characteristics=lambda: {},
             disabled_enphase_service_names=lambda _config: set(),
             cached_enphase_service_names=lambda: set(),
-            configured_homebridge_dummy_names=lambda _config: set(),
-            cached_homebridge_dummy_names=lambda: set(),
+            configured_homebridge_dummy_accessories=lambda _config: {},
+            cached_homebridge_dummy_accessories=lambda: {},
             homebridge_dummy_switch_cache=lambda _characteristics: {"Grid Out": True},
             unifi_multi_active_clients=lambda _characteristics: {},
         )
@@ -770,6 +770,22 @@ class GenerateAlertsTest(unittest.TestCase):
 
         self.assertEqual(audit["virtualCacheMismatches"], [])
         self.assertEqual(audit["virtualCachePendingRefresh"][0]["name"], "Grid Out")
+
+    def test_homebridge_dummy_cache_audit_matches_stable_ids_after_rename(self) -> None:
+        self.patch_module(
+            load_json_file=lambda _path: {},
+            load_latest_characteristics=lambda: {},
+            disabled_enphase_service_names=lambda _config: set(),
+            cached_enphase_service_names=lambda: set(),
+            configured_homebridge_dummy_accessories=lambda _config: {"smart_home_smarthq_auth_failed": "SmartHQ Auth"},
+            cached_homebridge_dummy_accessories=lambda: {"smart_home_smarthq_auth_failed": "SmartHQ"},
+            homebridge_dummy_switch_cache=lambda _characteristics: {},
+            unifi_multi_active_clients=lambda _characteristics: {},
+        )
+
+        audit = generate_alerts.audit_homekit_surface([])
+
+        self.assertEqual(audit["homebridgeDummyCacheDrift"], {"missing": [], "stale": []})
 
 
 if __name__ == "__main__":
