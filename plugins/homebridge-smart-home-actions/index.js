@@ -8,10 +8,10 @@ const DEFAULT_ACTIONS = [
   { id: "check", name: "⚙️ Home Check", path: "/action/run-check", timeoutMs: 120000 },
   { id: "hb-restart", name: "⚙️ Restart Hub", path: "/action/restart-homebridge", timeoutMs: 5000 },
   { id: "mute-alerts", name: "⚙️ Pause Alerts", path: "/action/silence-alerts", timeoutMs: 120000 },
-  { id: "refresh-sce", name: "⚡ Refresh SCE", path: "/action/refresh-sce", timeoutMs: 120000 },
-  { id: "reconcile-energy", name: "⚡ Refresh Energy", path: "/action/reconcile-energy", timeoutMs: 120000 },
+  { id: "refresh-sce", name: "⚙️ Refresh SCE", path: "/action/refresh-sce", timeoutMs: 120000 },
+  { id: "reconcile-energy", name: "⚙️ Refresh Energy", path: "/action/reconcile-energy", timeoutMs: 120000 },
   { id: "alarm-refresh", name: "🛡️ Refresh Alarm", path: "/action/refresh-alarm-cache", timeoutMs: 120000 },
-  { id: "garage-activity", name: "💡 Garage Timer", path: "/action/garage-activity", timeoutMs: 120000 },
+  { id: "garage-activity", name: "⚙️ Garage Timer", path: "/action/garage-activity", timeoutMs: 120000 },
   { id: "panel-home", name: "🛡️ Armed", path: "/action/panel-home", timeoutMs: 120000 },
   { id: "panel-stay", name: "🛡️ Armed Stay", path: "/action/panel-stay", timeoutMs: 120000 },
   { id: "panel-off", name: "🛡️ Off", path: "/action/panel-off", timeoutMs: 120000 },
@@ -78,6 +78,7 @@ class SmartHomeActionsPlatform {
       }
       accessory.context.action = action;
       this.configureSwitch(accessory);
+      this.api.updatePlatformAccessories([accessory]);
     }
 
     const stale = [...this.accessories.values()].filter((accessory) => !activeUUIDs.has(accessory.UUID));
@@ -93,9 +94,8 @@ class SmartHomeActionsPlatform {
     const service = accessory.getService(this.Service.Switch) || accessory.addService(this.Service.Switch, action.name);
     service.displayName = action.name;
     service.setCharacteristic(this.Characteristic.Name, action.name);
-    if (service.testCharacteristic(this.Characteristic.ConfiguredName)) {
-      service.removeCharacteristic(service.getCharacteristic(this.Characteristic.ConfiguredName));
-    }
+    service.addOptionalCharacteristic(this.Characteristic.ConfiguredName);
+    service.setCharacteristic(this.Characteristic.ConfiguredName, action.name);
 
     accessory.getService(this.Service.AccessoryInformation)
       .setCharacteristic(this.Characteristic.Name, action.name)

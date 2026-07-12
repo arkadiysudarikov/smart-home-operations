@@ -34,21 +34,21 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
         self.assertEqual(
             names_by_id,
             {
-                "smart_home_battery_critical_v2": "🪫 BATTERY CRIT",
-                "smart_home_battery_low_v2": "🪫 BATTERY LOW",
-                "smart_home_alarm_degraded_v2": "🔐 ALARM LOGIN",
-                "smart_home_unifi_auth_failed_v2": "🔐 UNIFI LOGIN",
-                "smart_home_smarthq_auth_failed_v2": "🔐 SMARTHQ LOGIN",
-                "smart_home_sense_auth_failed_v2": "🛜 SENSE OFFLINE",
-                "smart_home_tahoma_auth_failed_v2": "🔐 TAHOMA LOGIN",
-                "smart_home_high_load_v2": "⚡ High Usage",
+                "smart_home_battery_critical_v2": "⚠️ BATTERY CRIT",
+                "smart_home_battery_low_v2": "⚠️ BATTERY LOW",
+                "smart_home_alarm_degraded_v2": "⚠️ ALARM LOGIN",
+                "smart_home_unifi_auth_failed_v2": "⚠️ UNIFI LOGIN",
+                "smart_home_smarthq_auth_failed_v2": "⚠️ SMARTHQ LOGIN",
+                "smart_home_sense_auth_failed_v2": "⚠️ SENSE OFFLINE",
+                "smart_home_tahoma_auth_failed_v2": "⚠️ TAHOMA LOGIN",
+                "smart_home_high_load_v2": "☀️ High Usage",
                 "smart_home_grid_importing_v2": "☀️ From Grid",
                 "smart_home_grid_exporting_v2": "☀️ To Grid",
-                "smart_home_battery_charging_v2": "☀️ Charging",
-                "smart_home_battery_discharging_v2": "🪫 Discharging",
-                "smart_home_energy_data_stale_v2": "🕒 ENVOY STALE",
-                "smart_home_sce_data_stale_v2": "🕒 SCE STALE",
-                "smart_home_alarm_media_missing_v2": "🎥 CLIPS MISSING",
+                "smart_home_battery_charging_v2": "🔋 Charging",
+                "smart_home_battery_discharging_v2": "🔋 Discharging",
+                "smart_home_energy_data_stale_v2": "⚠️ ENVOY STALE",
+                "smart_home_sce_data_stale_v2": "⚠️ SCE STALE",
+                "smart_home_alarm_media_missing_v2": "⚠️ CLIPS MISSING",
                 "smart_home_ev_charging_v2": "🔋 Car Charging",
             },
         )
@@ -91,22 +91,42 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             self.assertFalse(name.isupper(), name)
 
         for name in tile_names + action_names:
-            self.assertLessEqual(len(name), 16, f"visible name is too long for a Home tile: {name}")
+            visible_length = len(name.replace("\ufe0f", ""))
+            self.assertLessEqual(visible_length, 16, f"visible name is too long for a Home tile: {name}")
             words = set(name.lower().split())
             self.assertTrue(
                 words.isdisjoint({"auth", "issue", "reconcile", "surplus"}),
                 f"visible name contains monitor jargon: {name}",
             )
 
-        energy_flow_ids = {
+        household_energy_ids = {
+            "smart_home_high_load_v2",
             "smart_home_grid_importing_v2",
             "smart_home_grid_exporting_v2",
+        }
+        charging_ids = {
             "smart_home_battery_charging_v2",
+            "smart_home_battery_discharging_v2",
+            "smart_home_ev_charging_v2",
         }
         for tile in tiles:
-            if tile["id"] in energy_flow_ids:
+            if tile["id"] in household_energy_ids:
                 self.assertTrue(tile["name"].startswith("☀️ "), tile["name"])
                 self.assertEqual(tile["name"].count("☀️"), 1, tile["name"])
+            if tile["id"] in alert_ids:
+                self.assertTrue(tile["name"].startswith("⚠️ "), tile["name"])
+            if tile["id"] in charging_ids:
+                self.assertTrue(tile["name"].startswith("🔋 "), tile["name"])
+
+        approved_prefixes = {"⚠️", "☀️", "🔋", "⚙️", "🛡️", "📅", "🐠"}
+        grouped_names = tile_names + action_names + [
+            install_homekit_virtual_sensors.BUBBLER_NAME,
+            f"{install_homekit_virtual_sensors.CALENDAR_PREFIX}Automation",
+        ]
+        self.assertEqual(
+            {name.split(" ", 1)[0] for name in grouped_names},
+            approved_prefixes,
+        )
 
     def test_refuses_live_homebridge_config_write_outside_runtime_root_by_default(self) -> None:
         stdout = io.StringIO()
