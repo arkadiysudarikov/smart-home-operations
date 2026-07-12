@@ -190,6 +190,48 @@
         "id": "smart_home_ev_charging_v2",
         "name": "🔋 Car Charging",
         "state_titles": ["EV charging"]
+      },
+      {
+        "id": "home_status_high_load_v1",
+        "name": "☀️ High Usage",
+        "alert_titles": ["House load is high"],
+        "mirror_of": "smart_home_high_load_v2",
+        "room_hint": "Home Status"
+      },
+      {
+        "id": "home_status_grid_importing_v1",
+        "name": "☀️ From Grid",
+        "state_titles": ["Grid importing"],
+        "mirror_of": "smart_home_grid_importing_v2",
+        "room_hint": "Home Status"
+      },
+      {
+        "id": "home_status_grid_exporting_v1",
+        "name": "☀️ To Grid",
+        "state_titles": ["Grid exporting"],
+        "mirror_of": "smart_home_grid_exporting_v2",
+        "room_hint": "Home Status"
+      },
+      {
+        "id": "home_status_battery_charging_v1",
+        "name": "🔋 Charging",
+        "state_titles": ["Battery charging"],
+        "mirror_of": "smart_home_battery_charging_v2",
+        "room_hint": "Home Status"
+      },
+      {
+        "id": "home_status_battery_discharging_v1",
+        "name": "🔋 Discharging",
+        "state_titles": ["Battery discharging"],
+        "mirror_of": "smart_home_battery_discharging_v2",
+        "room_hint": "Home Status"
+      },
+      {
+        "id": "home_status_ev_charging_v1",
+        "name": "🔋 Car Charging",
+        "state_titles": ["EV charging"],
+        "mirror_of": "smart_home_ev_charging_v2",
+        "room_hint": "Home Status"
       }
     ]
   }

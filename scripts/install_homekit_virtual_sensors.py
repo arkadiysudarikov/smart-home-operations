@@ -20,6 +20,7 @@ BUBBLER_NAME = "🐠 Bubbler"
 BUBBLER_UUID_BASE = "Bubbler"
 CALENDAR_PREFIX = "📅 "
 RETIRED_ACTION_IDS = {"office-restart"}
+MANAGED_VIRTUAL_SENSOR_PREFIXES = ("smart_home_", "home_status_")
 
 
 def running_from_runtime_root() -> bool:
@@ -134,7 +135,7 @@ def main() -> int:
         item
         for item in existing
         if item.get("id") not in desired_by_id
-        and not str(item.get("id") or "").startswith("smart_home_")
+        and not str(item.get("id") or "").startswith(MANAGED_VIRTUAL_SENSOR_PREFIXES)
     ]
     target["accessories"] = kept + desired
     target.setdefault("name", "Homebridge Dummy")

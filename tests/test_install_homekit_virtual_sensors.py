@@ -50,6 +50,12 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
                 "smart_home_sce_data_stale_v2": "⚠️ SCE STALE",
                 "smart_home_alarm_media_missing_v2": "⚠️ CLIPS MISSING",
                 "smart_home_ev_charging_v2": "🔋 Car Charging",
+                "home_status_high_load_v1": "☀️ High Usage",
+                "home_status_grid_importing_v1": "☀️ From Grid",
+                "home_status_grid_exporting_v1": "☀️ To Grid",
+                "home_status_battery_charging_v1": "🔋 Charging",
+                "home_status_battery_discharging_v1": "🔋 Discharging",
+                "home_status_ev_charging_v1": "🔋 Car Charging",
             },
         )
 
@@ -80,6 +86,12 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             "smart_home_battery_charging_v2",
             "smart_home_battery_discharging_v2",
             "smart_home_ev_charging_v2",
+            "home_status_high_load_v1",
+            "home_status_grid_importing_v1",
+            "home_status_grid_exporting_v1",
+            "home_status_battery_charging_v1",
+            "home_status_battery_discharging_v1",
+            "home_status_ev_charging_v1",
         }
         for tile in tiles:
             visible_text = tile["name"].split(" ", 1)[1]
@@ -103,11 +115,17 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             "smart_home_high_load_v2",
             "smart_home_grid_importing_v2",
             "smart_home_grid_exporting_v2",
+            "home_status_high_load_v1",
+            "home_status_grid_importing_v1",
+            "home_status_grid_exporting_v1",
         }
         charging_ids = {
             "smart_home_battery_charging_v2",
             "smart_home_battery_discharging_v2",
             "smart_home_ev_charging_v2",
+            "home_status_battery_charging_v1",
+            "home_status_battery_discharging_v1",
+            "home_status_ev_charging_v1",
         }
         for tile in tiles:
             if tile["id"] in household_energy_ids:
@@ -127,6 +145,32 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             {name.split(" ", 1)[0] for name in grouped_names},
             approved_prefixes,
         )
+
+    def test_home_status_experiment_mirrors_every_informational_tile(self) -> None:
+        config = json.loads((ROOT / "config" / "sources.json").read_text())
+        tiles = config["homekit_virtual_sensors"]["accessories"]
+        by_id = {item["id"]: item for item in tiles}
+        informational_ids = {
+            "smart_home_high_load_v2",
+            "smart_home_grid_importing_v2",
+            "smart_home_grid_exporting_v2",
+            "smart_home_battery_charging_v2",
+            "smart_home_battery_discharging_v2",
+            "smart_home_ev_charging_v2",
+        }
+        mirrors = {
+            item["mirror_of"]: item
+            for item in tiles
+            if item.get("room_hint") == "Home Status"
+        }
+
+        self.assertEqual(set(mirrors), informational_ids)
+        for source_id, mirror in mirrors.items():
+            source = by_id[source_id]
+            self.assertTrue(mirror["id"].startswith("home_status_"))
+            self.assertEqual(mirror["name"], source["name"])
+            self.assertEqual(mirror.get("state_titles"), source.get("state_titles"))
+            self.assertEqual(mirror.get("alert_titles"), source.get("alert_titles"))
 
     def test_refuses_live_homebridge_config_write_outside_runtime_root_by_default(self) -> None:
         stdout = io.StringIO()
@@ -203,6 +247,7 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
                                 "platform": "HomebridgeDummy",
                                 "accessories": [
                                     {"id": "smart_home_retired", "name": "Retired Tile"},
+                                    {"id": "home_status_retired", "name": "Retired Mirror"},
                                     {"id": "other_accessory", "name": "Other Accessory"},
                                 ],
                             }
