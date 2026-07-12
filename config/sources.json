@@ -70,6 +70,7 @@
     "solar_surplus_margin_kw": 0.2,
     "warning_recent_window": 12,
     "warning_high_count": 10,
+    "smarthq_auth_event_limit": 200,
     "sce_interval_stale_days": 30,
     "sce_interval_stale_hours": 36,
     "sce_interval_normal_lag_hours": 48,
@@ -136,6 +137,11 @@
           "UniFi occupancy authentication is failing",
           "UniFi occupancy API is failing"
         ]
+      },
+      {
+        "id": "smart_home_smarthq_auth_failed",
+        "name": "SmartHQ",
+        "alert_titles": ["SmartHQ authentication is failing"]
       },
       {
         "id": "smart_home_office_tahoma_offline",

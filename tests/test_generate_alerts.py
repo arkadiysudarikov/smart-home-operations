@@ -30,6 +30,7 @@ def base_config() -> dict[str, Any]:
             "warning_recent_window": 3,
             "warning_high_count": 2,
             "sense_live_401_warning_min": 3,
+            "smarthq_auth_event_limit": 20,
             "alarm_media_sensor_trip_min_events": 10,
             "grid_import_kw": 0.05,
             "grid_export_kw": -0.05,
@@ -62,6 +63,12 @@ def latest_snapshot() -> dict[str, Any]:
             "security": {"homebridgePermissions": {"insecurePaths": []}},
         },
     }
+
+
+def latest_snapshot_with_smarthq() -> dict[str, Any]:
+    latest = latest_snapshot()
+    latest["homebridge"]["config"]["platforms"].append({"platform": "SmartHQ", "name": "SmartHQ"})
+    return latest
 
 
 def alarm_com_payload(activity_ok: bool = False) -> dict[str, Any]:
@@ -144,6 +151,15 @@ def unifi_api_warning_row() -> dict[str, Any]:
         }
     }
     return {"raw_json": json.dumps(raw), "alarm_websocket": 1, "warning_count": 1}
+
+
+def smarthq_event(captured_at: str, message: str) -> dict[str, Any]:
+    return {
+        "captured_at": captured_at,
+        "event_type": "warning" if "failed" in message.lower() or "authentication" in message.lower() else "homebridge",
+        "component": "SmartHQ",
+        "message": message,
+    }
 
 
 class GenerateAlertsTest(unittest.TestCase):
@@ -424,6 +440,67 @@ class GenerateAlertsTest(unittest.TestCase):
         )
         alert = next(item for item in alerts if item["title"] == "Sense live websocket auth is noisy")
         self.assertIn("`3` distinct recent Sense live-websocket auth warnings", alert["detail"])
+
+    def test_smarthq_auth_failure_in_current_warning_gets_dedicated_alert(self) -> None:
+        current = latest_snapshot_with_smarthq()
+        current["homebridge"]["logs"]["warningCount"] = 1
+        current["homebridge"]["logs"]["recentWarnings"] = [
+            "[7/8/2026, 3:26:41 PM] [SmartHQ] discoverDevices, Failed to get Access Token, Error Message: Authentication failed: No authorization code received"
+        ]
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            recent_smarthq_home_events=lambda _limit=200: [],
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), current, [])
+        alert = next(item for item in alerts if item["title"] == "SmartHQ authentication is failing")
+
+        self.assertIn("No authorization code received", alert["detail"])
+        self.assertIn("restart only the SmartHQ child bridge", generate_alerts.recommended_action(alert) or "")
+
+    def test_retained_smarthq_auth_failure_stays_active_after_warning_window_clears(self) -> None:
+        current = latest_snapshot_with_smarthq()
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            recent_smarthq_home_events=lambda _limit=200: [
+                smarthq_event(
+                    "2026-07-08T15:26:41-07:00",
+                    "discoverDevices, Failed to get Access Token, Error Message: Authentication failed: No authorization code received, Submit Bugs Here: https://bit.ly/smarthq-bug-report",
+                )
+            ],
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), current, [])
+        titles = {item["title"] for item in alerts}
+        alert = next(item for item in alerts if item["title"] == "SmartHQ authentication is failing")
+
+        self.assertIn("SmartHQ authentication is failing", titles)
+        self.assertNotIn("Recent Homebridge warning volume is high", titles)
+        self.assertIn("2026-07-08T15:26:41-07:00", alert["detail"])
+
+    def test_later_smarthq_device_refresh_clears_prior_auth_failure(self) -> None:
+        current = latest_snapshot_with_smarthq()
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            recent_smarthq_home_events=lambda _limit=200: [
+                smarthq_event("2026-07-08T15:27:30-07:00", "Restoring existing accessory from cache: Washer"),
+                smarthq_event(
+                    "2026-07-08T15:26:41-07:00",
+                    "discoverDevices, Failed to get Access Token, Error Message: Authentication failed: No authorization code received",
+                ),
+            ],
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), current, [])
+        titles = {item["title"] for item in alerts}
+
+        self.assertNotIn("SmartHQ authentication is failing", titles)
 
     def test_inactive_sense_live_auth_category_can_be_filtered_from_trend(self) -> None:
         trend = generate_alerts.warning_trend(

@@ -123,6 +123,26 @@ def recent_rows(limit: int) -> list[sqlite3.Row]:
         )
 
 
+def recent_smarthq_home_events(limit: int = 200) -> list[sqlite3.Row]:
+    if not DB_PATH.exists():
+        return []
+    with sqlite3.connect(DB_PATH) as db:
+        db.row_factory = sqlite3.Row
+        return list(
+            db.execute(
+                """
+                select captured_at, event_type, component, message
+                from home_events
+                where component = 'SmartHQ'
+                   or lower(coalesce(message, '')) like '%smarthq%'
+                order by captured_at desc
+                limit ?
+                """,
+                (limit,),
+            )
+        )
+
+
 def row_alarm_websocket_enabled(row: sqlite3.Row) -> bool:
     try:
         raw = json.loads(row["raw_json"])
@@ -143,6 +163,8 @@ def warning_category(message: str) -> str:
     lower = message.lower()
     if "security system" in lower or "alarm.com" in lower or "websocket token fetch returned 403" in lower:
         return "Alarm.com auth/websocket"
+    if "smarthq" in lower and is_smarthq_auth_failure_message(lower):
+        return "SmartHQ auth"
     if "smarthq" in lower and "remaining duration" in lower and "exceeded maximum of 3600" in lower:
         return "SmartHQ remaining duration"
     if ("sense energy meter" in lower or "sense" in lower) and (
@@ -195,6 +217,95 @@ def has_sense_live_auth_warning(warnings: list[Any]) -> bool:
         if warning_category(str(warning)) == "Sense live websocket auth":
             return True
     return False
+
+
+def is_smarthq_auth_failure_message(message: str) -> bool:
+    lower = message.lower()
+    return any(
+        token in lower
+        for token in (
+            "failed to get access token",
+            "failed to refresh access token",
+            "failed to re-authenticate",
+            "authentication failed",
+            "no authorization code",
+            "invalid_grant",
+            "invalid refresh token",
+            "no credentials found",
+            "no username found",
+            "no password found",
+        )
+    )
+
+
+def is_smarthq_auth_success_message(message: str) -> bool:
+    lower = message.lower()
+    return any(
+        token in lower
+        for token in (
+            "successfully re-authenticated with credentials",
+            "restoring existing accessory from cache",
+            "adding new accessory",
+        )
+    )
+
+
+def event_value(event: Any, key: str, default: Any = None) -> Any:
+    try:
+        return event[key]
+    except Exception:
+        if isinstance(event, dict):
+            return event.get(key, default)
+        return default
+
+
+def smarthq_auth_status_from_events(events: list[Any], now_raw: str | None = None) -> dict[str, Any]:
+    last_failure: dict[str, Any] | None = None
+    last_success: dict[str, Any] | None = None
+    now = parse_captured_at(now_raw)
+    for event in events:
+        component = str(event_value(event, "component", "") or "")
+        message = str(event_value(event, "message", "") or "")
+        if component != "SmartHQ" and "smarthq" not in message.lower():
+            continue
+        captured_at = str(event_value(event, "captured_at", "") or "")
+        item = {"capturedAt": captured_at, "message": message}
+        if is_smarthq_auth_failure_message(message):
+            if not last_failure or (parse_report_time(captured_at) or now) > (parse_report_time(last_failure["capturedAt"]) or now):
+                last_failure = item
+        elif is_smarthq_auth_success_message(message):
+            if not last_success or (parse_report_time(captured_at) or now) > (parse_report_time(last_success["capturedAt"]) or now):
+                last_success = item
+
+    active = False
+    if last_failure:
+        failure_time = parse_report_time(last_failure["capturedAt"]) or now
+        success_time = parse_report_time(last_success["capturedAt"]) if last_success else None
+        active = success_time is None or failure_time > success_time
+
+    return {
+        "active": active,
+        "lastFailure": last_failure,
+        "lastSuccess": last_success,
+    }
+
+
+def smarthq_platform_configured(latest: dict[str, Any]) -> bool:
+    return any(
+        item.get("platform") == "SmartHQ"
+        for item in latest.get("homebridge", {}).get("config", {}).get("platforms", [])
+    )
+
+
+def smart_hq_auth_status(config: dict[str, Any], latest: dict[str, Any], current_warnings: list[Any]) -> dict[str, Any]:
+    event_limit = int(config.get("alerts", {}).get("smarthq_auth_event_limit", 200))
+    events: list[Any] = list(recent_smarthq_home_events(event_limit))
+    captured_at = latest.get("captured_at")
+    for warning in current_warnings:
+        message = str(warning)
+        if warning_category(message) == "SmartHQ auth":
+            events.append({"captured_at": captured_at, "component": "SmartHQ", "message": message})
+    return smarthq_auth_status_from_events(events, captured_at)
 
 
 def has_envoy_local_comm_warning(warnings: list[Any]) -> bool:
@@ -287,6 +398,8 @@ def diagnosed_warning_categories(active_titles: set[str]) -> set[str]:
     categories: set[str] = set()
     if active_titles & {"UniFi occupancy authentication is failing", "UniFi occupancy API is failing"}:
         categories.add("UniFi occupancy")
+    if active_titles & {"SmartHQ authentication is failing"}:
+        categories.add("SmartHQ auth")
     return categories
 
 
@@ -349,6 +462,8 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         return "Check the current large loads in Home/Envoy, then compare against Sense live load and ChargePoint charging state."
     if title == "Sense live websocket auth is noisy":
         return "Leave daily Sense trend capture alone; it is working. Restart or reauth the Homebridge Sense live meter only if live 401s keep recurring after the next Homebridge restart."
+    if title == "SmartHQ authentication is failing":
+        return "Open SmartHQ/GE Appliances once to clear any account, terms, or MFA prompt, then restart only the SmartHQ child bridge and rerun the monitor."
     if title in {"Battery failed to recharge before peak", "Battery reserve is low before peak", "Battery backup is critically low", "Battery backup is low"}:
         return "Check Enphase battery status and operating mode, then verify solar production can recharge before peak pricing."
     if "source gap" in detail.lower() or "missing" in detail.lower():
@@ -748,6 +863,24 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
 
     recent_warning_items = logs.get("recentWarnings", [])
     recent_warnings = "\n".join(str(item) for item in recent_warning_items)
+    if smarthq_platform_configured(latest):
+        smarthq_auth = smart_hq_auth_status(config, latest, recent_warning_items)
+        if smarthq_auth.get("active"):
+            failure = smarthq_auth.get("lastFailure") or {}
+            failure_at = failure.get("capturedAt") or "unknown"
+            failure_message = str(failure.get("message") or "SmartHQ cloud login failed.")
+            failure_message = re.sub(r", Submit Bugs Here:.*$", "", failure_message)
+            alerts.append(
+                {
+                    "severity": "warning",
+                    "title": "SmartHQ authentication is failing",
+                    "detail": (
+                        f"SmartHQ child bridge last failed cloud auth at `{failure_at}`: "
+                        f"`{failure_message[-220:]}`. Cached appliance accessories may remain visible, "
+                        "but SmartHQ washer/dryer/dishwasher/oven state is not fresh until a later device refresh succeeds."
+                    ),
+                }
+            )
     if has_unifi_auth_warning(recent_warning_items):
         alerts.append(
             {
@@ -1009,6 +1142,7 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
             "Enphase Envoy invalid characteristic",
             "Office TaHoma",
             "Sense live websocket auth",
+            "SmartHQ auth",
             "SmartHQ remaining duration",
         }
         dedicated_categories.update(diagnosed_warning_categories(active_titles))
