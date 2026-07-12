@@ -109,7 +109,7 @@
       },
       {
         "id": "smart_home_alarm_degraded",
-        "name": "Alarm Issue",
+        "name": "Alarm Problem",
         "alert_titles": [
           "Alarm.com websocket is unreliable",
           "Alarm.com portal websocket token failed",
@@ -119,14 +119,14 @@
       },
       {
         "id": "smart_home_alarm_cache_stale",
-        "name": "Alarm Cache Stale",
+        "name": "Alarm Status Old",
         "alert_titles": [
           "Alarm.com Homebridge cache is stale"
         ]
       },
       {
         "id": "smart_home_alarm_activity_degraded",
-        "name": "Alarm Activity Issue",
+        "name": "Alarm History Offline",
         "alert_titles": [
           "Alarm.com activity history is degraded",
           "Alarm.com portal capture failed"
@@ -134,7 +134,7 @@
       },
       {
         "id": "smart_home_unifi_auth_failed",
-        "name": "UniFi Auth",
+        "name": "UniFi Login Failed",
         "alert_titles": [
           "UniFi occupancy authentication is failing",
           "UniFi occupancy API is failing"
@@ -142,12 +142,12 @@
       },
       {
         "id": "smart_home_smarthq_auth_failed",
-        "name": "SmartHQ Auth",
+        "name": "SmartHQ Login Failed",
         "alert_titles": ["SmartHQ authentication is failing"]
       },
       {
         "id": "smart_home_sense_auth_failed",
-        "name": "Sense Auth",
+        "name": "Sense Login Failed",
         "alert_titles": [
           "Sense live websocket authentication is failing",
           "Sense live websocket auth is noisy"
@@ -155,54 +155,54 @@
       },
       {
         "id": "smart_home_tahoma_auth_failed",
-        "name": "TaHoma Auth",
+        "name": "TaHoma Login Failed",
         "alert_titles": ["TaHoma authentication is failing"]
       },
       {
         "id": "smart_home_office_tahoma_offline",
-        "name": "Office Offline",
+        "name": "Office Shades Offline",
         "alert_titles": ["Office TaHoma child bridge is unreachable"]
       },
       {
         "id": "smart_home_high_load",
-        "name": "Load High",
+        "name": "Power Use High",
         "alert_titles": ["House load is high"]
       },
       {
         "id": "smart_home_grid_importing",
-        "name": "Grid Import",
+        "name": "Using Grid",
         "state_titles": ["Grid importing"]
       },
       {
         "id": "smart_home_grid_exporting",
-        "name": "Grid Export",
+        "name": "Sending to Grid",
         "state_titles": ["Grid exporting"]
       },
       {
         "id": "smart_home_solar_surplus",
-        "name": "Solar Surplus",
+        "name": "Extra Solar",
         "state_titles": ["Solar surplus"]
       },
       {
         "id": "smart_home_energy_data_stale",
-        "name": "Energy Stale",
+        "name": "Live Energy Offline",
         "state_titles": ["Energy data stale"]
       },
       {
         "id": "smart_home_sce_data_stale",
-        "name": "SCE Stale",
+        "name": "SCE Data Old",
         "alert_titles": ["SCE interval data is stale"]
       },
       {
         "id": "smart_home_energy_check",
-        "name": "Energy Coverage Gap",
+        "name": "Energy History Missing",
         "alert_titles": [
           "Energy readings need reconciliation"
         ]
       },
       {
         "id": "smart_home_alarm_energy_recapture",
-        "name": "Alarm Energy Issue",
+        "name": "Alarm Energy Problem",
         "alert_titles": [
           "Alarm.com energy is stale",
           "Alarm.com energy totals disagree"
@@ -214,17 +214,17 @@
       },
       {
         "id": "smart_home_alarm_media_missing",
-        "name": "Alarm Media Missing",
+        "name": "Alarm Clips Missing",
         "alert_titles": ["Alarm.com sensor-triggered media is missing"]
       },
       {
         "id": "smart_home_ev_charging",
-        "name": "EV Charging",
+        "name": "Car Charging",
         "state_titles": ["EV charging"]
       },
       {
         "id": "smart_home_ev_heavy",
-        "name": "EV Share High",
+        "name": "Car Power Use High",
         "alert_titles": ["Recent EV charging share is high"]
       }
     ]

@@ -5,6 +5,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -35,27 +36,44 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             {
                 "smart_home_battery_critical": "Battery Critical",
                 "smart_home_battery_low": "Battery Low",
-                "smart_home_alarm_degraded": "Alarm Issue",
-                "smart_home_alarm_cache_stale": "Alarm Cache Stale",
-                "smart_home_alarm_activity_degraded": "Alarm Activity Issue",
-                "smart_home_unifi_auth_failed": "UniFi Auth",
-                "smart_home_smarthq_auth_failed": "SmartHQ Auth",
-                "smart_home_sense_auth_failed": "Sense Auth",
-                "smart_home_tahoma_auth_failed": "TaHoma Auth",
-                "smart_home_office_tahoma_offline": "Office Offline",
-                "smart_home_high_load": "Load High",
-                "smart_home_grid_importing": "Grid Import",
-                "smart_home_grid_exporting": "Grid Export",
-                "smart_home_solar_surplus": "Solar Surplus",
-                "smart_home_energy_data_stale": "Energy Stale",
-                "smart_home_sce_data_stale": "SCE Stale",
-                "smart_home_energy_check": "Energy Coverage Gap",
-                "smart_home_alarm_energy_recapture": "Alarm Energy Issue",
-                "smart_home_alarm_media_missing": "Alarm Media Missing",
-                "smart_home_ev_charging": "EV Charging",
-                "smart_home_ev_heavy": "EV Share High",
+                "smart_home_alarm_degraded": "Alarm Problem",
+                "smart_home_alarm_cache_stale": "Alarm Status Old",
+                "smart_home_alarm_activity_degraded": "Alarm History Offline",
+                "smart_home_unifi_auth_failed": "UniFi Login Failed",
+                "smart_home_smarthq_auth_failed": "SmartHQ Login Failed",
+                "smart_home_sense_auth_failed": "Sense Login Failed",
+                "smart_home_tahoma_auth_failed": "TaHoma Login Failed",
+                "smart_home_office_tahoma_offline": "Office Shades Offline",
+                "smart_home_high_load": "Power Use High",
+                "smart_home_grid_importing": "Using Grid",
+                "smart_home_grid_exporting": "Sending to Grid",
+                "smart_home_solar_surplus": "Extra Solar",
+                "smart_home_energy_data_stale": "Live Energy Offline",
+                "smart_home_sce_data_stale": "SCE Data Old",
+                "smart_home_energy_check": "Energy History Missing",
+                "smart_home_alarm_energy_recapture": "Alarm Energy Problem",
+                "smart_home_alarm_media_missing": "Alarm Clips Missing",
+                "smart_home_ev_charging": "Car Charging",
+                "smart_home_ev_heavy": "Car Power Use High",
             },
         )
+
+    def test_visible_names_avoid_monitor_jargon(self) -> None:
+        config = json.loads((ROOT / "config" / "sources.json").read_text())
+        tile_names = [
+            item["name"]
+            for item in config["homekit_virtual_sensors"]["accessories"]
+        ]
+        action_source = (ROOT / "plugins" / "homebridge-smart-home-actions" / "index.js").read_text()
+        default_actions = action_source.split("];", 1)[0]
+        action_names = re.findall(r'name: "([^"]+)"', default_actions)
+
+        for name in tile_names + action_names:
+            words = set(name.lower().split())
+            self.assertTrue(
+                words.isdisjoint({"auth", "stale", "issue", "reconcile", "surplus"}),
+                f"visible name contains monitor jargon: {name}",
+            )
 
     def test_refuses_live_homebridge_config_write_outside_runtime_root_by_default(self) -> None:
         stdout = io.StringIO()
