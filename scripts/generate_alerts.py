@@ -589,6 +589,18 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         if "utilityapi_payment_required" in detail:
             return "Skip paid UtilityAPI collection; import a fresh SCE Green Button export, or wait for a no-cost UtilityAPI collection entitlement, then rerun Refresh SCE."
         return "Run Refresh SCE to download already-available UtilityAPI intervals. If coverage stays stale, import a fresh SCE Green Button export; paid UtilityAPI collection should stay off unless explicitly approved."
+    if title == "Sense data is stale":
+        return "Fix the Sense auth/live websocket issue first, then rerun the Sense trend capture so Sense-vs-Envoy reconciliation uses fresh data."
+    if title == "Envoy data is stale":
+        return "Refresh the local Envoy source and verify 192.168.1.71 is reachable before trusting live solar/load state."
+    if title == "ChargePoint data is stale":
+        return "Run Refresh ChargePoint, then rerun energy reconciliation so EV charging attribution catches up."
+    if title == "Alarm.com data is stale":
+        return "Refresh Alarm.com energy capture, then compare the updated Energy Clamp totals against Envoy and SCE."
+    if title == "Energy costs data is stale":
+        return "Rerun the energy cost model so import/export pricing and self-consumption values are current."
+    if title.endswith("data is missing") or title.endswith("data is using fallback"):
+        return "Refresh the named source, then rerun the combined energy monitor and alerts."
     if title in {"Alarm.com energy is stale", "Alarm.com energy totals disagree"}:
         return "Recapture Alarm.com energy and compare the updated Energy Clamp totals against Envoy and SCE in the combined report."
     if title == "Energy readings need reconciliation":
@@ -629,6 +641,46 @@ def enrich_alerts(alerts: list[dict[str, str]]) -> list[dict[str, str]]:
             item["recommendedAction"] = action
         enriched.append(item)
     return enriched
+
+
+def source_status_title(source: str, status: str) -> str:
+    if status == "missing":
+        return f"{source} data is missing"
+    if status == "fallback":
+        return f"{source} data is using fallback"
+    return f"{source} data is stale"
+
+
+def source_status_detail(source: str, status: str, detail: Any, age_hours: Any) -> str:
+    age_part = ""
+    if isinstance(age_hours, (int, float)):
+        age_part = f"; age is `{age_hours:.1f}` hours"
+    detail_part = f"; detail `{detail}`" if detail not in (None, "") else ""
+    extra = {
+        "Sense": " Sense-derived trend and reconciliation views may be stale even when Envoy and ChargePoint are fresh.",
+        "Envoy": " Live solar/load state may be stale until the local Envoy source refreshes.",
+        "ChargePoint": " EV charging attribution may be stale until ChargePoint refreshes.",
+        "Alarm.com": " Alarm.com energy attribution may be stale until the portal capture refreshes.",
+        "Energy costs": " Cost-aware energy views may use stale import/export pricing until rates refresh.",
+    }.get(source, "")
+    return f"{source} source status is `{status}`{detail_part}{age_part}.{extra}"
+
+
+def source_freshness_alerts(combined_energy: dict[str, Any]) -> list[dict[str, str]]:
+    alerts: list[dict[str, str]] = []
+    for source in combined_energy.get("sourceStatus") or []:
+        name = str(source.get("source") or "").strip()
+        status = str(source.get("status") or "").strip().lower()
+        if not name or name == "SCE" or status not in {"stale", "missing", "fallback"}:
+            continue
+        alerts.append(
+            {
+                "severity": "warning",
+                "title": source_status_title(name, status),
+                "detail": source_status_detail(name, status, source.get("detail"), source.get("ageHours")),
+            }
+        )
+    return alerts
 
 
 def alarm_device_aliases(latest: dict[str, Any]) -> dict[str, str]:
@@ -1326,7 +1378,13 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
             )
 
     sce_api_status = load_sce_api_status()
-    for item in load_combined_energy().get("alerts", []):
+    combined_energy = load_combined_energy()
+    active_titles = {alert.get("title", "") for alert in alerts}
+    for item in source_freshness_alerts(combined_energy):
+        if item.get("title") not in active_titles:
+            alerts.append(item)
+            active_titles.add(item.get("title", ""))
+    for item in combined_energy.get("alerts", []):
         title = item.get("title")
         detail = item.get("detail")
         severity = item.get("severity", "warning")
