@@ -42,7 +42,7 @@ process.stdout.write(JSON.stringify(actions));
         self.assertEqual(by_id["mute-alerts"]["name"], "⚙️ Pause Alerts")
         self.assertEqual(by_id["refresh-sce"]["name"], "⚙️ Refresh SCE")
         self.assertEqual(by_id["reconcile-energy"]["name"], "⚙️ Refresh Energy")
-        self.assertEqual(by_id["alarm-refresh"]["name"], "🛡️ Refresh Alarm")
+        self.assertEqual(by_id["alarm-refresh"]["name"], "⚙️ Refresh Alarm")
         self.assertEqual(by_id["garage-activity"]["name"], "⚙️ Garage Timer")
         self.assertEqual(by_id["panel-home"]["name"], "🛡️ Armed")
         self.assertEqual(by_id["panel-stay"]["name"], "🛡️ Armed Stay")
