@@ -39,12 +39,13 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
                 "smart_home_alarm_degraded_v2": "🔐 ALARM LOGIN",
                 "smart_home_unifi_auth_failed_v2": "🔐 UNIFI LOGIN",
                 "smart_home_smarthq_auth_failed_v2": "🔐 SMARTHQ LOGIN",
-                "smart_home_sense_auth_failed_v2": "🔐 SENSE LOGIN",
+                "smart_home_sense_auth_failed_v2": "🛜 SENSE OFFLINE",
                 "smart_home_tahoma_auth_failed_v2": "🔐 TAHOMA LOGIN",
                 "smart_home_high_load_v2": "⚡ High Usage",
-                "smart_home_grid_importing_v2": "⬅️ From Grid",
+                "smart_home_grid_importing_v2": "☀️ From Grid",
                 "smart_home_grid_exporting_v2": "☀️ To Grid",
                 "smart_home_battery_charging_v2": "☀️ Charging",
+                "smart_home_battery_discharging_v2": "🪫 Discharging",
                 "smart_home_energy_data_stale_v2": "🕒 ENVOY STALE",
                 "smart_home_sce_data_stale_v2": "🕒 SCE STALE",
                 "smart_home_alarm_media_missing_v2": "🎥 CLIPS MISSING",
@@ -77,6 +78,7 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             "smart_home_grid_importing_v2",
             "smart_home_grid_exporting_v2",
             "smart_home_battery_charging_v2",
+            "smart_home_battery_discharging_v2",
             "smart_home_ev_charging_v2",
         }
         for tile in tiles:
@@ -95,6 +97,16 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
                 words.isdisjoint({"auth", "issue", "reconcile", "surplus"}),
                 f"visible name contains monitor jargon: {name}",
             )
+
+        energy_flow_ids = {
+            "smart_home_grid_importing_v2",
+            "smart_home_grid_exporting_v2",
+            "smart_home_battery_charging_v2",
+        }
+        for tile in tiles:
+            if tile["id"] in energy_flow_ids:
+                self.assertTrue(tile["name"].startswith("☀️ "), tile["name"])
+                self.assertEqual(tile["name"].count("☀️"), 1, tile["name"])
 
     def test_refuses_live_homebridge_config_write_outside_runtime_root_by_default(self) -> None:
         stdout = io.StringIO()
@@ -197,6 +209,66 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
                 [(item["id"], item["name"]) for item in accessories],
                 [("other_accessory", "Other Accessory"), ("smart_home_current", "Current Tile")],
             )
+
+    def test_homekit_name_overrides_preserve_bubbler_identity(self) -> None:
+        homebridge = {
+            "accessories": [
+                {
+                    "accessory": "DelaySwitch",
+                    "name": "Bubbler",
+                    "delay": 5,
+                }
+            ],
+            "platforms": [
+                {
+                    "platform": "Alarmdotcom",
+                    "deviceAliases": [{"id": "existing", "name": "Existing Alias"}],
+                },
+                {
+                    "platform": "CalendarScheduler",
+                    "calendars": [
+                        {
+                            "calendarName": "Automation",
+                            "calendarEvents": [
+                                {"eventName": "Peak Rate"},
+                                {"eventName": "Test Event"},
+                            ],
+                        }
+                    ],
+                },
+                {
+                    "platform": "SmartHomeActions",
+                    "actions": [
+                        {"id": "check", "name": "Run Home Check"},
+                        {"id": "office-restart", "name": "Restart Office Shades"},
+                    ],
+                },
+            ],
+        }
+
+        install_homekit_virtual_sensors.apply_homekit_name_overrides(homebridge)
+
+        bubbler = homebridge["accessories"][0]
+        self.assertEqual(bubbler["name"], "🐠 Bubbler")
+        self.assertEqual(bubbler["uuid_base"], "Bubbler")
+        self.assertEqual(
+            homebridge["platforms"][0]["deviceAliases"],
+            [
+                {"id": "existing", "name": "Existing Alias"},
+                {"id": "104430779-1234", "name": "🐠 Bubbler"},
+            ],
+        )
+        calendar = homebridge["platforms"][1]["calendars"][0]
+        self.assertEqual(calendar["calendarName"], "Automation")
+        self.assertEqual(calendar["calendarDisplayName"], "📅 Automation")
+        self.assertEqual(
+            [event["eventDisplayName"] for event in calendar["calendarEvents"]],
+            ["📅 Peak Rate", "📅 Test Event"],
+        )
+        self.assertEqual(
+            homebridge["platforms"][2]["actions"],
+            [{"id": "check", "name": "Run Home Check"}],
+        )
 
 
 if __name__ == "__main__":

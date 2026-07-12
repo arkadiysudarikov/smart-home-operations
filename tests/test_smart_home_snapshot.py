@@ -76,6 +76,60 @@ class SmartHomeSnapshotTest(unittest.TestCase):
         )
 
         self.assertTrue(signals["latestMetrics"]["enphase_battery_charging"])
+        self.assertFalse(signals["latestMetrics"]["enphase_battery_discharging"])
+
+    def test_collect_log_signals_detects_battery_discharging(self) -> None:
+        signals = smart_home_snapshot.collect_log_signals(
+            [
+                "[7/12/2026, 1:22:07 PM] [Enphase Envoy] Live Data, Encharge, backup energy: 3.65 kW",
+                "[7/12/2026, 1:26:49 PM] [Enphase Envoy] Live Data, Encharge, backup energy: 3.45 kW",
+                "[7/12/2026, 1:27:19 PM] [Enphase Envoy] Live Data, Encharge, backup energy: 3.40 kW",
+            ]
+        )
+
+        self.assertFalse(signals["latestMetrics"]["enphase_battery_charging"])
+        self.assertTrue(signals["latestMetrics"]["enphase_battery_discharging"])
+
+    def test_storage_power_provides_immediate_battery_direction(self) -> None:
+        charging = smart_home_snapshot.collect_log_signals(
+            [
+                "[7/12/2026, 1:38:04 PM] [Enphase Envoy] Live Data, Encharge, backup energy: 3.10 kW",
+                "[7/12/2026, 1:38:35 PM] [Enphase Envoy] Meter: Storage, power: -0.592834 kW",
+                "[7/12/2026, 1:39:04 PM] [Enphase Envoy] Live Data, Encharge, backup energy: 3.10 kW",
+            ]
+        )
+        discharging = smart_home_snapshot.collect_log_signals(
+            [
+                "[7/12/2026, 1:26:49 PM] [Enphase Envoy] Live Data, Encharge, backup energy: 3.45 kW",
+                "[7/12/2026, 1:27:20 PM] [Enphase Envoy] Meter: Storage, power: 2.822243 kW",
+                "[7/12/2026, 1:27:19 PM] [Enphase Envoy] Live Data, Encharge, backup energy: 3.40 kW",
+            ]
+        )
+
+        self.assertTrue(charging["latestMetrics"]["enphase_battery_charging"])
+        self.assertFalse(charging["latestMetrics"]["enphase_battery_discharging"])
+        self.assertFalse(discharging["latestMetrics"]["enphase_battery_charging"])
+        self.assertTrue(discharging["latestMetrics"]["enphase_battery_discharging"])
+
+    def test_storage_power_deadband_treats_idle_noise_as_neither_direction(self) -> None:
+        signals = smart_home_snapshot.collect_log_signals(
+            ["[7/12/2026, 1:37:32 PM] [Enphase Envoy] Meter: Storage, power: -0.022722 kW"]
+        )
+
+        self.assertFalse(signals["latestMetrics"]["enphase_battery_charging"])
+        self.assertFalse(signals["latestMetrics"]["enphase_battery_discharging"])
+
+    def test_collect_log_signals_rejects_mixed_battery_direction(self) -> None:
+        signals = smart_home_snapshot.collect_log_signals(
+            [
+                "[7/12/2026, 1:22:07 PM] [Enphase Envoy] Live Data, Encharge, backup energy: 3.40 kW",
+                "[7/12/2026, 1:22:37 PM] [Enphase Envoy] Live Data, Encharge, backup energy: 3.45 kW",
+                "[7/12/2026, 1:23:07 PM] [Enphase Envoy] Live Data, Encharge, backup energy: 3.40 kW",
+            ]
+        )
+
+        self.assertFalse(signals["latestMetrics"]["enphase_battery_charging"])
+        self.assertFalse(signals["latestMetrics"]["enphase_battery_discharging"])
 
 
 if __name__ == "__main__":

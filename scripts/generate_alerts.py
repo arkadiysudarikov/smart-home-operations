@@ -25,6 +25,8 @@ SCE_API_STATUS_PATH = DATA_DIR / "latest_sce_api.json"
 ALARM_COM_PATH = DATA_DIR / "latest_alarm_com.json"
 LATEST_CHARACTERISTICS_PATH = DATA_DIR / "latest_characteristics.json"
 ALARM_STATE_COMPARISON_PATH = DATA_DIR / "latest_alarm_homebridge_state.json"
+SENSE_NOW_PATH = DATA_DIR / "sense_now_latest.json"
+SENSE_TRENDS_PATH = DATA_DIR / "sense_trends_latest.json"
 ACTION_STATUS_URL = "http://127.0.0.1:18765/status"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 HOMEBRIDGE_DIR = Path.home() / ".homebridge"
@@ -70,6 +72,16 @@ def load_alarm_com() -> dict[str, Any]:
         return json.loads(ALARM_COM_PATH.read_text())
     except json.JSONDecodeError:
         return {}
+
+
+def load_sense_now() -> dict[str, Any]:
+    data = load_json_file(SENSE_NOW_PATH)
+    return data if isinstance(data, dict) else {}
+
+
+def load_sense_trends() -> dict[str, Any]:
+    data = load_json_file(SENSE_TRENDS_PATH)
+    return data if isinstance(data, dict) else {}
 
 
 def load_latest_characteristics() -> dict[str, Any]:
@@ -181,6 +193,11 @@ def row_alarm_websocket_enabled(row: sqlite3.Row) -> bool:
 
 def warning_category(message: str) -> str:
     lower = message.lower()
+    if (
+        "characteristic not in required or optional characteristic section" in lower
+        or "has an invalid 'name' characteristic" in lower
+    ):
+        return "HomeKit compatibility"
     if "security system" in lower or "alarm.com" in lower or "websocket token fetch returned 403" in lower:
         return "Alarm.com auth/websocket"
     if "smarthq" in lower and is_smarthq_auth_failure_message(lower):
@@ -396,7 +413,12 @@ def retained_integration_auth_alerts(config: dict[str, Any], latest: dict[str, A
             "title": "Sense live websocket authentication is failing",
             "label": "Sense live meter",
             "components": ["Sense Energy Meter"],
-            "successTokens": ("sense websocket open", "sense websocket connected", "authenticated with sense"),
+            "successTokens": (
+                "sense websocket open",
+                "sense websocket connected",
+                "authenticated with sense",
+                "sense api capture succeeded",
+            ),
             "freshness": "Sense live watt readings may be cached or unavailable until a later websocket/auth success.",
         },
     ]
@@ -430,6 +452,16 @@ def retained_integration_auth_alerts(config: dict[str, Any], latest: dict[str, A
     for definition in definitions:
         components = [str(item) for item in definition["components"]]
         events: list[Any] = list(recent_component_home_events(components, event_limit))
+        if definition["title"] == "Sense live websocket authentication is failing":
+            sense_trends = load_sense_trends()
+            if sense_trends.get("capturedAt") and int(sense_trends.get("daysCaptured") or 0) > 0:
+                events.append(
+                    {
+                        "captured_at": sense_trends["capturedAt"],
+                        "component": "Sense Energy Meter",
+                        "message": "Sense API capture succeeded",
+                    }
+                )
         for warning in current_warnings:
             message = str(warning)
             if any(component in message for component in components) and is_integration_auth_failure_message(message):
@@ -609,6 +641,8 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         return "Run Refresh SCE to download already-available UtilityAPI intervals. If the data stays outdated, import a fresh SCE Green Button export; paid UtilityAPI collection should stay off unless explicitly approved."
     if title == "Sense data is stale":
         return "Fix the Sense auth/live websocket issue first, then rerun the Sense trend capture so Sense-vs-Envoy reconciliation uses fresh data."
+    if title == "Sense monitor is offline":
+        return "Check the Sense app for Monitor Offline. After the monitor reconnects to Sense, run Refresh Energy to restore live watts."
     if title == "Envoy data is stale":
         return "Refresh the local Envoy source and verify 192.168.1.71 is reachable before trusting live solar/load state."
     if title == "ChargePoint data is stale":
@@ -1107,6 +1141,20 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
         if alert.get("title") not in active_titles:
             alerts.append(alert)
             active_titles.add(alert.get("title", ""))
+    sense_now = load_sense_now()
+    if sense_now.get("online") is False:
+        alerts.append(
+            {
+                "severity": "warning",
+                "title": "Sense monitor is offline",
+                "detail": (
+                    f"Sense cloud reports the physical monitor as `{sense_now.get('connectionState') or 'OFFLINE'}` "
+                    f"at `{sense_now.get('capturedAt') or 'unknown'}`. Account authentication is working, "
+                    "but live watts will not resume until the monitor reconnects."
+                ),
+            }
+        )
+        active_titles.add("Sense monitor is offline")
     if has_unifi_auth_warning(recent_warning_items):
         alerts.append(
             {
@@ -1371,6 +1419,7 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
         dedicated_categories = {
             "Enphase Envoy local communication",
             "Enphase Envoy invalid characteristic",
+            "HomeKit compatibility",
             "Office TaHoma",
             "Sense live websocket auth",
             "SmartHQ auth",
@@ -1448,9 +1497,17 @@ def active_state_titles(config: dict[str, Any], latest: dict[str, Any]) -> set[s
 
     if metrics.get("enphase_battery_charging") is True:
         live_energy_state_titles.add("Battery charging")
+    if metrics.get("enphase_battery_discharging") is True:
+        live_energy_state_titles.add("Battery discharging")
 
     states.update(live_energy_state_titles)
-    live_energy_titles = {"Grid importing", "Grid exporting", "Solar surplus", "Battery charging"}
+    live_energy_titles = {
+        "Grid importing",
+        "Grid exporting",
+        "Solar surplus",
+        "Battery charging",
+        "Battery discharging",
+    }
     for item in load_combined_energy().get("states", []):
         title = str(item)
         if live_energy_state_titles and title in live_energy_titles:
@@ -1478,6 +1535,7 @@ def write_reports(alerts: list[dict[str, str]], latest: dict[str, Any]) -> None:
     warning_rows = recent_rows(int(config["alerts"]["warning_recent_window"]))
     active_titles = {alert.get("title") for alert in alerts}
     excluded_trend_categories = set()
+    excluded_trend_categories.add("HomeKit compatibility")
     if "Sense live websocket auth is noisy" not in active_titles:
         excluded_trend_categories.add("Sense live websocket auth")
     excluded_trend_categories.update(diagnosed_warning_categories({str(title) for title in active_titles}))

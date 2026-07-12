@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -177,6 +178,19 @@ def unifi_api_warning_row() -> dict[str, Any]:
     return {"raw_json": json.dumps(raw), "alarm_websocket": 1, "warning_count": 1}
 
 
+def homekit_compatibility_warning_row() -> dict[str, Any]:
+    raw = {
+        "homebridge": {
+            "logs": {
+                "recentWarnings": [
+                    "Characteristic not in required or optional characteristic section for service Switch"
+                ],
+            },
+        }
+    }
+    return {"raw_json": json.dumps(raw), "alarm_websocket": 1, "warning_count": 1}
+
+
 def component_event(captured_at: str, component: str, message: str) -> dict[str, Any]:
     return {
         "captured_at": captured_at,
@@ -202,6 +216,16 @@ class GenerateAlertsTest(unittest.TestCase):
         for name, original in getattr(self, "_restore", {}).items():
             setattr(generate_alerts, name, original)
 
+    def test_load_alarm_com_reads_valid_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "alarm.json"
+            path.write_text(json.dumps({"login": {"ok": True}}) + "\n")
+            self.patch_module(ALARM_COM_PATH=path)
+
+            payload = generate_alerts.load_alarm_com()
+
+        self.assertTrue(payload["login"]["ok"])
+
     def test_restart_grace_suppresses_energy_stale(self) -> None:
         states = generate_alerts.active_state_titles(base_config(), latest_snapshot())
         self.assertNotIn("Energy data stale", states)
@@ -225,6 +249,22 @@ class GenerateAlertsTest(unittest.TestCase):
         states = generate_alerts.active_state_titles(base_config(), latest)
 
         self.assertIn("Battery charging", states)
+
+    def test_battery_discharging_state_uses_envoy_signal(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 2.2,
+            "enphase_consumption_net_kw": 0.0,
+            "enphase_consumption_total_kw": 4.8,
+            "enphase_battery_charging": False,
+            "enphase_battery_discharging": True,
+        }
+        self.patch_module(load_combined_energy=lambda: {})
+
+        states = generate_alerts.active_state_titles(base_config(), latest)
+
+        self.assertIn("Battery discharging", states)
+        self.assertNotIn("Battery charging", states)
 
     def test_activity_degraded_uses_activity_tile_not_alarm_tile(self) -> None:
         self.patch_module(
@@ -250,6 +290,33 @@ class GenerateAlertsTest(unittest.TestCase):
         alerts = generate_alerts.build_alerts(base_config(), latest, rows)
         titles = {item["title"] for item in alerts}
         self.assertNotIn("Alarm.com websocket is unreliable", titles)
+        self.assertNotIn("Recent Homebridge warning volume is high", titles)
+
+    def test_homekit_compatibility_warning_does_not_raise_volume_alert(self) -> None:
+        latest = latest_snapshot()
+        warning = "Characteristic not in required or optional characteristic section for service Switch"
+        latest["homebridge"]["logs"]["warningCount"] = 1
+        latest["homebridge"]["logs"]["recentWarnings"] = [warning]
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+        )
+
+        alerts = generate_alerts.build_alerts(
+            base_config(),
+            latest,
+            [homekit_compatibility_warning_row(), homekit_compatibility_warning_row()],
+        )
+        titles = {item["title"] for item in alerts}
+
+        self.assertEqual(generate_alerts.warning_category(warning), "HomeKit compatibility")
+        self.assertEqual(
+            generate_alerts.warning_category(
+                "HAP-NodeJS WARNING: The accessory '🪫 Discharging' has an invalid 'Name' characteristic"
+            ),
+            "HomeKit compatibility",
+        )
         self.assertNotIn("Recent Homebridge warning volume is high", titles)
 
     def test_cache_drift_gets_separate_alert(self) -> None:
@@ -683,6 +750,52 @@ class GenerateAlertsTest(unittest.TestCase):
         titles = {item["title"] for item in alerts}
 
         self.assertNotIn("Sense live websocket authentication is failing", titles)
+
+    def test_later_sense_api_capture_clears_prior_auth_failure(self) -> None:
+        current = latest_snapshot()
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            load_sense_now=lambda: {},
+            load_sense_trends=lambda: {
+                "capturedAt": "2026-07-12T19:57:50.835Z",
+                "daysCaptured": 14,
+                "errors": [],
+            },
+            recent_component_home_events=lambda components, _limit=200: [
+                component_event(
+                    "2026-07-12T10:00:00-07:00",
+                    "Sense Energy Meter",
+                    "Re-auth failed: Error: Authentication error: request timed out",
+                )
+            ]
+            if components == ["Sense Energy Meter"]
+            else [],
+        )
+
+        alerts = generate_alerts.build_alerts(config_with_retained_auth(), current, [])
+        titles = {item["title"] for item in alerts}
+
+        self.assertNotIn("Sense live websocket authentication is failing", titles)
+
+    def test_sense_monitor_offline_is_separate_from_login(self) -> None:
+        current = latest_snapshot()
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            load_sense_now=lambda: {
+                "capturedAt": "2026-07-12T19:58:00Z",
+                "online": False,
+                "connectionState": "OFFLINE",
+            },
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), current, [])
+        alert = next(item for item in alerts if item["title"] == "Sense monitor is offline")
+
+        self.assertIn("Account authentication is working", alert["detail"])
 
     def test_tahoma_auth_failure_alerts_for_affected_child(self) -> None:
         current = latest_snapshot_with_tahoma()

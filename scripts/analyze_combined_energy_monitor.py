@@ -238,10 +238,16 @@ def live_sense_source() -> dict[str, Any] | None:
     sense = load_json(DATA_DIR / "sense_now_latest.json")
     if not sense.get("capturedAt"):
         return None
+    if sense.get("online") is False:
+        status = "offline"
+    elif sense.get("ok") is False:
+        status = "failed"
+    else:
+        status = "fresh"
     return {
-        "status": "fresh" if sense.get("ok") is not False else "failed",
+        "status": status,
         "timestamp": sense.get("capturedAt"),
-        "detail": sense.get("capturedAt"),
+        "detail": sense.get("connectionState") or sense.get("capturedAt"),
     }
 
 
@@ -317,7 +323,11 @@ def build_source_status(
         },
     ]
     for row in rows:
-        if row["source"] in {"Envoy", "Sense"} and row.get("ageHours") is not None:
+        if (
+            row["source"] in {"Envoy", "Sense"}
+            and row.get("ageHours") is not None
+            and row.get("status") not in {"failed", "offline"}
+        ):
             row["status"] = status_label(row.get("ageHours"), stale_hours)
     return rows
 

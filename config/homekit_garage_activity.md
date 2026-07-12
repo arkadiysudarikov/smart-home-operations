@@ -43,7 +43,7 @@ directly set `Garage Light`:
 - `Garage Door Opener 2210 Opens`
 
 This arrival automation also currently targets `Garage Activity`, along with
-`Panel Off`:
+`🛡️ Off`:
 
 - `When The First Person Arrives Home`
 

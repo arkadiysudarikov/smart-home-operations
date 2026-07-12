@@ -131,8 +131,9 @@
       },
       {
         "id": "smart_home_sense_auth_failed_v2",
-        "name": "🔐 SENSE LOGIN",
+        "name": "🛜 SENSE OFFLINE",
         "alert_titles": [
+          "Sense monitor is offline",
           "Sense live websocket authentication is failing",
           "Sense live websocket auth is noisy"
         ]
@@ -149,7 +150,7 @@
       },
       {
         "id": "smart_home_grid_importing_v2",
-        "name": "⬅️ From Grid",
+        "name": "☀️ From Grid",
         "state_titles": ["Grid importing"]
       },
       {
@@ -161,6 +162,11 @@
         "id": "smart_home_battery_charging_v2",
         "name": "☀️ Charging",
         "state_titles": ["Battery charging"]
+      },
+      {
+        "id": "smart_home_battery_discharging_v2",
+        "name": "🪫 Discharging",
+        "state_titles": ["Battery discharging"]
       },
       {
         "id": "smart_home_energy_data_stale_v2",

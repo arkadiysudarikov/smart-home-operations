@@ -97,8 +97,8 @@ async function main() {
   const startedAt = new Date().toISOString();
   let done = false;
   const client = await sense({
-    email: encodeURI(accessory.username),
-    password: encodeURI(accessory.password),
+    email: accessory.username,
+    password: accessory.password,
     verbose: false,
   });
 
@@ -111,10 +111,14 @@ async function main() {
       client.closeStream();
     } catch {}
     const realtime = payload?.payload || {};
+    const isRealtime = payload?.type === "realtime_update";
     const result = {
+      ok: isRealtime,
       capturedAt: new Date().toISOString(),
       startedAt,
       type: payload?.type,
+      online: isRealtime ? true : realtime.online,
+      connectionState: realtime.connection_state || null,
       watts: realtime.w,
       current: realtime.c,
       voltage:
@@ -141,6 +145,8 @@ async function main() {
 
   client.events.on("data", (data) => {
     if (data?.type === "realtime_update" && data.payload) {
+      finish(data);
+    } else if (data?.type === "hello" && data.payload?.online === false) {
       finish(data);
     }
   });
