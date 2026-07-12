@@ -130,6 +130,39 @@ def fresher_alarm_energy(base_alarm: dict[str, Any], latest_alarm: dict[str, Any
     return merged
 
 
+def alarm_dashboard_comparison(alarm: dict[str, Any], mismatch_threshold: float) -> dict[str, Any]:
+    raw_mismatch = num(alarm.get("dailyTotalMinusDashboardMtdKwh"))
+    daily_total = num(alarm.get("dailyTotalKwh"))
+    dashboard_total = num((alarm.get("dashboard") or {}).get("monthToDateKwh"))
+    period_21d = num((alarm.get("periodKwh") or {}).get("21d"))
+    rows = [row for row in alarm.get("dailyRows") or [] if row.get("date")]
+    dates = sorted({str(row["date"]) for row in rows})
+    partial_21d_window = False
+
+    if (
+        raw_mismatch is not None
+        and daily_total is not None
+        and dashboard_total is not None
+        and period_21d is not None
+        and daily_total + mismatch_threshold <= dashboard_total
+        and abs(daily_total - period_21d) <= 1.0
+    ):
+        partial_21d_window = True
+
+    return {
+        "rawMismatchKwh": raw_mismatch,
+        "effectiveMismatchKwh": None if partial_21d_window else raw_mismatch,
+        "dailyTotalKwh": daily_total,
+        "dashboardCurrentPeriodKwh": dashboard_total,
+        "period21dKwh": period_21d,
+        "partialCoverage": partial_21d_window,
+        "dailyRowCount": len(rows),
+        "dailyStart": dates[0] if dates else None,
+        "dailyEnd": dates[-1] if dates else None,
+        "status": "partial_21d_window" if partial_21d_window else ("compared" if raw_mismatch is not None else "missing"),
+    }
+
+
 def status_label(age: float | None, stale_hours: float) -> str:
     if age is None:
         return "missing"
@@ -477,16 +510,10 @@ def build_payload() -> dict[str, Any]:
         )
 
     alarm = fresher_alarm_energy(bill_home.get("alarm") or {}, latest_alarm)
-    alarm_mismatch = alarm.get("dailyTotalMinusDashboardMtdKwh")
     alarm_mismatch_threshold = float(thresholds.get("alarm_daily_dashboard_mismatch_kwh", 25))
-    if abs(num(alarm_mismatch) or 0) >= alarm_mismatch_threshold:
-        alerts.append(
-            alert(
-                "warning",
-                "Alarm.com energy totals disagree",
-                f"Alarm.com daily rows differ from the dashboard current period by `{fmt(alarm_mismatch, 1)}` kWh.",
-            )
-        )
+    alarm_dashboard = alarm_dashboard_comparison(alarm, alarm_mismatch_threshold)
+    alarm_mismatch = alarm_dashboard["effectiveMismatchKwh"]
+    alarm_raw_mismatch = alarm_dashboard["rawMismatchKwh"]
 
     charge_alarm = (chargepoint.get("alarm") or {})
     cp_share = charge_alarm.get("recentChargepointShareOfAlarm7d")
@@ -627,7 +654,11 @@ def build_payload() -> dict[str, Any]:
         insights.append(
             f"Latest daily solar cross-check: Envoy minus Sense solar is {fmt(latest_solar_pair.get('envoyMinusSenseSolarKwh'), 1)} kWh on {latest_solar_pair.get('date')}."
         )
-    if alarm_mismatch is not None and abs(num(alarm_mismatch) or 0) >= alarm_mismatch_threshold:
+    if alarm_dashboard["partialCoverage"]:
+        insights.append(
+            "Alarm.com daily rows cover a complete 21-day Energy Clamp window, which is shorter than the dashboard current period; this no longer requires recapture."
+        )
+    elif alarm_mismatch is not None and abs(num(alarm_mismatch) or 0) >= alarm_mismatch_threshold:
         insights.append(f"Alarm.com dashboard current period and copied daily rows disagree by {fmt(alarm_mismatch, 1)} kWh, so it needs a fresh capture.")
     elif alarm_mismatch is not None:
         insights.append(f"Alarm.com dashboard current period and copied daily rows agree within {fmt(abs(num(alarm_mismatch) or 0), 1)} kWh.")
@@ -661,6 +692,8 @@ def build_payload() -> dict[str, Any]:
             "capturedAtLocal": alarm_captured_at,
             "captureAgeHours": alarm_capture_age_hours,
             "dailyTotalMinusDashboardMtdKwh": alarm_mismatch,
+            "rawDailyTotalMinusDashboardMtdKwh": alarm_raw_mismatch,
+            "dashboardComparison": alarm_dashboard,
             "isStale": alarm_capture_stale,
             "stalenessDowngraded": alarm_capture_stale_downgraded,
             "cacheComparison": alarm_cache_comparison,
@@ -749,6 +782,7 @@ def write_report(payload: dict[str, Any]) -> None:
     else:
         lines.append("- No combined energy alerts.")
     alarm_status = payload.get("alarmEnergyStatus") or {}
+    alarm_dashboard_status = alarm_status.get("dashboardComparison") or {}
     lines.extend(
         [
             "",
@@ -756,7 +790,11 @@ def write_report(payload: dict[str, Any]) -> None:
             "",
             f"- Captured: `{alarm_status.get('capturedAtLocal') or 'n/a'}`",
             f"- Capture age: `{fmt(alarm_status.get('captureAgeHours'), 1)}` hours",
-            f"- Daily rows minus dashboard current period: `{fmt(alarm_status.get('dailyTotalMinusDashboardMtdKwh'), 1)}` kWh",
+            f"- Raw daily rows minus dashboard current period: `{fmt(alarm_status.get('rawDailyTotalMinusDashboardMtdKwh'), 1)}` kWh",
+            f"- Alerted daily rows minus dashboard current period: `{fmt(alarm_status.get('dailyTotalMinusDashboardMtdKwh'), 1)}` kWh",
+            f"- Dashboard comparison: `{alarm_dashboard_status.get('status') or 'n/a'}`",
+            f"- Alarm.com daily row window: `{alarm_dashboard_status.get('dailyStart') or 'n/a'}` to `{alarm_dashboard_status.get('dailyEnd') or 'n/a'}`",
+            f"- Energy Clamp daily rows / 21-day period / dashboard: `{fmt(alarm_dashboard_status.get('dailyTotalKwh'), 1)}` / `{fmt(alarm_dashboard_status.get('period21dKwh'), 1)}` / `{fmt(alarm_dashboard_status.get('dashboardCurrentPeriodKwh'), 1)}` kWh",
             f"- Stale capture: `{alarm_status.get('isStale')}`",
             f"- Staleness downgraded: `{alarm_status.get('stalenessDowngraded')}`",
             f"- Cache comparison stale count: `{((alarm_status.get('cacheComparison') or {}).get('staleCount'))}`",
