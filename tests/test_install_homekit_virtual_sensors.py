@@ -34,28 +34,28 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
         self.assertEqual(
             names_by_id,
             {
-                "smart_home_battery_critical": "BATTERY CRIT",
-                "smart_home_battery_low": "BATTERY LOW",
-                "smart_home_alarm_degraded": "ALARM SYSTEM",
-                "smart_home_alarm_cache_stale": "ALARM STATUS",
-                "smart_home_alarm_activity_degraded": "ALARM HISTORY",
-                "smart_home_unifi_auth_failed": "UNIFI OFFLINE",
-                "smart_home_smarthq_auth_failed": "SMARTHQ DOWN",
-                "smart_home_sense_auth_failed": "SENSE OFFLINE",
-                "smart_home_tahoma_auth_failed": "TAHOMA DOWN",
-                "smart_home_office_tahoma_offline": "OFFICE SHADES",
-                "smart_home_high_load": "POWER HIGH",
-                "smart_home_grid_importing": "Using Grid",
-                "smart_home_grid_exporting": "To Grid",
-                "smart_home_solar_surplus": "Extra Solar",
-                "smart_home_energy_data_stale": "ENERGY DOWN",
-                "smart_home_sce_data_stale": "SCE OUTDATED",
-                "smart_home_energy_check": "SCE HISTORY",
-                "smart_home_energy_meters_disagree": "METERS DIFFER",
-                "smart_home_alarm_energy_recapture": "ALARM ENERGY",
-                "smart_home_alarm_media_missing": "ALARM CLIPS",
-                "smart_home_ev_charging": "Car Charging",
-                "smart_home_ev_heavy": "CAR USE HIGH",
+                "smart_home_battery_critical": "⚠️ Battery Crit",
+                "smart_home_battery_low": "⚠️ Battery Low",
+                "smart_home_alarm_degraded": "⚠️ Alarm System",
+                "smart_home_alarm_cache_stale": "⚠️ Alarm Status",
+                "smart_home_alarm_activity_degraded": "⚠️ Alarm History",
+                "smart_home_unifi_auth_failed": "⚠️ UniFi Offline",
+                "smart_home_smarthq_auth_failed": "⚠️ SmartHQ Down",
+                "smart_home_sense_auth_failed": "⚠️ Sense Offline",
+                "smart_home_tahoma_auth_failed": "⚠️ TaHoma Down",
+                "smart_home_office_tahoma_offline": "⚠️ Office Shades",
+                "smart_home_high_load": "⚠️ Power High",
+                "smart_home_grid_importing": "ℹ️ Using Grid",
+                "smart_home_grid_exporting": "ℹ️ To Grid",
+                "smart_home_solar_surplus": "ℹ️ Extra Solar",
+                "smart_home_energy_data_stale": "⚠️ Energy Down",
+                "smart_home_sce_data_stale": "⚠️ SCE Outdated",
+                "smart_home_energy_check": "⚠️ SCE History",
+                "smart_home_energy_meters_disagree": "⚠️ Meters Differ",
+                "smart_home_alarm_energy_recapture": "⚠️ Alarm Energy",
+                "smart_home_alarm_media_missing": "⚠️ Alarm Clips",
+                "smart_home_ev_charging": "ℹ️ Car Charging",
+                "smart_home_ev_heavy": "⚠️ Car Use High",
             },
         )
 
@@ -74,12 +74,10 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             "smart_home_ev_charging",
         }
         for tile in tiles:
-            if tile["id"] in informational_ids:
-                self.assertFalse(tile["name"].isupper(), tile["name"])
-            else:
-                self.assertTrue(tile["name"].isupper(), tile["name"])
+            expected_prefix = "ℹ️ " if tile["id"] in informational_ids else "⚠️ "
+            self.assertTrue(tile["name"].startswith(expected_prefix), tile["name"])
         for name in action_names:
-            self.assertFalse(name.isupper(), name)
+            self.assertTrue(name.startswith(("✓ ", "↻ ", "⏸️ ", "⏱️ ", "🏠 ", "🔒 ", "🔓 ")), name)
 
         for name in tile_names + action_names:
             self.assertLessEqual(len(name), 16, f"visible name is too long for a Home tile: {name}")
