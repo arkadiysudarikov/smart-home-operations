@@ -62,7 +62,9 @@ class SmartHomeActionsPlatform {
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       }
 
-      accessory.displayName = action.name;
+      if (accessory.displayName !== action.name) {
+        accessory.updateDisplayName(action.name);
+      }
       accessory.context.action = action;
       this.configureSwitch(accessory);
     }
