@@ -65,7 +65,7 @@ Refresh daily Sense trend rows for the combined energy cross-check:
 ./scripts/capture_sense_trends.js
 ```
 
-Reapply the local SmartHQ HomeKit duration clamp after a SmartHQ plugin update:
+Reapply the local SmartHQ HomeKit duration and authentication compatibility fixes after a SmartHQ plugin update:
 
 ```sh
 ./scripts/patch_smarthq_remaining_duration.js

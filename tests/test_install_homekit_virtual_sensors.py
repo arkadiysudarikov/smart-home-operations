@@ -34,28 +34,21 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
         self.assertEqual(
             names_by_id,
             {
-                "smart_home_battery_critical_v2": "⚠️ BATTERY CRIT",
-                "smart_home_battery_low_v2": "⚠️ BATTERY LOW",
-                "smart_home_alarm_degraded_v2": "⚠️ ALARM SYSTEM",
-                "smart_home_alarm_cache_stale_v2": "⚠️ ALARM STATUS",
-                "smart_home_alarm_activity_degraded_v2": "⚠️ ALARM HISTORY",
-                "smart_home_unifi_auth_failed_v2": "⚠️ UNIFI OFFLINE",
-                "smart_home_smarthq_auth_failed_v2": "⚠️ SMARTHQ DOWN",
-                "smart_home_sense_auth_failed_v2": "⚠️ SENSE OFFLINE",
-                "smart_home_tahoma_auth_failed_v2": "⚠️ TAHOMA DOWN",
-                "smart_home_office_tahoma_offline_v2": "⚠️ OFFICE SHADES",
-                "smart_home_high_load_v2": "⚠️ POWER HIGH",
-                "smart_home_grid_importing_v2": "ℹ️ Using Grid",
-                "smart_home_grid_exporting_v2": "ℹ️ To Grid",
-                "smart_home_solar_surplus_v2": "ℹ️ Extra Solar",
-                "smart_home_energy_data_stale_v2": "⚠️ ENERGY DOWN",
-                "smart_home_sce_data_stale_v2": "⚠️ SCE OUTDATED",
-                "smart_home_energy_check_v2": "⚠️ SCE HISTORY",
-                "smart_home_energy_meters_disagree_v2": "⚠️ METERS DIFFER",
-                "smart_home_alarm_energy_recapture_v2": "⚠️ ALARM ENERGY",
-                "smart_home_alarm_media_missing_v2": "⚠️ ALARM CLIPS",
-                "smart_home_ev_charging_v2": "ℹ️ Car Charging",
-                "smart_home_ev_heavy_v2": "⚠️ CAR USE HIGH",
+                "smart_home_battery_critical_v2": "🪫 BATTERY CRIT",
+                "smart_home_battery_low_v2": "🪫 BATTERY LOW",
+                "smart_home_alarm_degraded_v2": "🔐 ALARM LOGIN",
+                "smart_home_unifi_auth_failed_v2": "🔐 UNIFI LOGIN",
+                "smart_home_smarthq_auth_failed_v2": "🔐 SMARTHQ LOGIN",
+                "smart_home_sense_auth_failed_v2": "🔐 SENSE LOGIN",
+                "smart_home_tahoma_auth_failed_v2": "🔐 TAHOMA LOGIN",
+                "smart_home_high_load_v2": "⚡ High Usage",
+                "smart_home_grid_importing_v2": "⬅️ From Grid",
+                "smart_home_grid_exporting_v2": "☀️ To Grid",
+                "smart_home_battery_charging_v2": "☀️🔋 Charging",
+                "smart_home_energy_data_stale_v2": "🕒 ENVOY STALE",
+                "smart_home_sce_data_stale_v2": "🕒 SCE STALE",
+                "smart_home_alarm_media_missing_v2": "🎥 CLIPS MISSING",
+                "smart_home_ev_charging_v2": "🔋 Car Charging",
             },
         )
 
@@ -67,17 +60,31 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
         default_actions = action_source.split("];", 1)[0]
         action_names = re.findall(r'name: "([^"]+)"', default_actions)
 
+        alert_ids = {
+            "smart_home_battery_critical_v2",
+            "smart_home_battery_low_v2",
+            "smart_home_alarm_degraded_v2",
+            "smart_home_unifi_auth_failed_v2",
+            "smart_home_smarthq_auth_failed_v2",
+            "smart_home_sense_auth_failed_v2",
+            "smart_home_tahoma_auth_failed_v2",
+            "smart_home_energy_data_stale_v2",
+            "smart_home_sce_data_stale_v2",
+            "smart_home_alarm_media_missing_v2",
+        }
         informational_ids = {
+            "smart_home_high_load_v2",
             "smart_home_grid_importing_v2",
             "smart_home_grid_exporting_v2",
-            "smart_home_solar_surplus_v2",
+            "smart_home_battery_charging_v2",
             "smart_home_ev_charging_v2",
         }
         for tile in tiles:
+            visible_text = tile["name"].split(" ", 1)[1]
+            if tile["id"] in alert_ids:
+                self.assertTrue(visible_text.isupper(), tile["name"])
             if tile["id"] in informational_ids:
-                self.assertTrue(tile["name"].startswith("ℹ️ "), tile["name"])
-            else:
-                self.assertTrue(tile["name"].startswith("⚠️ "), tile["name"])
+                self.assertFalse(visible_text.isupper(), tile["name"])
         for name in action_names:
             self.assertFalse(name.isupper(), name)
 
@@ -85,7 +92,7 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             self.assertLessEqual(len(name), 16, f"visible name is too long for a Home tile: {name}")
             words = set(name.lower().split())
             self.assertTrue(
-                words.isdisjoint({"auth", "stale", "issue", "reconcile", "surplus"}),
+                words.isdisjoint({"auth", "issue", "reconcile", "surplus"}),
                 f"visible name contains monitor jargon: {name}",
             )
 

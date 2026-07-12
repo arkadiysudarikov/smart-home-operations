@@ -99,42 +99,26 @@
     "accessories": [
       {
         "id": "smart_home_battery_critical_v2",
-        "name": "⚠️ BATTERY CRIT",
+        "name": "🪫 BATTERY CRIT",
         "alert_titles": ["Battery failed to recharge before peak"]
       },
       {
         "id": "smart_home_battery_low_v2",
-        "name": "⚠️ BATTERY LOW",
+        "name": "🪫 BATTERY LOW",
         "alert_titles": ["Battery reserve is low before peak"]
       },
       {
         "id": "smart_home_alarm_degraded_v2",
-        "name": "⚠️ ALARM SYSTEM",
+        "name": "🔐 ALARM LOGIN",
         "alert_titles": [
           "Alarm.com websocket is unreliable",
           "Alarm.com portal websocket token failed",
-          "Alarm.com child bridge authentication is failing",
-          "Alarm.com device issue"
-        ]
-      },
-      {
-        "id": "smart_home_alarm_cache_stale_v2",
-        "name": "⚠️ ALARM STATUS",
-        "alert_titles": [
-          "Alarm.com Homebridge cache is stale"
-        ]
-      },
-      {
-        "id": "smart_home_alarm_activity_degraded_v2",
-        "name": "⚠️ ALARM HISTORY",
-        "alert_titles": [
-          "Alarm.com activity history is degraded",
-          "Alarm.com portal capture failed"
+          "Alarm.com child bridge authentication is failing"
         ]
       },
       {
         "id": "smart_home_unifi_auth_failed_v2",
-        "name": "⚠️ UNIFI OFFLINE",
+        "name": "🔐 UNIFI LOGIN",
         "alert_titles": [
           "UniFi occupancy authentication is failing",
           "UniFi occupancy API is failing"
@@ -142,12 +126,12 @@
       },
       {
         "id": "smart_home_smarthq_auth_failed_v2",
-        "name": "⚠️ SMARTHQ DOWN",
+        "name": "🔐 SMARTHQ LOGIN",
         "alert_titles": ["SmartHQ authentication is failing"]
       },
       {
         "id": "smart_home_sense_auth_failed_v2",
-        "name": "⚠️ SENSE OFFLINE",
+        "name": "🔐 SENSE LOGIN",
         "alert_titles": [
           "Sense live websocket authentication is failing",
           "Sense live websocket auth is noisy"
@@ -155,84 +139,51 @@
       },
       {
         "id": "smart_home_tahoma_auth_failed_v2",
-        "name": "⚠️ TAHOMA DOWN",
+        "name": "🔐 TAHOMA LOGIN",
         "alert_titles": ["TaHoma authentication is failing"]
       },
       {
-        "id": "smart_home_office_tahoma_offline_v2",
-        "name": "⚠️ OFFICE SHADES",
-        "alert_titles": ["Office TaHoma child bridge is unreachable"]
-      },
-      {
         "id": "smart_home_high_load_v2",
-        "name": "⚠️ POWER HIGH",
+        "name": "⚡ High Usage",
         "alert_titles": ["House load is high"]
       },
       {
         "id": "smart_home_grid_importing_v2",
-        "name": "ℹ️ Using Grid",
+        "name": "⬅️ From Grid",
         "state_titles": ["Grid importing"]
       },
       {
         "id": "smart_home_grid_exporting_v2",
-        "name": "ℹ️ To Grid",
+        "name": "☀️ To Grid",
         "state_titles": ["Grid exporting"]
       },
       {
-        "id": "smart_home_solar_surplus_v2",
-        "name": "ℹ️ Extra Solar",
-        "state_titles": ["Solar surplus"]
+        "id": "smart_home_battery_charging_v2",
+        "name": "☀️🔋 Charging",
+        "state_titles": ["Battery charging"]
       },
       {
         "id": "smart_home_energy_data_stale_v2",
-        "name": "⚠️ ENERGY DOWN",
+        "name": "🕒 ENVOY STALE",
         "state_titles": ["Energy data stale"]
       },
       {
         "id": "smart_home_sce_data_stale_v2",
-        "name": "⚠️ SCE OUTDATED",
-        "alert_titles": ["SCE interval data is stale"]
-      },
-      {
-        "id": "smart_home_energy_check_v2",
-        "name": "⚠️ SCE HISTORY",
         "alert_titles": [
+          "SCE interval data is stale",
           "SCE and home energy history do not overlap"
-        ]
-      },
-      {
-        "id": "smart_home_energy_meters_disagree_v2",
-        "name": "⚠️ METERS DIFFER",
-        "alert_titles": [
-          "Sense and Envoy readings disagree"
-        ]
-      },
-      {
-        "id": "smart_home_alarm_energy_recapture_v2",
-        "name": "⚠️ ALARM ENERGY",
-        "alert_titles": [
-          "Alarm.com energy is stale",
-          "Alarm.com energy totals disagree"
         ],
-        "state_titles": [
-          "Alarm.com energy stale",
-          "Alarm.com energy inconsistent"
-        ]
+        "name": "🕒 SCE STALE"
       },
       {
         "id": "smart_home_alarm_media_missing_v2",
-        "name": "⚠️ ALARM CLIPS",
+        "name": "🎥 CLIPS MISSING",
         "alert_titles": ["Alarm.com sensor-triggered media is missing"]
       },
       {
         "id": "smart_home_ev_charging_v2",
-        "name": "ℹ️ Car Charging",
+        "name": "🔋 Car Charging",
         "state_titles": ["EV charging"]
-      },
-      {
-        "id": "smart_home_ev_heavy_v2",
-        "name": "⚠️ CAR USE HIGH",
-        "alert_titles": ["Recent EV charging share is high"]
       }
     ]
   }

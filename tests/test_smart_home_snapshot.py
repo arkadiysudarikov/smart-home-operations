@@ -66,6 +66,17 @@ class SmartHomeSnapshotTest(unittest.TestCase):
         self.assertEqual(signals["warningCount"], 2)
         self.assertTrue(any("Collapsed 2 Envoy warning lines" in item for item in warnings))
 
+    def test_collect_log_signals_detects_battery_charging(self) -> None:
+        signals = smart_home_snapshot.collect_log_signals(
+            [
+                "[7/12/2026, 11:37:53 AM] [Enphase Envoy] Live Data, Encharge, backup energy: 1.25 kW",
+                "[7/12/2026, 11:38:26 AM] [Enphase Envoy] Live Data, Encharge, backup energy: 1.30 kW",
+                "[7/12/2026, 11:38:55 AM] [Enphase Envoy] Live Data, Encharge, backup energy: 1.35 kW",
+            ]
+        )
+
+        self.assertTrue(signals["latestMetrics"]["enphase_battery_charging"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -353,6 +353,16 @@ def smarthq_platform_configured(latest: dict[str, Any]) -> bool:
     )
 
 
+def homebridge_warning_captured_at(message: str, fallback: str | None) -> str | None:
+    match = re.match(r"^\[(\d{1,2}/\d{1,2}/\d{4}, \d{1,2}:\d{2}:\d{2} [AP]M)\]", message)
+    if not match:
+        return fallback
+    try:
+        return datetime.strptime(match.group(1), "%m/%d/%Y, %I:%M:%S %p").replace(tzinfo=LOCAL_TZ).isoformat()
+    except ValueError:
+        return fallback
+
+
 def smart_hq_auth_status(config: dict[str, Any], latest: dict[str, Any], current_warnings: list[Any]) -> dict[str, Any]:
     event_limit = int(config.get("alerts", {}).get("smarthq_auth_event_limit", 200))
     events: list[Any] = list(recent_smarthq_home_events(event_limit))
@@ -360,7 +370,11 @@ def smart_hq_auth_status(config: dict[str, Any], latest: dict[str, Any], current
     for warning in current_warnings:
         message = str(warning)
         if warning_category(message) == "SmartHQ auth":
-            events.append({"captured_at": captured_at, "component": "SmartHQ", "message": message})
+            events.append({
+                "captured_at": homebridge_warning_captured_at(message, captured_at),
+                "component": "SmartHQ",
+                "message": message,
+            })
     return smarthq_auth_status_from_events(events, captured_at)
 
 
@@ -419,7 +433,11 @@ def retained_integration_auth_alerts(config: dict[str, Any], latest: dict[str, A
         for warning in current_warnings:
             message = str(warning)
             if any(component in message for component in components) and is_integration_auth_failure_message(message):
-                events.append({"captured_at": latest.get("captured_at"), "component": components[0], "message": message})
+                events.append({
+                    "captured_at": homebridge_warning_captured_at(message, latest.get("captured_at")),
+                    "component": components[0],
+                    "message": message,
+                })
         status = integration_auth_status_from_events(
             events,
             set(components),
@@ -1428,8 +1446,11 @@ def active_state_titles(config: dict[str, Any], latest: dict[str, Any]) -> set[s
         if production_kw >= total_kw + float(config["alerts"]["solar_surplus_margin_kw"]):
             live_energy_state_titles.add("Solar surplus")
 
+    if metrics.get("enphase_battery_charging") is True:
+        live_energy_state_titles.add("Battery charging")
+
     states.update(live_energy_state_titles)
-    live_energy_titles = {"Grid importing", "Grid exporting", "Solar surplus"}
+    live_energy_titles = {"Grid importing", "Grid exporting", "Solar surplus", "Battery charging"}
     for item in load_combined_energy().get("states", []):
         title = str(item)
         if live_energy_state_titles and title in live_energy_titles:

@@ -359,6 +359,20 @@ def collect_log_signals(lines: list[str]) -> dict[str, Any]:
                 latest[key] = float(value)
             except ValueError:
                 latest[key] = value
+    backup_energy_values = [
+        float(value)
+        for value in re.findall(r"Live Data, Encharge, backup energy: ([\d.-]+) kW", joined)
+    ]
+    recent_backup_energy = backup_energy_values[-6:]
+    if len(recent_backup_energy) >= 2:
+        deltas = [
+            current - previous
+            for previous, current in zip(recent_backup_energy, recent_backup_energy[1:])
+        ]
+        latest["enphase_battery_charging"] = (
+            any(delta > 0.01 for delta in deltas)
+            and not any(delta < -0.01 for delta in deltas)
+        )
     unifi_status = {}
     for match in re.findall(r'(?:Accessory status unchanged|Updated accessory status): "([^"]+)" (active|inactive)', joined):
         unifi_status[match[0]] = match[1]

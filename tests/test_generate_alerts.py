@@ -212,6 +212,20 @@ class GenerateAlertsTest(unittest.TestCase):
         states = generate_alerts.active_state_titles(base_config(), latest)
         self.assertIn("Energy data stale", states)
 
+    def test_battery_charging_state_uses_envoy_signal(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 4.0,
+            "enphase_consumption_net_kw": 0.0,
+            "enphase_consumption_total_kw": 4.0,
+            "enphase_battery_charging": True,
+        }
+        self.patch_module(load_combined_energy=lambda: {})
+
+        states = generate_alerts.active_state_titles(base_config(), latest)
+
+        self.assertIn("Battery charging", states)
+
     def test_activity_degraded_uses_activity_tile_not_alarm_tile(self) -> None:
         self.patch_module(
             load_alarm_com=lambda: alarm_com_payload(activity_ok=False),
@@ -596,6 +610,26 @@ class GenerateAlertsTest(unittest.TestCase):
                     "2026-07-08T15:26:41-07:00",
                     "discoverDevices, Failed to get Access Token, Error Message: Authentication failed: No authorization code received",
                 ),
+            ],
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), current, [])
+        titles = {item["title"] for item in alerts}
+
+        self.assertNotIn("SmartHQ authentication is failing", titles)
+
+    def test_old_current_warning_does_not_override_later_smarthq_success(self) -> None:
+        current = latest_snapshot_with_smarthq()
+        current["captured_at"] = "2026-07-12T12:04:47-07:00"
+        current["homebridge"]["logs"]["recentWarnings"] = [
+            "[7/12/2026, 11:45:33 AM] [SmartHQ] discoverDevices, Failed to get Access Token, Error Message: Authentication failed: No authorization code received"
+        ]
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            recent_smarthq_home_events=lambda _limit=200: [
+                smarthq_event("2026-07-12T12:03:55-07:00", "Restoring existing accessory from cache: Washer"),
             ],
         )
 
