@@ -123,6 +123,46 @@ def recent_rows(limit: int) -> list[sqlite3.Row]:
         )
 
 
+def recent_smarthq_home_events(limit: int = 200) -> list[sqlite3.Row]:
+    if not DB_PATH.exists():
+        return []
+    with sqlite3.connect(DB_PATH) as db:
+        db.row_factory = sqlite3.Row
+        return list(
+            db.execute(
+                """
+                select captured_at, event_type, component, message
+                from home_events
+                where component = 'SmartHQ'
+                   or lower(coalesce(message, '')) like '%smarthq%'
+                order by captured_at desc
+                limit ?
+                """,
+                (limit,),
+            )
+        )
+
+
+def recent_component_home_events(components: list[str], limit: int = 200) -> list[sqlite3.Row]:
+    if not DB_PATH.exists() or not components:
+        return []
+    placeholders = ",".join("?" for _ in components)
+    with sqlite3.connect(DB_PATH) as db:
+        db.row_factory = sqlite3.Row
+        return list(
+            db.execute(
+                f"""
+                select captured_at, event_type, component, message
+                from home_events
+                where component in ({placeholders})
+                order by captured_at desc
+                limit ?
+                """,
+                (*components, limit),
+            )
+        )
+
+
 def row_alarm_websocket_enabled(row: sqlite3.Row) -> bool:
     try:
         raw = json.loads(row["raw_json"])
@@ -143,6 +183,8 @@ def warning_category(message: str) -> str:
     lower = message.lower()
     if "security system" in lower or "alarm.com" in lower or "websocket token fetch returned 403" in lower:
         return "Alarm.com auth/websocket"
+    if "smarthq" in lower and is_smarthq_auth_failure_message(lower):
+        return "SmartHQ auth"
     if "smarthq" in lower and "remaining duration" in lower and "exceeded maximum of 3600" in lower:
         return "SmartHQ remaining duration"
     if ("sense energy meter" in lower or "sense" in lower) and (
@@ -195,6 +237,212 @@ def has_sense_live_auth_warning(warnings: list[Any]) -> bool:
         if warning_category(str(warning)) == "Sense live websocket auth":
             return True
     return False
+
+
+def is_smarthq_auth_failure_message(message: str) -> bool:
+    lower = message.lower()
+    return is_integration_auth_failure_message(lower)
+
+
+def is_integration_auth_failure_message(message: str) -> bool:
+    lower = message.lower()
+    return any(
+        token in lower
+        for token in (
+            "failed to get access token",
+            "failed to refresh access token",
+            "failed to re-authenticate",
+            "re-auth failed",
+            "authentication failed",
+            "authentication error",
+            "unexpected server response: 401",
+            "not authenticated",
+            "unauthorized",
+            "401 unauthorized",
+            "no authorization code",
+            "invalid_grant",
+            "invalid refresh token",
+            "login failed",
+            "loginsession error",
+            "no credentials found",
+            "no username found",
+            "no password found",
+        )
+    )
+
+
+def is_smarthq_auth_success_message(message: str) -> bool:
+    lower = message.lower()
+    return any(
+        token in lower
+        for token in (
+            "successfully re-authenticated with credentials",
+            "restoring existing accessory from cache",
+            "adding new accessory",
+        )
+    )
+
+
+def is_integration_auth_success_message(message: str, success_tokens: tuple[str, ...]) -> bool:
+    lower = message.lower()
+    return any(token in lower for token in success_tokens)
+
+
+def event_value(event: Any, key: str, default: Any = None) -> Any:
+    try:
+        return event[key]
+    except Exception:
+        if isinstance(event, dict):
+            return event.get(key, default)
+        return default
+
+
+def integration_auth_status_from_events(
+    events: list[Any],
+    components: set[str],
+    success_tokens: tuple[str, ...],
+    now_raw: str | None = None,
+) -> dict[str, Any]:
+    last_failure: dict[str, Any] | None = None
+    last_success: dict[str, Any] | None = None
+    now = parse_captured_at(now_raw)
+    for event in events:
+        component = str(event_value(event, "component", "") or "")
+        message = str(event_value(event, "message", "") or "")
+        if component not in components:
+            continue
+        captured_at = str(event_value(event, "captured_at", "") or "")
+        item = {"capturedAt": captured_at, "component": component, "message": message}
+        if is_integration_auth_failure_message(message):
+            if not last_failure or (parse_report_time(captured_at) or now) > (parse_report_time(last_failure["capturedAt"]) or now):
+                last_failure = item
+        elif is_integration_auth_success_message(message, success_tokens):
+            if not last_success or (parse_report_time(captured_at) or now) > (parse_report_time(last_success["capturedAt"]) or now):
+                last_success = item
+
+    active = False
+    if last_failure:
+        failure_time = parse_report_time(last_failure["capturedAt"]) or now
+        success_time = parse_report_time(last_success["capturedAt"]) if last_success else None
+        active = success_time is None or failure_time > success_time
+
+    return {
+        "active": active,
+        "lastFailure": last_failure,
+        "lastSuccess": last_success,
+    }
+
+
+def smarthq_auth_status_from_events(events: list[Any], now_raw: str | None = None) -> dict[str, Any]:
+    return integration_auth_status_from_events(
+        events,
+        {"SmartHQ"},
+        (
+            "successfully re-authenticated with credentials",
+            "restoring existing accessory from cache",
+            "adding new accessory",
+        ),
+        now_raw,
+    )
+
+
+def smarthq_platform_configured(latest: dict[str, Any]) -> bool:
+    return any(
+        item.get("platform") == "SmartHQ"
+        for item in latest.get("homebridge", {}).get("config", {}).get("platforms", [])
+    )
+
+
+def smart_hq_auth_status(config: dict[str, Any], latest: dict[str, Any], current_warnings: list[Any]) -> dict[str, Any]:
+    event_limit = int(config.get("alerts", {}).get("smarthq_auth_event_limit", 200))
+    events: list[Any] = list(recent_smarthq_home_events(event_limit))
+    captured_at = latest.get("captured_at")
+    for warning in current_warnings:
+        message = str(warning)
+        if warning_category(message) == "SmartHQ auth":
+            events.append({"captured_at": captured_at, "component": "SmartHQ", "message": message})
+    return smarthq_auth_status_from_events(events, captured_at)
+
+
+def configured_tahoma_components(latest: dict[str, Any]) -> list[str]:
+    components: list[str] = []
+    for item in latest.get("homebridge", {}).get("config", {}).get("platforms", []):
+        if item.get("platform") == "Tahoma" and item.get("name"):
+            components.append(str(item["name"]))
+    return sorted(set(components))
+
+
+def retained_integration_auth_alerts(config: dict[str, Any], latest: dict[str, Any], current_warnings: list[Any]) -> list[dict[str, str]]:
+    event_limit_raw = config.get("alerts", {}).get("integration_auth_event_limit")
+    if event_limit_raw is None:
+        return []
+    event_limit = int(event_limit_raw)
+    definitions: list[dict[str, Any]] = [
+        {
+            "title": "Sense live websocket authentication is failing",
+            "label": "Sense live meter",
+            "components": ["Sense Energy Meter"],
+            "successTokens": ("sense websocket open", "sense websocket connected", "authenticated with sense"),
+            "freshness": "Sense live watt readings may be cached or unavailable until a later websocket/auth success.",
+        },
+    ]
+    if any(item.get("platform") == "Alarmdotcom" for item in latest.get("homebridge", {}).get("config", {}).get("platforms", [])):
+        definitions.append(
+            {
+                "title": "Alarm.com child bridge authentication is failing",
+                "label": "Alarm.com child bridge",
+                "components": ["Security System"],
+                "successTokens": (
+                    "received 1 partitions from alarm.com",
+                    "received 19 sensors from alarm.com",
+                    "websocket connection established",
+                ),
+                "freshness": "Alarm.com Homebridge accessory state may be cached; portal capture remains the preferred current-state source.",
+            }
+        )
+    tahoma_components = configured_tahoma_components(latest)
+    if tahoma_components:
+        definitions.append(
+            {
+                "title": "TaHoma authentication is failing",
+                "label": "TaHoma child bridge",
+                "components": tahoma_components,
+                "successTokens": ("configure device", "devices discovered", "post /events/register", "get /setup/devices"),
+                "freshness": "TaHoma shade/blind accessories may remain visible from cache while the affected bridge is not refreshing cloud state.",
+            }
+        )
+
+    alerts: list[dict[str, str]] = []
+    for definition in definitions:
+        components = [str(item) for item in definition["components"]]
+        events: list[Any] = list(recent_component_home_events(components, event_limit))
+        for warning in current_warnings:
+            message = str(warning)
+            if any(component in message for component in components) and is_integration_auth_failure_message(message):
+                events.append({"captured_at": latest.get("captured_at"), "component": components[0], "message": message})
+        status = integration_auth_status_from_events(
+            events,
+            set(components),
+            tuple(str(item).lower() for item in definition["successTokens"]),
+            latest.get("captured_at"),
+        )
+        if not status.get("active"):
+            continue
+        failure = status.get("lastFailure") or {}
+        failure_at = failure.get("capturedAt") or "unknown"
+        failure_component = failure.get("component") or definition["label"]
+        failure_message = re.sub(r", Submit Bugs Here:.*$", "", str(failure.get("message") or "authentication failed"))
+        alerts.append(
+            {
+                "severity": "warning",
+                "title": str(definition["title"]),
+                "detail": (
+                    f"{definition['label']} last failed auth at `{failure_at}` on `{failure_component}`: "
+                    f"`{failure_message[-220:]}`. {definition['freshness']}"
+                ),
+            }
+        )
+    return alerts
 
 
 def has_envoy_local_comm_warning(warnings: list[Any]) -> bool:
@@ -287,6 +535,14 @@ def diagnosed_warning_categories(active_titles: set[str]) -> set[str]:
     categories: set[str] = set()
     if active_titles & {"UniFi occupancy authentication is failing", "UniFi occupancy API is failing"}:
         categories.add("UniFi occupancy")
+    if active_titles & {"SmartHQ authentication is failing"}:
+        categories.add("SmartHQ auth")
+    if active_titles & {"Sense live websocket authentication is failing", "Sense live websocket auth is noisy"}:
+        categories.add("Sense live websocket auth")
+    if active_titles & {"TaHoma authentication is failing"}:
+        categories.add("Office TaHoma")
+    if active_titles & {"Alarm.com child bridge authentication is failing"}:
+        categories.add("Alarm.com auth/websocket")
     return categories
 
 
@@ -349,6 +605,14 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         return "Check the current large loads in Home/Envoy, then compare against Sense live load and ChargePoint charging state."
     if title == "Sense live websocket auth is noisy":
         return "Leave daily Sense trend capture alone; it is working. Restart or reauth the Homebridge Sense live meter only if live 401s keep recurring after the next Homebridge restart."
+    if title == "Sense live websocket authentication is failing":
+        return "Restart or reauth only the Homebridge Sense live meter; daily Sense trend capture is separate and should be checked before changing credentials."
+    if title == "TaHoma authentication is failing":
+        return "Open the affected TaHoma account/app once if needed, then restart only the affected TaHoma child bridge and verify shade/blind state refreshes."
+    if title == "Alarm.com child bridge authentication is failing":
+        return "Use Alarm.com portal capture as current truth, then refresh the Homebridge Alarm.com login/session and restart only the Alarm child bridge if cache drift remains."
+    if title == "SmartHQ authentication is failing":
+        return "Open SmartHQ/GE Appliances once to clear any account, terms, or MFA prompt, then restart only the SmartHQ child bridge and rerun the monitor."
     if title in {"Battery failed to recharge before peak", "Battery reserve is low before peak", "Battery backup is critically low", "Battery backup is low"}:
         return "Check Enphase battery status and operating mode, then verify solar production can recharge before peak pricing."
     if "source gap" in detail.lower() or "missing" in detail.lower():
@@ -748,6 +1012,29 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
 
     recent_warning_items = logs.get("recentWarnings", [])
     recent_warnings = "\n".join(str(item) for item in recent_warning_items)
+    if smarthq_platform_configured(latest):
+        smarthq_auth = smart_hq_auth_status(config, latest, recent_warning_items)
+        if smarthq_auth.get("active"):
+            failure = smarthq_auth.get("lastFailure") or {}
+            failure_at = failure.get("capturedAt") or "unknown"
+            failure_message = str(failure.get("message") or "SmartHQ cloud login failed.")
+            failure_message = re.sub(r", Submit Bugs Here:.*$", "", failure_message)
+            alerts.append(
+                {
+                    "severity": "warning",
+                    "title": "SmartHQ authentication is failing",
+                    "detail": (
+                        f"SmartHQ child bridge last failed cloud auth at `{failure_at}`: "
+                        f"`{failure_message[-220:]}`. Cached appliance accessories may remain visible, "
+                        "but SmartHQ washer/dryer/dishwasher/oven state is not fresh until a later device refresh succeeds."
+                    ),
+                }
+            )
+    active_titles = {alert.get("title", "") for alert in alerts}
+    for alert in retained_integration_auth_alerts(config, latest, recent_warning_items):
+        if alert.get("title") not in active_titles:
+            alerts.append(alert)
+            active_titles.add(alert.get("title", ""))
     if has_unifi_auth_warning(recent_warning_items):
         alerts.append(
             {
@@ -988,7 +1275,12 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
     sense_live_401_distinct_count = len(
         distinct_warning_messages(warning_window, "Sense live websocket auth", recent_warning_items)
     )
-    if has_sense_live_auth_warning(recent_warning_items) and sense_live_401_distinct_count >= sense_live_401_threshold:
+    active_titles = {alert.get("title", "") for alert in alerts}
+    if (
+        "Sense live websocket authentication is failing" not in active_titles
+        and has_sense_live_auth_warning(recent_warning_items)
+        and sense_live_401_distinct_count >= sense_live_401_threshold
+    ):
         alerts.append(
             {
                 "severity": "warning",
@@ -1009,6 +1301,7 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
             "Enphase Envoy invalid characteristic",
             "Office TaHoma",
             "Sense live websocket auth",
+            "SmartHQ auth",
             "SmartHQ remaining duration",
         }
         dedicated_categories.update(diagnosed_warning_categories(active_titles))

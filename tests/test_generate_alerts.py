@@ -30,6 +30,7 @@ def base_config() -> dict[str, Any]:
             "warning_recent_window": 3,
             "warning_high_count": 2,
             "sense_live_401_warning_min": 3,
+            "smarthq_auth_event_limit": 20,
             "alarm_media_sensor_trip_min_events": 10,
             "grid_import_kw": 0.05,
             "grid_export_kw": -0.05,
@@ -62,6 +63,29 @@ def latest_snapshot() -> dict[str, Any]:
             "security": {"homebridgePermissions": {"insecurePaths": []}},
         },
     }
+
+
+def latest_snapshot_with_smarthq() -> dict[str, Any]:
+    latest = latest_snapshot()
+    latest["homebridge"]["config"]["platforms"].append({"platform": "SmartHQ", "name": "SmartHQ"})
+    return latest
+
+
+def latest_snapshot_with_tahoma() -> dict[str, Any]:
+    latest = latest_snapshot()
+    latest["homebridge"]["config"]["platforms"].extend(
+        [
+            {"platform": "Tahoma", "name": "Primary"},
+            {"platform": "Tahoma", "name": "Bedroom"},
+        ]
+    )
+    return latest
+
+
+def config_with_retained_auth() -> dict[str, Any]:
+    config = base_config()
+    config["alerts"]["integration_auth_event_limit"] = 20
+    return config
 
 
 def alarm_com_payload(activity_ok: bool = False) -> dict[str, Any]:
@@ -144,6 +168,19 @@ def unifi_api_warning_row() -> dict[str, Any]:
         }
     }
     return {"raw_json": json.dumps(raw), "alarm_websocket": 1, "warning_count": 1}
+
+
+def component_event(captured_at: str, component: str, message: str) -> dict[str, Any]:
+    return {
+        "captured_at": captured_at,
+        "event_type": "warning" if "failed" in message.lower() or "authentication" in message.lower() else "homebridge",
+        "component": component,
+        "message": message,
+    }
+
+
+def smarthq_event(captured_at: str, message: str) -> dict[str, Any]:
+    return component_event(captured_at, "SmartHQ", message)
 
 
 class GenerateAlertsTest(unittest.TestCase):
@@ -424,6 +461,194 @@ class GenerateAlertsTest(unittest.TestCase):
         )
         alert = next(item for item in alerts if item["title"] == "Sense live websocket auth is noisy")
         self.assertIn("`3` distinct recent Sense live-websocket auth warnings", alert["detail"])
+
+    def test_smarthq_auth_failure_in_current_warning_gets_dedicated_alert(self) -> None:
+        current = latest_snapshot_with_smarthq()
+        current["homebridge"]["logs"]["warningCount"] = 1
+        current["homebridge"]["logs"]["recentWarnings"] = [
+            "[7/8/2026, 3:26:41 PM] [SmartHQ] discoverDevices, Failed to get Access Token, Error Message: Authentication failed: No authorization code received"
+        ]
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            recent_smarthq_home_events=lambda _limit=200: [],
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), current, [])
+        alert = next(item for item in alerts if item["title"] == "SmartHQ authentication is failing")
+
+        self.assertIn("No authorization code received", alert["detail"])
+        self.assertIn("restart only the SmartHQ child bridge", generate_alerts.recommended_action(alert) or "")
+
+    def test_retained_smarthq_auth_failure_stays_active_after_warning_window_clears(self) -> None:
+        current = latest_snapshot_with_smarthq()
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            recent_smarthq_home_events=lambda _limit=200: [
+                smarthq_event(
+                    "2026-07-08T15:26:41-07:00",
+                    "discoverDevices, Failed to get Access Token, Error Message: Authentication failed: No authorization code received, Submit Bugs Here: https://bit.ly/smarthq-bug-report",
+                )
+            ],
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), current, [])
+        titles = {item["title"] for item in alerts}
+        alert = next(item for item in alerts if item["title"] == "SmartHQ authentication is failing")
+
+        self.assertIn("SmartHQ authentication is failing", titles)
+        self.assertNotIn("Recent Homebridge warning volume is high", titles)
+        self.assertIn("2026-07-08T15:26:41-07:00", alert["detail"])
+
+    def test_later_smarthq_device_refresh_clears_prior_auth_failure(self) -> None:
+        current = latest_snapshot_with_smarthq()
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            recent_smarthq_home_events=lambda _limit=200: [
+                smarthq_event("2026-07-08T15:27:30-07:00", "Restoring existing accessory from cache: Washer"),
+                smarthq_event(
+                    "2026-07-08T15:26:41-07:00",
+                    "discoverDevices, Failed to get Access Token, Error Message: Authentication failed: No authorization code received",
+                ),
+            ],
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), current, [])
+        titles = {item["title"] for item in alerts}
+
+        self.assertNotIn("SmartHQ authentication is failing", titles)
+
+    def test_retained_sense_auth_failure_stays_active_after_warning_window_clears(self) -> None:
+        current = latest_snapshot()
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            recent_component_home_events=lambda components, _limit=200: [
+                component_event(
+                    "2026-07-12T05:43:43-07:00",
+                    "Sense Energy Meter",
+                    "Re-auth failed: Error: Authentication error: request to https://api.sense.com/apiservice/api/v1/authenticate failed",
+                )
+            ]
+            if components == ["Sense Energy Meter"]
+            else [],
+        )
+
+        alerts = generate_alerts.build_alerts(config_with_retained_auth(), current, [])
+        alert = next(item for item in alerts if item["title"] == "Sense live websocket authentication is failing")
+
+        self.assertIn("2026-07-12T05:43:43-07:00", alert["detail"])
+        self.assertIn("Sense live watt readings may be cached", alert["detail"])
+
+    def test_later_sense_websocket_open_clears_prior_auth_failure(self) -> None:
+        current = latest_snapshot()
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            recent_component_home_events=lambda components, _limit=200: [
+                component_event("2026-07-12T05:44:10-07:00", "Sense Energy Meter", "Sense WebSocket Opened"),
+                component_event(
+                    "2026-07-12T05:43:43-07:00",
+                    "Sense Energy Meter",
+                    "Re-auth failed: Error: Authentication error: request to https://api.sense.com/apiservice/api/v1/authenticate failed",
+                ),
+            ]
+            if components == ["Sense Energy Meter"]
+            else [],
+        )
+
+        alerts = generate_alerts.build_alerts(config_with_retained_auth(), current, [])
+        titles = {item["title"] for item in alerts}
+
+        self.assertNotIn("Sense live websocket authentication is failing", titles)
+
+    def test_tahoma_auth_failure_alerts_for_affected_child(self) -> None:
+        current = latest_snapshot_with_tahoma()
+
+        def retained_events(components: list[str], _limit: int = 200) -> list[dict[str, Any]]:
+            if set(components) == {"Bedroom", "Primary"}:
+                return [
+                    component_event(
+                        "2026-07-11T03:05:37-07:00",
+                        "Bedroom",
+                        "Registration error - Error 401 Not authenticated",
+                    )
+                ]
+            return []
+
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            recent_component_home_events=retained_events,
+        )
+
+        alerts = generate_alerts.build_alerts(config_with_retained_auth(), current, [])
+        alert = next(item for item in alerts if item["title"] == "TaHoma authentication is failing")
+
+        self.assertIn("Bedroom", alert["detail"])
+        self.assertIn("401 Not authenticated", alert["detail"])
+
+    def test_later_tahoma_configure_device_clears_prior_auth_failure(self) -> None:
+        current = latest_snapshot_with_tahoma()
+
+        def retained_events(components: list[str], _limit: int = 200) -> list[dict[str, Any]]:
+            if set(components) == {"Bedroom", "Primary"}:
+                return [
+                    component_event("2026-07-12T09:48:20-07:00", "Bedroom", "Configure device Bedroom Shade"),
+                    component_event(
+                        "2026-07-11T03:05:37-07:00",
+                        "Bedroom",
+                        "Registration error - Error 401 Not authenticated",
+                    ),
+                ]
+            return []
+
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            recent_component_home_events=retained_events,
+        )
+
+        alerts = generate_alerts.build_alerts(config_with_retained_auth(), current, [])
+        titles = {item["title"] for item in alerts}
+
+        self.assertNotIn("TaHoma authentication is failing", titles)
+
+    def test_alarm_child_auth_failure_clears_after_received_devices(self) -> None:
+        current = latest_snapshot()
+
+        def retained_events(components: list[str], _limit: int = 200) -> list[dict[str, Any]]:
+            if components == ["Security System"]:
+                return [
+                    component_event("2026-07-12T09:48:21-07:00", "Security System", "Received 19 sensors from Alarm.com"),
+                    component_event(
+                        "2026-07-05T22:23:52-07:00",
+                        "Security System",
+                        "Login failed: Error: request to https://www.alarm.com/login failed, reason: read ETIMEDOUT",
+                    ),
+                ]
+            return []
+
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            recent_component_home_events=retained_events,
+        )
+
+        alerts = generate_alerts.build_alerts(config_with_retained_auth(), current, [])
+        titles = {item["title"] for item in alerts}
+
+        self.assertNotIn("Alarm.com child bridge authentication is failing", titles)
 
     def test_inactive_sense_live_auth_category_can_be_filtered_from_trend(self) -> None:
         trend = generate_alerts.warning_trend(
