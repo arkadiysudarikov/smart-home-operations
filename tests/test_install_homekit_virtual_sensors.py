@@ -44,17 +44,12 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
                 "smart_home_tahoma_auth_failed": "TaHoma Auth",
                 "smart_home_office_tahoma_offline": "Office Offline",
                 "smart_home_high_load": "Load High",
-                "smart_home_warnings_high": "Warnings High",
-                "smart_home_actions_online": "Actions Online",
-                "smart_home_sce_fresh": "SCE Fresh",
-                "smart_home_alarm_cache_clean": "Alarm Cache OK",
                 "smart_home_grid_importing": "Grid Import",
                 "smart_home_grid_exporting": "Grid Export",
                 "smart_home_solar_surplus": "Solar Surplus",
                 "smart_home_energy_data_stale": "Energy Stale",
                 "smart_home_sce_data_stale": "SCE Stale",
-                "smart_home_energy_check": "Energy Reconcile",
-                "smart_home_energy_source_stale": "Source Stale",
+                "smart_home_energy_check": "Energy Coverage Gap",
                 "smart_home_alarm_energy_recapture": "Alarm Energy Issue",
                 "smart_home_alarm_media_missing": "Alarm Media Missing",
                 "smart_home_ev_charging": "EV Charging",
@@ -112,6 +107,57 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             self.assertEqual(platform["platform"], "HomebridgeDummy")
             self.assertEqual(platform["accessories"][0]["name"], "Test Tile")
             self.assertTrue(any(backup_dir.iterdir()))
+
+    def test_install_removes_retired_managed_tiles_and_preserves_unmanaged_accessories(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source_config = root / "sources.json"
+            homebridge_config = root / "homebridge.json"
+            backup_dir = root / "backups"
+            source_config.write_text(
+                json.dumps(
+                    {
+                        "homekit_virtual_sensors": {
+                            "accessories": [{"id": "smart_home_current", "name": "Current Tile"}]
+                        }
+                    }
+                )
+                + "\n"
+            )
+            homebridge_config.write_text(
+                json.dumps(
+                    {
+                        "platforms": [
+                            {
+                                "platform": "HomebridgeDummy",
+                                "accessories": [
+                                    {"id": "smart_home_retired", "name": "Retired Tile"},
+                                    {"id": "other_accessory", "name": "Other Accessory"},
+                                ],
+                            }
+                        ]
+                    }
+                )
+                + "\n"
+            )
+
+            with (
+                contextlib.redirect_stdout(io.StringIO()),
+                mock.patch.object(install_homekit_virtual_sensors, "ROOT", Path("/repo")),
+                mock.patch.object(install_homekit_virtual_sensors, "RUNTIME_ROOT", Path("/runtime")),
+                mock.patch.object(install_homekit_virtual_sensors, "CONFIG_PATH", source_config),
+                mock.patch.object(install_homekit_virtual_sensors, "HOMEBRIDGE_CONFIG", homebridge_config),
+                mock.patch.object(install_homekit_virtual_sensors, "BACKUP_DIR", backup_dir),
+                mock.patch.object(sys, "argv", ["install_homekit_virtual_sensors.py", "--force-outside-runtime"]),
+            ):
+                self.assertEqual(install_homekit_virtual_sensors.main(), 0)
+
+            payload = json.loads(homebridge_config.read_text())
+            accessories = payload["platforms"][0]["accessories"]
+            self.assertEqual(
+                [(item["id"], item["name"]) for item in accessories],
+                [("other_accessory", "Other Accessory"), ("smart_home_current", "Current Tile")],
+            )
 
 
 if __name__ == "__main__":

@@ -81,7 +81,12 @@ def main() -> int:
     desired = virtual_accessories()
     desired_by_id = {item["id"]: item for item in desired}
     existing = target.setdefault("accessories", [])
-    kept = [item for item in existing if item.get("id") not in desired_by_id]
+    kept = [
+        item
+        for item in existing
+        if item.get("id") not in desired_by_id
+        and not str(item.get("id") or "").startswith("smart_home_")
+    ]
     target["accessories"] = kept + desired
     target.setdefault("name", "Homebridge Dummy")
     if "webhookConfig" not in target:
