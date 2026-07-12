@@ -44,7 +44,7 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
                 "smart_home_high_load_v2": "⚡ High Usage",
                 "smart_home_grid_importing_v2": "⬅️ From Grid",
                 "smart_home_grid_exporting_v2": "☀️ To Grid",
-                "smart_home_battery_charging_v2": "☀️🔋 Charging",
+                "smart_home_battery_charging_v2": "☀️ Charging",
                 "smart_home_energy_data_stale_v2": "🕒 ENVOY STALE",
                 "smart_home_sce_data_stale_v2": "🕒 SCE STALE",
                 "smart_home_alarm_media_missing_v2": "🎥 CLIPS MISSING",
