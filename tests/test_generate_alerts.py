@@ -110,6 +110,13 @@ def alarm_com_payload(activity_ok: bool = False) -> dict[str, Any]:
     }
 
 
+def combined_energy_payload(source_status: list[dict[str, Any]] | None = None, alerts: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+    return {
+        "sourceStatus": source_status or [],
+        "alerts": alerts or [],
+    }
+
+
 def latest_characteristics(value: int = 0) -> dict[str, Any]:
     return {
         "k": {
@@ -401,6 +408,80 @@ class GenerateAlertsTest(unittest.TestCase):
 
         self.assertIn("Skip paid UtilityAPI collection", action or "")
         self.assertIn("fresh SCE Green Button export", action or "")
+
+    def test_source_status_stale_sense_gets_dedicated_alert(self) -> None:
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: combined_energy_payload(
+                [
+                    {
+                        "source": "Sense",
+                        "status": "stale",
+                        "ageHours": 94.6273,
+                        "detail": "2026-07-08T18:30:27.552Z",
+                    }
+                ]
+            ),
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), latest_snapshot(), [])
+        alert = next(item for item in alerts if item["title"] == "Sense data is stale")
+
+        self.assertIn("`94.6` hours", alert["detail"])
+        self.assertIn("Sense-derived trend", alert["detail"])
+        self.assertIn("Fix the Sense auth/live websocket issue", generate_alerts.recommended_action(alert) or "")
+
+    def test_source_status_sce_stale_uses_existing_sce_alert_only(self) -> None:
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: combined_energy_payload(
+                [
+                    {
+                        "source": "SCE",
+                        "status": "stale",
+                        "ageHours": 250.1,
+                        "detail": "2026-07-02T00:00:00-07:00",
+                    }
+                ],
+                [
+                    {
+                        "title": "SCE interval data is stale",
+                        "severity": "warning",
+                        "detail": "Newest SCE Green Button interval ends `2026-07-02T00:00:00-07:00`.",
+                    }
+                ],
+            ),
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), latest_snapshot(), [])
+        titles = {item["title"] for item in alerts}
+
+        self.assertIn("SCE interval data is stale", titles)
+        self.assertNotIn("SCE data is stale", titles)
+
+    def test_source_status_fresh_source_does_not_alert(self) -> None:
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: combined_energy_payload(
+                [
+                    {
+                        "source": "Sense",
+                        "status": "fresh",
+                        "ageHours": 0.5,
+                        "detail": "2026-07-12T10:00:00-07:00",
+                    }
+                ]
+            ),
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), latest_snapshot(), [])
+        titles = {item["title"] for item in alerts}
+
+        self.assertNotIn("Sense data is stale", titles)
+        self.assertNotIn("Sense data is missing", titles)
 
     def test_old_sense_live_auth_warnings_do_not_alert_when_current_snapshot_is_clean(self) -> None:
         current = latest_snapshot()

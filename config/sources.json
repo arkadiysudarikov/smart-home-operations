@@ -221,6 +221,27 @@
         ]
       },
       {
+        "id": "smart_home_energy_source_stale",
+        "name": "Source Stale",
+        "alert_titles": [
+          "Envoy data is stale",
+          "Envoy data is missing",
+          "Envoy data is using fallback",
+          "Sense data is stale",
+          "Sense data is missing",
+          "Sense data is using fallback",
+          "ChargePoint data is stale",
+          "ChargePoint data is missing",
+          "ChargePoint data is using fallback",
+          "Alarm.com data is stale",
+          "Alarm.com data is missing",
+          "Alarm.com data is using fallback",
+          "Energy costs data is stale",
+          "Energy costs data is missing",
+          "Energy costs data is using fallback"
+        ]
+      },
+      {
         "id": "smart_home_alarm_energy_recapture",
         "name": "Alarm Energy",
         "alert_titles": [
