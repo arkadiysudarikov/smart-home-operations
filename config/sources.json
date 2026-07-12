@@ -71,6 +71,7 @@
     "warning_recent_window": 12,
     "warning_high_count": 10,
     "smarthq_auth_event_limit": 200,
+    "integration_auth_event_limit": 300,
     "sce_interval_stale_days": 30,
     "sce_interval_stale_hours": 36,
     "sce_interval_normal_lag_hours": 48,
@@ -112,6 +113,7 @@
         "alert_titles": [
           "Alarm.com websocket is unreliable",
           "Alarm.com portal websocket token failed",
+          "Alarm.com child bridge authentication is failing",
           "Alarm.com device issue"
         ]
       },
@@ -142,6 +144,19 @@
         "id": "smart_home_smarthq_auth_failed",
         "name": "SmartHQ",
         "alert_titles": ["SmartHQ authentication is failing"]
+      },
+      {
+        "id": "smart_home_sense_auth_failed",
+        "name": "Sense Auth",
+        "alert_titles": [
+          "Sense live websocket authentication is failing",
+          "Sense live websocket auth is noisy"
+        ]
+      },
+      {
+        "id": "smart_home_tahoma_auth_failed",
+        "name": "TaHoma Auth",
+        "alert_titles": ["TaHoma authentication is failing"]
       },
       {
         "id": "smart_home_office_tahoma_offline",
