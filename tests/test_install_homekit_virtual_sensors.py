@@ -23,6 +23,45 @@ SPEC.loader.exec_module(install_homekit_virtual_sensors)
 
 
 class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
+    def test_configured_tile_names_describe_their_active_condition(self) -> None:
+        config = json.loads((ROOT / "config" / "sources.json").read_text())
+        names_by_id = {
+            item["id"]: item["name"]
+            for item in config["homekit_virtual_sensors"]["accessories"]
+        }
+
+        self.assertEqual(
+            names_by_id,
+            {
+                "smart_home_battery_critical": "Battery Critical",
+                "smart_home_battery_low": "Battery Low",
+                "smart_home_alarm_degraded": "Alarm Issue",
+                "smart_home_alarm_cache_stale": "Alarm Cache Stale",
+                "smart_home_alarm_activity_degraded": "Alarm Activity Issue",
+                "smart_home_unifi_auth_failed": "UniFi Auth",
+                "smart_home_smarthq_auth_failed": "SmartHQ Auth",
+                "smart_home_sense_auth_failed": "Sense Auth",
+                "smart_home_tahoma_auth_failed": "TaHoma Auth",
+                "smart_home_office_tahoma_offline": "Office Offline",
+                "smart_home_high_load": "Load High",
+                "smart_home_warnings_high": "Warnings High",
+                "smart_home_actions_online": "Actions Online",
+                "smart_home_sce_fresh": "SCE Fresh",
+                "smart_home_alarm_cache_clean": "Alarm Cache OK",
+                "smart_home_grid_importing": "Grid Import",
+                "smart_home_grid_exporting": "Grid Export",
+                "smart_home_solar_surplus": "Solar Surplus",
+                "smart_home_energy_data_stale": "Energy Stale",
+                "smart_home_sce_data_stale": "SCE Stale",
+                "smart_home_energy_check": "Energy Reconcile",
+                "smart_home_energy_source_stale": "Source Stale",
+                "smart_home_alarm_energy_recapture": "Alarm Energy Issue",
+                "smart_home_alarm_media_missing": "Alarm Media Missing",
+                "smart_home_ev_charging": "EV Charging",
+                "smart_home_ev_heavy": "EV Share High",
+            },
+        )
+
     def test_refuses_live_homebridge_config_write_outside_runtime_root_by_default(self) -> None:
         stdout = io.StringIO()
         with (
