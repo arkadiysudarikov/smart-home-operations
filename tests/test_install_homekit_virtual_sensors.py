@@ -34,28 +34,28 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
         self.assertEqual(
             names_by_id,
             {
-                "smart_home_battery_critical": "BATTERY CRIT",
-                "smart_home_battery_low": "BATTERY LOW",
-                "smart_home_alarm_degraded": "ALARM SYSTEM",
-                "smart_home_alarm_cache_stale": "ALARM STATUS",
-                "smart_home_alarm_activity_degraded": "ALARM HISTORY",
-                "smart_home_unifi_auth_failed": "UNIFI OFFLINE",
-                "smart_home_smarthq_auth_failed": "SMARTHQ DOWN",
-                "smart_home_sense_auth_failed": "SENSE OFFLINE",
-                "smart_home_tahoma_auth_failed": "TAHOMA DOWN",
-                "smart_home_office_tahoma_offline": "OFFICE SHADES",
-                "smart_home_high_load": "POWER HIGH",
-                "smart_home_grid_importing": "Using Grid",
-                "smart_home_grid_exporting": "To Grid",
-                "smart_home_solar_surplus": "Extra Solar",
-                "smart_home_energy_data_stale": "ENERGY DOWN",
-                "smart_home_sce_data_stale": "SCE OUTDATED",
-                "smart_home_energy_check": "SCE HISTORY",
-                "smart_home_energy_meters_disagree": "METERS DIFFER",
-                "smart_home_alarm_energy_recapture": "ALARM ENERGY",
-                "smart_home_alarm_media_missing": "ALARM CLIPS",
-                "smart_home_ev_charging": "Car Charging",
-                "smart_home_ev_heavy": "CAR USE HIGH",
+                "smart_home_battery_critical_v2": "⚠️ BATTERY CRIT",
+                "smart_home_battery_low_v2": "⚠️ BATTERY LOW",
+                "smart_home_alarm_degraded_v2": "⚠️ ALARM SYSTEM",
+                "smart_home_alarm_cache_stale_v2": "⚠️ ALARM STATUS",
+                "smart_home_alarm_activity_degraded_v2": "⚠️ ALARM HISTORY",
+                "smart_home_unifi_auth_failed_v2": "⚠️ UNIFI OFFLINE",
+                "smart_home_smarthq_auth_failed_v2": "⚠️ SMARTHQ DOWN",
+                "smart_home_sense_auth_failed_v2": "⚠️ SENSE OFFLINE",
+                "smart_home_tahoma_auth_failed_v2": "⚠️ TAHOMA DOWN",
+                "smart_home_office_tahoma_offline_v2": "⚠️ OFFICE SHADES",
+                "smart_home_high_load_v2": "⚠️ POWER HIGH",
+                "smart_home_grid_importing_v2": "ℹ️ Using Grid",
+                "smart_home_grid_exporting_v2": "ℹ️ To Grid",
+                "smart_home_solar_surplus_v2": "ℹ️ Extra Solar",
+                "smart_home_energy_data_stale_v2": "⚠️ ENERGY DOWN",
+                "smart_home_sce_data_stale_v2": "⚠️ SCE OUTDATED",
+                "smart_home_energy_check_v2": "⚠️ SCE HISTORY",
+                "smart_home_energy_meters_disagree_v2": "⚠️ METERS DIFFER",
+                "smart_home_alarm_energy_recapture_v2": "⚠️ ALARM ENERGY",
+                "smart_home_alarm_media_missing_v2": "⚠️ ALARM CLIPS",
+                "smart_home_ev_charging_v2": "ℹ️ Car Charging",
+                "smart_home_ev_heavy_v2": "⚠️ CAR USE HIGH",
             },
         )
 
@@ -68,16 +68,16 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
         action_names = re.findall(r'name: "([^"]+)"', default_actions)
 
         informational_ids = {
-            "smart_home_grid_importing",
-            "smart_home_grid_exporting",
-            "smart_home_solar_surplus",
-            "smart_home_ev_charging",
+            "smart_home_grid_importing_v2",
+            "smart_home_grid_exporting_v2",
+            "smart_home_solar_surplus_v2",
+            "smart_home_ev_charging_v2",
         }
         for tile in tiles:
             if tile["id"] in informational_ids:
-                self.assertFalse(tile["name"].isupper(), tile["name"])
+                self.assertTrue(tile["name"].startswith("ℹ️ "), tile["name"])
             else:
-                self.assertTrue(tile["name"].isupper(), tile["name"])
+                self.assertTrue(tile["name"].startswith("⚠️ "), tile["name"])
         for name in action_names:
             self.assertFalse(name.isupper(), name)
 
