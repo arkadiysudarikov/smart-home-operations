@@ -21,6 +21,39 @@ BUBBLER_UUID_BASE = "Bubbler"
 CALENDAR_PREFIX = "📅 "
 RETIRED_ACTION_IDS = {"office-restart"}
 MANAGED_VIRTUAL_SENSOR_PREFIXES = ("smart_home_", "home_status_")
+HOME_STATUS_PLATFORM = "HomeStatusDashboard"
+HOME_STATUS_CONFIGS = [
+    {
+        "name": "Home Status Core",
+        "sourcePlatforms": [
+            "Alarmdotcom",
+            "CalendarScheduler",
+            "DysonPureCoolPlatform",
+            "HomebridgeDummy",
+            "SmartHQ",
+        ],
+        "_bridge": {"username": "0E:7D:22:7B:A1:14", "port": 57975},
+    },
+    {
+        "name": "Home Status Network",
+        "sourcePlatforms": ["UnifiOccupancy"],
+        "_bridge": {"username": "0E:7D:22:7B:A1:15", "port": 57976},
+    },
+    {
+        "name": "Home Status Energy",
+        "sourcePlatforms": ["enphaseEnvoy"],
+        "_bridge": {"username": "0E:7D:22:7B:A1:16", "port": 57977},
+    },
+]
+for _home_status_config in HOME_STATUS_CONFIGS:
+    _home_status_config.update(
+        {
+            "platform": HOME_STATUS_PLATFORM,
+            "sourcePath": str(RUNTIME_ROOT / "data" / "latest.json"),
+            "refreshSeconds": 30,
+            "chunkSize": 20,
+        }
+    )
 
 
 def running_from_runtime_root() -> bool:
@@ -93,6 +126,12 @@ def apply_homekit_name_overrides(homebridge: dict[str, Any]) -> None:
         break
 
 
+def apply_home_status_dashboard(homebridge: dict[str, Any]) -> None:
+    platforms = homebridge.setdefault("platforms", [])
+    platforms[:] = [item for item in platforms if item.get("platform") != HOME_STATUS_PLATFORM]
+    platforms.extend(copy.deepcopy(HOME_STATUS_CONFIGS))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Install Smart Home virtual status sensors into the HomebridgeDummy platform.")
     parser.add_argument(
@@ -119,6 +158,7 @@ def main() -> int:
     homebridge = load_json(HOMEBRIDGE_CONFIG)
     original = copy.deepcopy(homebridge)
     apply_homekit_name_overrides(homebridge)
+    apply_home_status_dashboard(homebridge)
     target = None
     for platform in homebridge.get("platforms", []):
         if platform.get("platform") == "HomebridgeDummy":
@@ -160,6 +200,7 @@ def main() -> int:
         print(f"- {item['name']} ({item['id']})")
     print(f"- {BUBBLER_NAME} (Alarm.com light and delay switch)")
     print(f"- {CALENDAR_PREFIX.strip()} Calendar Scheduler display names")
+    print("- Home Status read-only sensor dashboard")
     return 0
 
 

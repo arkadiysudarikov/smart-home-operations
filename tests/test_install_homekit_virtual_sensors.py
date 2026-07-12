@@ -50,12 +50,6 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
                 "smart_home_sce_data_stale_v2": "⚠️ SCE STALE",
                 "smart_home_alarm_media_missing_v2": "⚠️ CLIPS MISSING",
                 "smart_home_ev_charging_v2": "🔋 Car Charging",
-                "home_status_high_load_v1": "☀️ High Usage",
-                "home_status_grid_importing_v1": "☀️ From Grid",
-                "home_status_grid_exporting_v1": "☀️ To Grid",
-                "home_status_battery_charging_v1": "🔋 Charging",
-                "home_status_battery_discharging_v1": "🔋 Discharging",
-                "home_status_ev_charging_v1": "🔋 Car Charging",
             },
         )
 
@@ -86,12 +80,6 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             "smart_home_battery_charging_v2",
             "smart_home_battery_discharging_v2",
             "smart_home_ev_charging_v2",
-            "home_status_high_load_v1",
-            "home_status_grid_importing_v1",
-            "home_status_grid_exporting_v1",
-            "home_status_battery_charging_v1",
-            "home_status_battery_discharging_v1",
-            "home_status_ev_charging_v1",
         }
         for tile in tiles:
             visible_text = tile["name"].split(" ", 1)[1]
@@ -115,17 +103,11 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             "smart_home_high_load_v2",
             "smart_home_grid_importing_v2",
             "smart_home_grid_exporting_v2",
-            "home_status_high_load_v1",
-            "home_status_grid_importing_v1",
-            "home_status_grid_exporting_v1",
         }
         charging_ids = {
             "smart_home_battery_charging_v2",
             "smart_home_battery_discharging_v2",
             "smart_home_ev_charging_v2",
-            "home_status_battery_charging_v1",
-            "home_status_battery_discharging_v1",
-            "home_status_ev_charging_v1",
         }
         for tile in tiles:
             if tile["id"] in household_energy_ids:
@@ -146,31 +128,24 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             approved_prefixes,
         )
 
-    def test_home_status_experiment_mirrors_every_informational_tile(self) -> None:
-        config = json.loads((ROOT / "config" / "sources.json").read_text())
-        tiles = config["homekit_virtual_sensors"]["accessories"]
-        by_id = {item["id"]: item for item in tiles}
-        informational_ids = {
-            "smart_home_high_load_v2",
-            "smart_home_grid_importing_v2",
-            "smart_home_grid_exporting_v2",
-            "smart_home_battery_charging_v2",
-            "smart_home_battery_discharging_v2",
-            "smart_home_ev_charging_v2",
-        }
-        mirrors = {
-            item["mirror_of"]: item
-            for item in tiles
-            if item.get("room_hint") == "Home Status"
-        }
+    def test_home_status_dashboard_uses_stable_read_only_platform_config(self) -> None:
+        homebridge = {"platforms": []}
 
-        self.assertEqual(set(mirrors), informational_ids)
-        for source_id, mirror in mirrors.items():
-            source = by_id[source_id]
-            self.assertTrue(mirror["id"].startswith("home_status_"))
-            self.assertEqual(mirror["name"], source["name"])
-            self.assertEqual(mirror.get("state_titles"), source.get("state_titles"))
-            self.assertEqual(mirror.get("alert_titles"), source.get("alert_titles"))
+        install_homekit_virtual_sensors.apply_home_status_dashboard(homebridge)
+        install_homekit_virtual_sensors.apply_home_status_dashboard(homebridge)
+
+        dashboards = [
+            item for item in homebridge["platforms"]
+            if item.get("platform") == "HomeStatusDashboard"
+        ]
+        self.assertEqual(len(dashboards), 3)
+        self.assertEqual(
+            [item["_bridge"]["username"] for item in dashboards],
+            ["0E:7D:22:7B:A1:14", "0E:7D:22:7B:A1:15", "0E:7D:22:7B:A1:16"],
+        )
+        self.assertEqual([item["_bridge"]["port"] for item in dashboards], [57975, 57976, 57977])
+        self.assertTrue(all(item["refreshSeconds"] == 30 for item in dashboards))
+        self.assertTrue(all(item["chunkSize"] == 20 for item in dashboards))
 
     def test_refuses_live_homebridge_config_write_outside_runtime_root_by_default(self) -> None:
         stdout = io.StringIO()
@@ -218,7 +193,7 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
                 self.assertEqual(install_homekit_virtual_sensors.main(), 0)
 
             payload = json.loads(homebridge_config.read_text())
-            platform = payload["platforms"][0]
+            platform = next(item for item in payload["platforms"] if item["platform"] == "HomebridgeDummy")
             self.assertEqual(platform["platform"], "HomebridgeDummy")
             self.assertEqual(platform["accessories"][0]["name"], "Test Tile")
             self.assertTrue(any(backup_dir.iterdir()))
