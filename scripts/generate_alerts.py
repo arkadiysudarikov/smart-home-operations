@@ -587,8 +587,8 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         return "Open Alarm.com Issues, resolve the listed trouble condition, then recapture Alarm.com."
     if title == "SCE interval data is stale":
         if "utilityapi_payment_required" in detail:
-            return "Skip paid UtilityAPI collection; import a fresh SCE Green Button export, or wait for a no-cost UtilityAPI collection entitlement, then run Refresh SCE Data again."
-        return "Run Refresh SCE Data to download already-available UtilityAPI intervals. If the data stays outdated, import a fresh SCE Green Button export; paid UtilityAPI collection should stay off unless explicitly approved."
+            return "Skip paid UtilityAPI collection; import a fresh SCE Green Button export, or wait for a no-cost UtilityAPI collection entitlement, then run Refresh SCE again."
+        return "Run Refresh SCE to download already-available UtilityAPI intervals. If the data stays outdated, import a fresh SCE Green Button export; paid UtilityAPI collection should stay off unless explicitly approved."
     if title == "Sense data is stale":
         return "Fix the Sense auth/live websocket issue first, then rerun the Sense trend capture so Sense-vs-Envoy reconciliation uses fresh data."
     if title == "Envoy data is stale":
@@ -604,7 +604,7 @@ def recommended_action(alert: dict[str, str]) -> str | None:
     if title in {"Alarm.com energy is stale", "Alarm.com energy totals disagree"}:
         return "Recapture Alarm.com energy and compare the updated Energy Clamp totals against Envoy and SCE in the combined report."
     if title == "SCE and home energy history do not overlap":
-        return "Run Refresh SCE Data. If the histories still do not overlap, import a newer SCE Green Button export."
+        return "Run Refresh SCE. If the histories still do not overlap, import a newer SCE Green Button export."
     if title == "Sense and Envoy readings disagree":
         return "Refresh Sense and Envoy data, then check the combined energy report to see whether the meter difference remains."
     if title == "Homebridge is not running":
