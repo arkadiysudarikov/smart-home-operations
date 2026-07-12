@@ -504,7 +504,7 @@ def build_payload() -> dict[str, Any]:
         alerts.append(
             alert(
                 "warning",
-                "Energy readings need reconciliation",
+                "SCE and home energy history do not overlap",
                 f"Latest closed SCE bill ends `{fmt(days, 0)}` days before Envoy/Sense monitor coverage starts.",
             )
         )
@@ -544,7 +544,7 @@ def build_payload() -> dict[str, Any]:
         alerts.append(
             alert(
                 "warning",
-                "Energy readings need reconciliation",
+                "Sense and Envoy readings disagree",
                 f"Envoy non-battery load minus Sense load is `{fmt(sense_gap_for_alert, 3)}` kW.",
             )
         )

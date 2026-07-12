@@ -4,13 +4,13 @@ const PLUGIN_NAME = "homebridge-smart-home-actions";
 const PLATFORM_NAME = "SmartHomeActions";
 
 const DEFAULT_ACTIONS = [
-  { id: "check", name: "Check Home", path: "/action/run-check", timeoutMs: 120000 },
+  { id: "check", name: "Run Home Check", path: "/action/run-check", timeoutMs: 120000 },
   { id: "hb-restart", name: "Restart Homebridge", path: "/action/restart-homebridge", timeoutMs: 5000 },
   { id: "office-restart", name: "Restart Office Shades", path: "/action/restart-office-tahoma", timeoutMs: 5000 },
   { id: "mute-alerts", name: "Pause Alerts", path: "/action/silence-alerts", timeoutMs: 120000 },
-  { id: "refresh-sce", name: "Update SCE Data", path: "/action/refresh-sce", timeoutMs: 120000 },
-  { id: "reconcile-energy", name: "Update Energy Data", path: "/action/reconcile-energy", timeoutMs: 120000 },
-  { id: "alarm-refresh", name: "Update Alarm Status", path: "/action/refresh-alarm-cache", timeoutMs: 120000 },
+  { id: "refresh-sce", name: "Refresh SCE Data", path: "/action/refresh-sce", timeoutMs: 120000 },
+  { id: "reconcile-energy", name: "Refresh Energy Data", path: "/action/reconcile-energy", timeoutMs: 120000 },
+  { id: "alarm-refresh", name: "Refresh Alarm Status", path: "/action/refresh-alarm-cache", timeoutMs: 120000 },
   { id: "garage-activity", name: "Garage Light Timer", path: "/action/garage-activity", timeoutMs: 120000 },
   { id: "panel-home", name: "Panel Home", path: "/action/panel-home", timeoutMs: 120000 },
   { id: "panel-stay", name: "Panel Stay", path: "/action/panel-stay", timeoutMs: 120000 },
