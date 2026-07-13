@@ -418,6 +418,7 @@ def retained_integration_auth_alerts(config: dict[str, Any], latest: dict[str, A
                 "sense websocket connected",
                 "authenticated with sense",
                 "sense api capture succeeded",
+                "received data.",
             ),
             "freshness": "Sense live watt readings may be cached or unavailable until a later websocket/auth success.",
         },

@@ -135,9 +135,7 @@
         "id": "smart_home_sense_auth_failed_v2",
         "name": "⚠️ SENSE OFFLINE",
         "alert_titles": [
-          "Sense monitor is offline",
-          "Sense live websocket authentication is failing",
-          "Sense live websocket auth is noisy"
+          "Sense monitor is offline"
         ]
       },
       {
