@@ -395,7 +395,14 @@ def normalize_action_statuses(actions: dict[str, dict[str, Any]]) -> None:
         unifi_recovery["blockedBy"] = "unifi_api"
 
     alarm_refresh = actions.get("alarmRefresh")
-    if not isinstance(alarm_refresh, dict) or alarm_refresh.get("ok") is not False:
+    if not isinstance(alarm_refresh, dict):
+        return
+    failed = alarm_refresh.get("ok") is False
+    stale_running = (
+        alarm_refresh.get("status") == "running"
+        and (source_age_hours(alarm_refresh.get("startedAt")) or 0) >= 0.5
+    )
+    if not failed and not stale_running:
         return
     current_stale = current_alarm_cache_stale_count()
     if current_stale != 0:
