@@ -32,6 +32,30 @@ class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
         for name, original in getattr(self, "_restore", {}).items():
             setattr(combined, name, original)
 
+    def test_sce_monitor_coverage_uses_interval_dates(self) -> None:
+        coverage = combined.sce_monitor_coverage(
+            {"coverageEnd": "2026-07-02T00:00:00-07:00"},
+            {
+                "smartHomeMonitor": {
+                    "envoy:Consumption Total": {"start": "2026-07-06T12:00:00-07:00"},
+                    "sense": {"start": "2026-07-06T13:00:00-07:00"},
+                }
+            },
+        )
+
+        self.assertFalse(coverage["overlaps"])
+        self.assertEqual(coverage["monitorStart"], "2026-07-06T12:00:00-07:00")
+        self.assertAlmostEqual(coverage["gapDays"], 4.5)
+
+    def test_sce_monitor_coverage_detects_interval_overlap(self) -> None:
+        coverage = combined.sce_monitor_coverage(
+            {"coverageEnd": "2026-07-07T00:00:00-07:00"},
+            {"smartHomeMonitor": {"sense": {"start": "2026-07-06T13:00:00-07:00"}}},
+        )
+
+        self.assertTrue(coverage["overlaps"])
+        self.assertLess(coverage["gapDays"], 0)
+
     def test_live_sense_source_preserves_offline_state(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

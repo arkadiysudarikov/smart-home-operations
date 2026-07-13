@@ -233,6 +233,26 @@ def effective_sce_summary(all_energy: dict[str, Any]) -> dict[str, Any]:
     return green_button
 
 
+def sce_monitor_coverage(sce_summary: dict[str, Any], all_energy: dict[str, Any]) -> dict[str, Any]:
+    sce_end = parse_dt(sce_summary.get("coverageEnd"))
+    monitor_starts = [
+        parsed
+        for name, summary in (all_energy.get("smartHomeMonitor") or {}).items()
+        if name == "sense" or name.startswith("envoy:")
+        if (parsed := parse_dt((summary or {}).get("start"))) is not None
+    ]
+    if sce_end is None or not monitor_starts:
+        return {}
+    monitor_start = min(monitor_starts)
+    gap_days = (monitor_start - sce_end).total_seconds() / 86400
+    return {
+        "sceEnd": sce_end.isoformat(timespec="seconds"),
+        "monitorStart": monitor_start.isoformat(timespec="seconds"),
+        "gapDays": gap_days,
+        "overlaps": gap_days <= 0,
+    }
+
+
 def live_envoy_source() -> dict[str, Any] | None:
     envoy = load_json(DATA_DIR / "latest_envoy_direct.json")
     if not envoy.get("finishedAt"):
@@ -522,14 +542,13 @@ def build_payload() -> dict[str, Any]:
             )
         )
 
-    overlap = bill_home.get("overlap") or {}
-    if sce_overlap_count <= 0 and not overlap.get("closedBillDirectlyOverlapsEnvoySense"):
-        days = overlap.get("latestBillEndsBeforeEnvoyStartsDays")
+    coverage = sce_monitor_coverage(sce_summary, all_energy)
+    if sce_overlap_count <= 0 and coverage.get("gapDays", 0) > 0:
         alerts.append(
             alert(
                 "warning",
                 "SCE and home energy history do not overlap",
-                f"Latest closed SCE bill ends `{fmt(days, 0)}` days before Envoy/Sense monitor coverage starts.",
+                f"Newest SCE interval ends `{fmt(coverage.get('gapDays'), 1)}` days before Envoy/Sense monitor coverage starts.",
             )
         )
 
