@@ -382,7 +382,12 @@ def retained_integration_auth_alerts(config: dict[str, Any], latest: dict[str, A
             "title": "Sense live websocket authentication is failing",
             "label": "Sense live meter",
             "components": ["Sense Energy Meter"],
-            "successTokens": ("sense websocket open", "sense websocket connected", "authenticated with sense"),
+            "successTokens": (
+                "sense websocket open",
+                "sense websocket connected",
+                "authenticated with sense",
+                "received data.",
+            ),
             "freshness": "Sense live watt readings may be cached or unavailable until a later websocket/auth success.",
         },
     ]

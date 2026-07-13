@@ -650,6 +650,33 @@ class GenerateAlertsTest(unittest.TestCase):
 
         self.assertNotIn("Sense live websocket authentication is failing", titles)
 
+    def test_later_sense_received_data_clears_prior_auth_failure(self) -> None:
+        current = latest_snapshot()
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            recent_component_home_events=lambda components, _limit=200: [
+                component_event(
+                    "2026-07-12T05:44:10-07:00",
+                    "Sense Energy Meter",
+                    "Received data. Watts: 368.99, Current: 7, Voltage: 122.64",
+                ),
+                component_event(
+                    "2026-07-12T05:43:43-07:00",
+                    "Sense Energy Meter",
+                    "Re-auth failed: Error: Authentication error: request to https://api.sense.com/apiservice/api/v1/authenticate failed",
+                ),
+            ]
+            if components == ["Sense Energy Meter"]
+            else [],
+        )
+
+        alerts = generate_alerts.build_alerts(config_with_retained_auth(), current, [])
+        titles = {item["title"] for item in alerts}
+
+        self.assertNotIn("Sense live websocket authentication is failing", titles)
+
     def test_tahoma_auth_failure_alerts_for_affected_child(self) -> None:
         current = latest_snapshot_with_tahoma()
 
