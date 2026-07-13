@@ -54,6 +54,25 @@ class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
         self.assertEqual(source["status"], "offline")
         self.assertEqual(source["detail"], "OFFLINE")
 
+    def test_live_sense_ev_watts_requires_fresh_online_category(self) -> None:
+        now = datetime(2026, 7, 12, 21, 22, tzinfo=ZoneInfo("America/Los_Angeles"))
+        sense_now = {
+            "ok": True,
+            "online": True,
+            "capturedAt": "2026-07-13T04:21:30Z",
+            "devices": [
+                {"id": "always_on", "watts": 200},
+                {"id": "category-ev", "watts": 7280.0},
+            ],
+        }
+
+        self.assertEqual(combined.live_sense_ev_watts(sense_now, now), 7280.0)
+        sense_now["capturedAt"] = "2026-07-13T04:10:00Z"
+        self.assertIsNone(combined.live_sense_ev_watts(sense_now, now))
+        sense_now["capturedAt"] = "2026-07-13T04:21:30Z"
+        sense_now["online"] = False
+        self.assertIsNone(combined.live_sense_ev_watts(sense_now, now))
+
     def test_daily_summary_uses_standalone_sce_interval_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)

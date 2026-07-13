@@ -83,6 +83,8 @@
     "sense_live_401_warning_min": 3,
     "chargepoint_alarm_7d_share_high": 0.35,
     "chargepoint_refresh_stale_hours": 24,
+    "sense_ev_charging_watts": 500,
+    "sense_live_stale_minutes": 5,
     "source_status_stale_hours": 24,
     "sense_envoy_adjusted_gap_kw": 0.75
   },

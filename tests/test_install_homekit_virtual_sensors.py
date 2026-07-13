@@ -128,24 +128,17 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             approved_prefixes,
         )
 
-    def test_home_status_dashboard_uses_stable_read_only_platform_config(self) -> None:
-        homebridge = {"platforms": []}
+    def test_removes_retired_home_status_dashboard(self) -> None:
+        homebridge = {
+            "platforms": [
+                {"platform": "HomeStatusDashboard", "name": "Home Status Core"},
+                {"platform": "HomebridgeDummy", "name": "Dummy"},
+            ]
+        }
 
-        install_homekit_virtual_sensors.apply_home_status_dashboard(homebridge)
-        install_homekit_virtual_sensors.apply_home_status_dashboard(homebridge)
+        install_homekit_virtual_sensors.remove_retired_home_status_dashboard(homebridge)
 
-        dashboards = [
-            item for item in homebridge["platforms"]
-            if item.get("platform") == "HomeStatusDashboard"
-        ]
-        self.assertEqual(len(dashboards), 3)
-        self.assertEqual(
-            [item["_bridge"]["username"] for item in dashboards],
-            ["0E:7D:22:7B:A1:14", "0E:7D:22:7B:A1:15", "0E:7D:22:7B:A1:16"],
-        )
-        self.assertEqual([item["_bridge"]["port"] for item in dashboards], [57975, 57976, 57977])
-        self.assertTrue(all(item["refreshSeconds"] == 30 for item in dashboards))
-        self.assertTrue(all(item["chunkSize"] == 20 for item in dashboards))
+        self.assertEqual(homebridge["platforms"], [{"platform": "HomebridgeDummy", "name": "Dummy"}])
 
     def test_refuses_live_homebridge_config_write_outside_runtime_root_by_default(self) -> None:
         stdout = io.StringIO()
