@@ -25,6 +25,8 @@ SCE_API_STATUS_PATH = DATA_DIR / "latest_sce_api.json"
 ALARM_COM_PATH = DATA_DIR / "latest_alarm_com.json"
 LATEST_CHARACTERISTICS_PATH = DATA_DIR / "latest_characteristics.json"
 ALARM_STATE_COMPARISON_PATH = DATA_DIR / "latest_alarm_homebridge_state.json"
+SENSE_NOW_PATH = DATA_DIR / "sense_now_latest.json"
+SENSE_TRENDS_PATH = DATA_DIR / "sense_trends_latest.json"
 ACTION_STATUS_URL = "http://127.0.0.1:18765/status"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 HOMEBRIDGE_DIR = Path.home() / ".homebridge"
@@ -70,6 +72,16 @@ def load_alarm_com() -> dict[str, Any]:
         return json.loads(ALARM_COM_PATH.read_text())
     except json.JSONDecodeError:
         return {}
+
+
+def load_sense_now() -> dict[str, Any]:
+    data = load_json_file(SENSE_NOW_PATH)
+    return data if isinstance(data, dict) else {}
+
+
+def load_sense_trends() -> dict[str, Any]:
+    data = load_json_file(SENSE_TRENDS_PATH)
+    return data if isinstance(data, dict) else {}
 
 
 def load_latest_characteristics() -> dict[str, Any]:
@@ -181,6 +193,11 @@ def row_alarm_websocket_enabled(row: sqlite3.Row) -> bool:
 
 def warning_category(message: str) -> str:
     lower = message.lower()
+    if (
+        "characteristic not in required or optional characteristic section" in lower
+        or "has an invalid 'name' characteristic" in lower
+    ):
+        return "HomeKit compatibility"
     if "security system" in lower or "alarm.com" in lower or "websocket token fetch returned 403" in lower:
         return "Alarm.com auth/websocket"
     if "smarthq" in lower and is_smarthq_auth_failure_message(lower):
@@ -353,6 +370,16 @@ def smarthq_platform_configured(latest: dict[str, Any]) -> bool:
     )
 
 
+def homebridge_warning_captured_at(message: str, fallback: str | None) -> str | None:
+    match = re.match(r"^\[(\d{1,2}/\d{1,2}/\d{4}, \d{1,2}:\d{2}:\d{2} [AP]M)\]", message)
+    if not match:
+        return fallback
+    try:
+        return datetime.strptime(match.group(1), "%m/%d/%Y, %I:%M:%S %p").replace(tzinfo=LOCAL_TZ).isoformat()
+    except ValueError:
+        return fallback
+
+
 def smart_hq_auth_status(config: dict[str, Any], latest: dict[str, Any], current_warnings: list[Any]) -> dict[str, Any]:
     event_limit = int(config.get("alerts", {}).get("smarthq_auth_event_limit", 200))
     events: list[Any] = list(recent_smarthq_home_events(event_limit))
@@ -360,7 +387,11 @@ def smart_hq_auth_status(config: dict[str, Any], latest: dict[str, Any], current
     for warning in current_warnings:
         message = str(warning)
         if warning_category(message) == "SmartHQ auth":
-            events.append({"captured_at": captured_at, "component": "SmartHQ", "message": message})
+            events.append({
+                "captured_at": homebridge_warning_captured_at(message, captured_at),
+                "component": "SmartHQ",
+                "message": message,
+            })
     return smarthq_auth_status_from_events(events, captured_at)
 
 
@@ -386,6 +417,7 @@ def retained_integration_auth_alerts(config: dict[str, Any], latest: dict[str, A
                 "sense websocket open",
                 "sense websocket connected",
                 "authenticated with sense",
+                "sense api capture succeeded",
                 "received data.",
             ),
             "freshness": "Sense live watt readings may be cached or unavailable until a later websocket/auth success.",
@@ -421,10 +453,24 @@ def retained_integration_auth_alerts(config: dict[str, Any], latest: dict[str, A
     for definition in definitions:
         components = [str(item) for item in definition["components"]]
         events: list[Any] = list(recent_component_home_events(components, event_limit))
+        if definition["title"] == "Sense live websocket authentication is failing":
+            sense_trends = load_sense_trends()
+            if sense_trends.get("capturedAt") and int(sense_trends.get("daysCaptured") or 0) > 0:
+                events.append(
+                    {
+                        "captured_at": sense_trends["capturedAt"],
+                        "component": "Sense Energy Meter",
+                        "message": "Sense API capture succeeded",
+                    }
+                )
         for warning in current_warnings:
             message = str(warning)
             if any(component in message for component in components) and is_integration_auth_failure_message(message):
-                events.append({"captured_at": latest.get("captured_at"), "component": components[0], "message": message})
+                events.append({
+                    "captured_at": homebridge_warning_captured_at(message, latest.get("captured_at")),
+                    "component": components[0],
+                    "message": message,
+                })
         status = integration_auth_status_from_events(
             events,
             set(components),
@@ -592,10 +638,12 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         return "Open Alarm.com Issues, resolve the listed trouble condition, then recapture Alarm.com."
     if title == "SCE interval data is stale":
         if "utilityapi_payment_required" in detail:
-            return "Skip paid UtilityAPI collection; import a fresh SCE Green Button export, or wait for a no-cost UtilityAPI collection entitlement, then rerun Refresh SCE."
-        return "Run Refresh SCE to download already-available UtilityAPI intervals. If coverage stays stale, import a fresh SCE Green Button export; paid UtilityAPI collection should stay off unless explicitly approved."
+            return "Skip paid UtilityAPI collection; import a fresh SCE Green Button export, or wait for a no-cost UtilityAPI collection entitlement, then run Refresh SCE again."
+        return "Run Refresh SCE to download already-available UtilityAPI intervals. If the data stays outdated, import a fresh SCE Green Button export; paid UtilityAPI collection should stay off unless explicitly approved."
     if title == "Sense data is stale":
         return "Fix the Sense auth/live websocket issue first, then rerun the Sense trend capture so Sense-vs-Envoy reconciliation uses fresh data."
+    if title == "Sense monitor is offline":
+        return "Check the Sense app for Monitor Offline. After the monitor reconnects to Sense, run Refresh Energy to restore live watts."
     if title == "Envoy data is stale":
         return "Refresh the local Envoy source and verify 192.168.1.71 is reachable before trusting live solar/load state."
     if title == "ChargePoint data is stale":
@@ -608,8 +656,10 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         return "Refresh the named source, then rerun the combined energy monitor and alerts."
     if title in {"Alarm.com energy is stale", "Alarm.com energy totals disagree"}:
         return "Recapture Alarm.com energy and compare the updated Energy Clamp totals against Envoy and SCE in the combined report."
-    if title == "Energy readings need reconciliation":
-        return "Open the combined energy report, check Source Status and daily source gaps, then refresh the stale source named there."
+    if title == "SCE and home energy history do not overlap":
+        return "Run Refresh SCE. If the histories still do not overlap, import a newer SCE Green Button export."
+    if title == "Sense and Envoy readings disagree":
+        return "Refresh Sense and Envoy data, then check the combined energy report to see whether the meter difference remains."
     if title == "Homebridge is not running":
         return "Restart Homebridge, then run the smart-home check again after accessories reconnect."
     if title == "Homebridge storage permissions are too open":
@@ -1092,6 +1142,20 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
         if alert.get("title") not in active_titles:
             alerts.append(alert)
             active_titles.add(alert.get("title", ""))
+    sense_now = load_sense_now()
+    if sense_now.get("online") is False:
+        alerts.append(
+            {
+                "severity": "warning",
+                "title": "Sense monitor is offline",
+                "detail": (
+                    f"Sense cloud reports the physical monitor as `{sense_now.get('connectionState') or 'OFFLINE'}` "
+                    f"at `{sense_now.get('capturedAt') or 'unknown'}`. Account authentication is working, "
+                    "but live watts will not resume until the monitor reconnects."
+                ),
+            }
+        )
+        active_titles.add("Sense monitor is offline")
     if has_unifi_auth_warning(recent_warning_items):
         alerts.append(
             {
@@ -1356,6 +1420,7 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
         dedicated_categories = {
             "Enphase Envoy local communication",
             "Enphase Envoy invalid characteristic",
+            "HomeKit compatibility",
             "Office TaHoma",
             "Sense live websocket auth",
             "SmartHQ auth",
@@ -1431,8 +1496,19 @@ def active_state_titles(config: dict[str, Any], latest: dict[str, Any]) -> set[s
         if production_kw >= total_kw + float(config["alerts"]["solar_surplus_margin_kw"]):
             live_energy_state_titles.add("Solar surplus")
 
+    if metrics.get("enphase_battery_charging") is True:
+        live_energy_state_titles.add("Battery charging")
+    if metrics.get("enphase_battery_discharging") is True:
+        live_energy_state_titles.add("Battery discharging")
+
     states.update(live_energy_state_titles)
-    live_energy_titles = {"Grid importing", "Grid exporting", "Solar surplus"}
+    live_energy_titles = {
+        "Grid importing",
+        "Grid exporting",
+        "Solar surplus",
+        "Battery charging",
+        "Battery discharging",
+    }
     for item in load_combined_energy().get("states", []):
         title = str(item)
         if live_energy_state_titles and title in live_energy_titles:
@@ -1460,6 +1536,7 @@ def write_reports(alerts: list[dict[str, str]], latest: dict[str, Any]) -> None:
     warning_rows = recent_rows(int(config["alerts"]["warning_recent_window"]))
     active_titles = {alert.get("title") for alert in alerts}
     excluded_trend_categories = set()
+    excluded_trend_categories.add("HomeKit compatibility")
     if "Sense live websocket auth is noisy" not in active_titles:
         excluded_trend_categories.add("Sense live websocket auth")
     excluded_trend_categories.update(diagnosed_warning_categories({str(title) for title in active_titles}))
@@ -1597,8 +1674,8 @@ def cached_enphase_service_names() -> set[str]:
     return names
 
 
-def cached_homebridge_dummy_names() -> set[str]:
-    names: set[str] = set()
+def cached_homebridge_dummy_accessories() -> dict[str, str]:
+    accessories: dict[str, str] = {}
     for path in sorted((HOMEBRIDGE_DIR / "accessories").glob("cachedAccessories*")):
         data = load_json_file(path)
         if not isinstance(data, list):
@@ -1607,20 +1684,21 @@ def cached_homebridge_dummy_names() -> set[str]:
             if not isinstance(accessory, dict):
                 continue
             if accessory.get("platform") == "HomebridgeDummy" or accessory.get("plugin") == "homebridge-dummy":
-                if accessory.get("displayName"):
-                    names.add(str(accessory["displayName"]))
-    return names
+                identifier = (accessory.get("context") or {}).get("identifier")
+                if identifier and accessory.get("displayName"):
+                    accessories[str(identifier)] = str(accessory["displayName"])
+    return accessories
 
 
-def configured_homebridge_dummy_names(homebridge_config: dict[str, Any]) -> set[str]:
+def configured_homebridge_dummy_accessories(homebridge_config: dict[str, Any]) -> dict[str, str]:
     for platform in homebridge_config.get("platforms", []):
         if isinstance(platform, dict) and platform.get("platform") == "HomebridgeDummy":
             return {
-                str(item["name"])
+                str(item["id"]): str(item["name"])
                 for item in platform.get("accessories", [])
-                if isinstance(item, dict) and item.get("name")
+                if isinstance(item, dict) and item.get("id") and item.get("name")
             }
-    return set()
+    return {}
 
 
 def homebridge_dummy_switch_cache(characteristics: dict[str, Any]) -> dict[str, Any]:
@@ -1698,11 +1776,13 @@ def audit_homekit_surface(updates: list[dict[str, Any]]) -> dict[str, Any]:
 
     disabled = disabled_enphase_service_names(homebridge_config)
     cached_disabled = sorted(disabled.intersection(cached_enphase_service_names()))
-    configured_dummy = configured_homebridge_dummy_names(homebridge_config)
-    cached_dummy = cached_homebridge_dummy_names()
+    configured_dummy = configured_homebridge_dummy_accessories(homebridge_config)
+    cached_dummy = cached_homebridge_dummy_accessories()
+    missing_dummy_ids = configured_dummy.keys() - cached_dummy.keys()
+    stale_dummy_ids = cached_dummy.keys() - configured_dummy.keys()
     dummy_cache_drift = {
-        "missing": sorted(configured_dummy - cached_dummy),
-        "stale": sorted(cached_dummy - configured_dummy),
+        "missing": sorted(configured_dummy[item_id] for item_id in missing_dummy_ids),
+        "stale": sorted(cached_dummy[item_id] for item_id in stale_dummy_ids),
     }
     switch_cache = homebridge_dummy_switch_cache(characteristics)
     virtual_cache_mismatches: list[dict[str, Any]] = []

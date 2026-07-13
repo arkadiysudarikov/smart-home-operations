@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import tempfile
 import unittest
 from pathlib import Path
 from typing import Any
@@ -177,6 +178,19 @@ def unifi_api_warning_row() -> dict[str, Any]:
     return {"raw_json": json.dumps(raw), "alarm_websocket": 1, "warning_count": 1}
 
 
+def homekit_compatibility_warning_row() -> dict[str, Any]:
+    raw = {
+        "homebridge": {
+            "logs": {
+                "recentWarnings": [
+                    "Characteristic not in required or optional characteristic section for service Switch"
+                ],
+            },
+        }
+    }
+    return {"raw_json": json.dumps(raw), "alarm_websocket": 1, "warning_count": 1}
+
+
 def component_event(captured_at: str, component: str, message: str) -> dict[str, Any]:
     return {
         "captured_at": captured_at,
@@ -202,6 +216,16 @@ class GenerateAlertsTest(unittest.TestCase):
         for name, original in getattr(self, "_restore", {}).items():
             setattr(generate_alerts, name, original)
 
+    def test_load_alarm_com_reads_valid_payload(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "alarm.json"
+            path.write_text(json.dumps({"login": {"ok": True}}) + "\n")
+            self.patch_module(ALARM_COM_PATH=path)
+
+            payload = generate_alerts.load_alarm_com()
+
+        self.assertTrue(payload["login"]["ok"])
+
     def test_restart_grace_suppresses_energy_stale(self) -> None:
         states = generate_alerts.active_state_titles(base_config(), latest_snapshot())
         self.assertNotIn("Energy data stale", states)
@@ -211,6 +235,36 @@ class GenerateAlertsTest(unittest.TestCase):
         latest["captured_at"] = "2026-06-10T13:15:01-07:00"
         states = generate_alerts.active_state_titles(base_config(), latest)
         self.assertIn("Energy data stale", states)
+
+    def test_battery_charging_state_uses_envoy_signal(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 4.0,
+            "enphase_consumption_net_kw": 0.0,
+            "enphase_consumption_total_kw": 4.0,
+            "enphase_battery_charging": True,
+        }
+        self.patch_module(load_combined_energy=lambda: {})
+
+        states = generate_alerts.active_state_titles(base_config(), latest)
+
+        self.assertIn("Battery charging", states)
+
+    def test_battery_discharging_state_uses_envoy_signal(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 2.2,
+            "enphase_consumption_net_kw": 0.0,
+            "enphase_consumption_total_kw": 4.8,
+            "enphase_battery_charging": False,
+            "enphase_battery_discharging": True,
+        }
+        self.patch_module(load_combined_energy=lambda: {})
+
+        states = generate_alerts.active_state_titles(base_config(), latest)
+
+        self.assertIn("Battery discharging", states)
+        self.assertNotIn("Battery charging", states)
 
     def test_activity_degraded_uses_activity_tile_not_alarm_tile(self) -> None:
         self.patch_module(
@@ -236,6 +290,33 @@ class GenerateAlertsTest(unittest.TestCase):
         alerts = generate_alerts.build_alerts(base_config(), latest, rows)
         titles = {item["title"] for item in alerts}
         self.assertNotIn("Alarm.com websocket is unreliable", titles)
+        self.assertNotIn("Recent Homebridge warning volume is high", titles)
+
+    def test_homekit_compatibility_warning_does_not_raise_volume_alert(self) -> None:
+        latest = latest_snapshot()
+        warning = "Characteristic not in required or optional characteristic section for service Switch"
+        latest["homebridge"]["logs"]["warningCount"] = 1
+        latest["homebridge"]["logs"]["recentWarnings"] = [warning]
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+        )
+
+        alerts = generate_alerts.build_alerts(
+            base_config(),
+            latest,
+            [homekit_compatibility_warning_row(), homekit_compatibility_warning_row()],
+        )
+        titles = {item["title"] for item in alerts}
+
+        self.assertEqual(generate_alerts.warning_category(warning), "HomeKit compatibility")
+        self.assertEqual(
+            generate_alerts.warning_category(
+                "HAP-NodeJS WARNING: The accessory '🪫 Discharging' has an invalid 'Name' characteristic"
+            ),
+            "HomeKit compatibility",
+        )
         self.assertNotIn("Recent Homebridge warning volume is high", titles)
 
     def test_cache_drift_gets_separate_alert(self) -> None:
@@ -604,6 +685,26 @@ class GenerateAlertsTest(unittest.TestCase):
 
         self.assertNotIn("SmartHQ authentication is failing", titles)
 
+    def test_old_current_warning_does_not_override_later_smarthq_success(self) -> None:
+        current = latest_snapshot_with_smarthq()
+        current["captured_at"] = "2026-07-12T12:04:47-07:00"
+        current["homebridge"]["logs"]["recentWarnings"] = [
+            "[7/12/2026, 11:45:33 AM] [SmartHQ] discoverDevices, Failed to get Access Token, Error Message: Authentication failed: No authorization code received"
+        ]
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            recent_smarthq_home_events=lambda _limit=200: [
+                smarthq_event("2026-07-12T12:03:55-07:00", "Restoring existing accessory from cache: Washer"),
+            ],
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), current, [])
+        titles = {item["title"] for item in alerts}
+
+        self.assertNotIn("SmartHQ authentication is failing", titles)
+
     def test_retained_sense_auth_failure_stays_active_after_warning_window_clears(self) -> None:
         current = latest_snapshot()
         self.patch_module(
@@ -656,6 +757,7 @@ class GenerateAlertsTest(unittest.TestCase):
             load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
             load_latest_characteristics=lambda: latest_characteristics(value=0),
             load_combined_energy=lambda: {},
+            load_sense_trends=lambda: {},
             recent_component_home_events=lambda components, _limit=200: [
                 component_event(
                     "2026-07-12T05:44:10-07:00",
@@ -676,6 +778,52 @@ class GenerateAlertsTest(unittest.TestCase):
         titles = {item["title"] for item in alerts}
 
         self.assertNotIn("Sense live websocket authentication is failing", titles)
+
+    def test_later_sense_api_capture_clears_prior_auth_failure(self) -> None:
+        current = latest_snapshot()
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            load_sense_now=lambda: {},
+            load_sense_trends=lambda: {
+                "capturedAt": "2026-07-12T19:57:50.835Z",
+                "daysCaptured": 14,
+                "errors": [],
+            },
+            recent_component_home_events=lambda components, _limit=200: [
+                component_event(
+                    "2026-07-12T10:00:00-07:00",
+                    "Sense Energy Meter",
+                    "Re-auth failed: Error: Authentication error: request timed out",
+                )
+            ]
+            if components == ["Sense Energy Meter"]
+            else [],
+        )
+
+        alerts = generate_alerts.build_alerts(config_with_retained_auth(), current, [])
+        titles = {item["title"] for item in alerts}
+
+        self.assertNotIn("Sense live websocket authentication is failing", titles)
+
+    def test_sense_monitor_offline_is_separate_from_login(self) -> None:
+        current = latest_snapshot()
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            load_sense_now=lambda: {
+                "capturedAt": "2026-07-12T19:58:00Z",
+                "online": False,
+                "connectionState": "OFFLINE",
+            },
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), current, [])
+        alert = next(item for item in alerts if item["title"] == "Sense monitor is offline")
+
+        self.assertIn("Account authentication is working", alert["detail"])
 
     def test_tahoma_auth_failure_alerts_for_affected_child(self) -> None:
         current = latest_snapshot_with_tahoma()
@@ -778,8 +926,8 @@ class GenerateAlertsTest(unittest.TestCase):
             load_latest_characteristics=lambda: {},
             disabled_enphase_service_names=lambda _config: set(),
             cached_enphase_service_names=lambda: set(),
-            configured_homebridge_dummy_names=lambda _config: set(),
-            cached_homebridge_dummy_names=lambda: set(),
+            configured_homebridge_dummy_accessories=lambda _config: {},
+            cached_homebridge_dummy_accessories=lambda: {},
             homebridge_dummy_switch_cache=lambda _characteristics: {"Grid Out": True},
             unifi_multi_active_clients=lambda _characteristics: {},
         )
@@ -797,6 +945,22 @@ class GenerateAlertsTest(unittest.TestCase):
 
         self.assertEqual(audit["virtualCacheMismatches"], [])
         self.assertEqual(audit["virtualCachePendingRefresh"][0]["name"], "Grid Out")
+
+    def test_homebridge_dummy_cache_audit_matches_stable_ids_after_rename(self) -> None:
+        self.patch_module(
+            load_json_file=lambda _path: {},
+            load_latest_characteristics=lambda: {},
+            disabled_enphase_service_names=lambda _config: set(),
+            cached_enphase_service_names=lambda: set(),
+            configured_homebridge_dummy_accessories=lambda _config: {"smart_home_smarthq_auth_failed": "SmartHQ Auth"},
+            cached_homebridge_dummy_accessories=lambda: {"smart_home_smarthq_auth_failed": "SmartHQ"},
+            homebridge_dummy_switch_cache=lambda _characteristics: {},
+            unifi_multi_active_clients=lambda _characteristics: {},
+        )
+
+        audit = generate_alerts.audit_homekit_surface([])
+
+        self.assertEqual(audit["homebridgeDummyCacheDrift"], {"missing": [], "stale": []})
 
 
 if __name__ == "__main__":

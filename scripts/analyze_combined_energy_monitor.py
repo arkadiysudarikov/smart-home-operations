@@ -100,6 +100,19 @@ def latest_charge_session(chargepoint: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def live_sense_ev_watts(sense_now: dict[str, Any], now: datetime, max_age_minutes: float = 5) -> float | None:
+    captured_at = parse_dt(sense_now.get("capturedAt"))
+    if sense_now.get("ok") is not True or sense_now.get("online") is False or captured_at is None:
+        return None
+    age_minutes = (now - captured_at).total_seconds() / 60
+    if age_minutes < 0 or age_minutes > max_age_minutes:
+        return None
+    for device in sense_now.get("devices") or []:
+        if device.get("id") == "category-ev":
+            return num(device.get("watts"))
+    return None
+
+
 def age_hours(now: datetime, raw: str | None) -> float | None:
     parsed = parse_dt(raw)
     if not parsed:
@@ -238,10 +251,16 @@ def live_sense_source() -> dict[str, Any] | None:
     sense = load_json(DATA_DIR / "sense_now_latest.json")
     if not sense.get("capturedAt"):
         return None
+    if sense.get("online") is False:
+        status = "offline"
+    elif sense.get("ok") is False:
+        status = "failed"
+    else:
+        status = "fresh"
     return {
-        "status": "fresh" if sense.get("ok") is not False else "failed",
+        "status": status,
         "timestamp": sense.get("capturedAt"),
-        "detail": sense.get("capturedAt"),
+        "detail": sense.get("connectionState") or sense.get("capturedAt"),
     }
 
 
@@ -317,7 +336,11 @@ def build_source_status(
         },
     ]
     for row in rows:
-        if row["source"] in {"Envoy", "Sense"} and row.get("ageHours") is not None:
+        if (
+            row["source"] in {"Envoy", "Sense"}
+            and row.get("ageHours") is not None
+            and row.get("status") not in {"failed", "offline"}
+        ):
             row["status"] = status_label(row.get("ageHours"), stale_hours)
     return rows
 
@@ -475,6 +498,7 @@ def build_payload() -> dict[str, Any]:
     chargepoint = load_json(DATA_DIR / "latest_chargepoint_pairs.json")
     chargepoint_sessions = load_json(DATA_DIR / "chargepoint_sessions.json")
     chargepoint_refresh = load_json(DATA_DIR / "latest_chargepoint_refresh.json")
+    sense_now = load_json(DATA_DIR / "sense_now_latest.json")
     sense_trends = load_json(DATA_DIR / "sense_trends_latest.json")
     latest = load_json(DATA_DIR / "latest.json")
     latest_alarm = load_json(DATA_DIR / "latest_alarm_com.json")
@@ -504,7 +528,7 @@ def build_payload() -> dict[str, Any]:
         alerts.append(
             alert(
                 "warning",
-                "Energy readings need reconciliation",
+                "SCE and home energy history do not overlap",
                 f"Latest closed SCE bill ends `{fmt(days, 0)}` days before Envoy/Sense monitor coverage starts.",
             )
         )
@@ -529,7 +553,18 @@ def build_payload() -> dict[str, Any]:
     latest_session = latest_charge_session(chargepoint)
     session_start = parse_dt(latest_session.get("startAt"))
     session_end = parse_dt(latest_session.get("endAt"))
-    if session_start and (session_end is None or session_start <= now <= session_end):
+    sense_ev_watts = live_sense_ev_watts(
+        sense_now,
+        now,
+        float(thresholds.get("sense_live_stale_minutes", 5)),
+    )
+    ev_charging_watts = float(thresholds.get("sense_ev_charging_watts", 500))
+    chargepoint_session_active = bool(
+        session_start and (session_end is None or session_start <= now <= session_end)
+    )
+    if (sense_ev_watts is not None and sense_ev_watts >= ev_charging_watts) or (
+        sense_ev_watts is None and chargepoint_session_active
+    ):
         states.append("EV charging")
 
     sense_all = (meter.get("senseEnvoySummary") or {}).get("all") or {}
@@ -544,7 +579,7 @@ def build_payload() -> dict[str, Any]:
         alerts.append(
             alert(
                 "warning",
-                "Energy readings need reconciliation",
+                "Sense and Envoy readings disagree",
                 f"Envoy non-battery load minus Sense load is `{fmt(sense_gap_for_alert, 3)}` kW.",
             )
         )
@@ -674,6 +709,7 @@ def build_payload() -> dict[str, Any]:
                 "visibleTotalKwh": chargepoint_sessions.get("visibleTotals", {}).get("energyKwh"),
                 "latestSession": latest_session,
                 "refresh": chargepoint_refresh,
+                "liveSenseEvWatts": sense_ev_watts,
             },
             "alarm": alarm,
             "energyCosts": {

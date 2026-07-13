@@ -135,8 +135,8 @@ async function main() {
   fs.mkdirSync(outDir, { recursive: true });
 
   const client = await sense({
-    email: encodeURI(accessory.username),
-    password: encodeURI(accessory.password),
+    email: accessory.username,
+    password: accessory.password,
     verbose: false,
   });
 

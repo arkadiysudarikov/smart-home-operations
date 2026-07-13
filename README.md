@@ -65,10 +65,22 @@ Refresh daily Sense trend rows for the combined energy cross-check:
 ./scripts/capture_sense_trends.js
 ```
 
-Reapply the local SmartHQ HomeKit duration clamp after a SmartHQ plugin update:
+Reapply the local SmartHQ HomeKit duration and authentication compatibility fixes after a SmartHQ plugin update:
 
 ```sh
 ./scripts/patch_smarthq_remaining_duration.js
+```
+
+Reapply Calendar Scheduler display-name aliases after a calendar plugin update:
+
+```sh
+./scripts/patch_calendar_display_names.js --apply
+```
+
+Reapply Alarm.com accessory aliases without adding unsupported HomeKit name characteristics:
+
+```sh
+./scripts/patch_alarm_alias_names.js --apply
 ```
 
 Detect and optionally update the Office TaHoma local IP when the gateway moves:

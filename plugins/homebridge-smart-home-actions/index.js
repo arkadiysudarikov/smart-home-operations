@@ -2,21 +2,36 @@
 
 const PLUGIN_NAME = "homebridge-smart-home-actions";
 const PLATFORM_NAME = "SmartHomeActions";
+const RETIRED_ACTION_IDS = new Set(["office-restart"]);
 
 const DEFAULT_ACTIONS = [
-  { id: "check", name: "Check", path: "/action/run-check", timeoutMs: 120000 },
-  { id: "hb-restart", name: "HB Restart", path: "/action/restart-homebridge", timeoutMs: 5000 },
-  { id: "office-restart", name: "Office Restart", path: "/action/restart-office-tahoma", timeoutMs: 5000 },
-  { id: "mute-alerts", name: "Mute Alerts", path: "/action/silence-alerts", timeoutMs: 120000 },
-  { id: "refresh-sce", name: "Refresh SCE", path: "/action/refresh-sce", timeoutMs: 120000 },
-  { id: "refresh-energy", name: "Refresh Energy", path: "/action/reconcile-energy", timeoutMs: 120000 },
-  { id: "reconcile-energy", name: "Reconcile Energy", path: "/action/reconcile-energy", timeoutMs: 120000 },
-  { id: "alarm-refresh", name: "Alarm Refresh", path: "/action/refresh-alarm-cache", timeoutMs: 120000 },
-  { id: "garage-activity", name: "Garage Activity", path: "/action/garage-activity", timeoutMs: 120000 },
-  { id: "panel-home", name: "Panel Home", path: "/action/panel-home", timeoutMs: 120000 },
-  { id: "panel-stay", name: "Panel Stay", path: "/action/panel-stay", timeoutMs: 120000 },
-  { id: "panel-off", name: "Panel Off", path: "/action/panel-off", timeoutMs: 120000 },
+  { id: "check", name: "⚙️ Home Check", path: "/action/run-check", timeoutMs: 120000 },
+  { id: "hb-restart", name: "⚙️ Restart Hub", path: "/action/restart-homebridge", timeoutMs: 5000 },
+  { id: "mute-alerts", name: "⚙️ Pause Alerts", path: "/action/silence-alerts", timeoutMs: 120000 },
+  { id: "refresh-sce", name: "⚙️ Refresh SCE", path: "/action/refresh-sce", timeoutMs: 120000 },
+  { id: "reconcile-energy", name: "⚙️ Refresh Energy", path: "/action/reconcile-energy", timeoutMs: 120000 },
+  { id: "alarm-refresh", name: "⚙️ Refresh Alarm", path: "/action/refresh-alarm-cache", timeoutMs: 120000 },
+  { id: "garage-activity", name: "⚙️ Garage Timer", path: "/action/garage-activity", timeoutMs: 120000 },
+  { id: "panel-home", name: "🛡️ Armed", path: "/action/panel-home", timeoutMs: 120000 },
+  { id: "panel-stay", name: "🛡️ Armed Stay", path: "/action/panel-stay", timeoutMs: 120000 },
+  { id: "panel-off", name: "🛡️ Off", path: "/action/panel-off", timeoutMs: 120000 },
 ];
+
+function normalizeConfiguredActions(configuredActions) {
+  const configured = Array.isArray(configuredActions) && configuredActions.length
+    ? configuredActions.filter((action) => !RETIRED_ACTION_IDS.has(action.id))
+    : [];
+  const defaultsById = new Map(DEFAULT_ACTIONS.map((action) => [action.id, action]));
+  const normalized = configured.map((action) => {
+    const defaultAction = defaultsById.get(action.id);
+    return defaultAction
+      ? { ...defaultAction, ...action, name: defaultAction.name }
+      : action;
+  });
+  const actionIds = new Set(normalized.map((action) => action.id || action.name));
+  const missingDefaults = DEFAULT_ACTIONS.filter((action) => !actionIds.has(action.id));
+  return normalized.length ? [...normalized, ...missingDefaults] : DEFAULT_ACTIONS;
+}
 
 module.exports = (homebridge) => {
   homebridge.registerPlatform(PLUGIN_NAME, PLATFORM_NAME, SmartHomeActionsPlatform);
@@ -41,12 +56,7 @@ class SmartHomeActionsPlatform {
   }
 
   configuredActions() {
-    const configured = Array.isArray(this.config.actions) && this.config.actions.length
-      ? this.config.actions
-      : [];
-    const actionIds = new Set(configured.map((action) => action.id || action.name));
-    const missingDefaults = DEFAULT_ACTIONS.filter((action) => !actionIds.has(action.id));
-    return configured.length ? [...configured, ...missingDefaults] : DEFAULT_ACTIONS;
+    return normalizeConfiguredActions(this.config.actions);
   }
 
   syncAccessories() {
@@ -63,9 +73,12 @@ class SmartHomeActionsPlatform {
         this.api.registerPlatformAccessories(PLUGIN_NAME, PLATFORM_NAME, [accessory]);
       }
 
-      accessory.displayName = action.name;
+      if (accessory.displayName !== action.name) {
+        accessory.updateDisplayName(action.name);
+      }
       accessory.context.action = action;
       this.configureSwitch(accessory);
+      this.api.updatePlatformAccessories([accessory]);
     }
 
     const stale = [...this.accessories.values()].filter((accessory) => !activeUUIDs.has(accessory.UUID));
@@ -79,9 +92,13 @@ class SmartHomeActionsPlatform {
   configureSwitch(accessory) {
     const action = accessory.context.action;
     const service = accessory.getService(this.Service.Switch) || accessory.addService(this.Service.Switch, action.name);
+    service.displayName = action.name;
     service.setCharacteristic(this.Characteristic.Name, action.name);
+    service.addOptionalCharacteristic(this.Characteristic.ConfiguredName);
+    service.setCharacteristic(this.Characteristic.ConfiguredName, action.name);
 
     accessory.getService(this.Service.AccessoryInformation)
+      .setCharacteristic(this.Characteristic.Name, action.name)
       .setCharacteristic(this.Characteristic.Manufacturer, "Smart Home Monitor")
       .setCharacteristic(this.Characteristic.Model, "Local Action Switch")
       .setCharacteristic(this.Characteristic.SerialNumber, `smart-home-action-${action.id || action.name}`);
@@ -164,3 +181,5 @@ class SmartHomeActionsPlatform {
     }
   }
 }
+
+module.exports.normalizeConfiguredActions = normalizeConfiguredActions;

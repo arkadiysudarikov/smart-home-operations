@@ -32,6 +32,47 @@ class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
         for name, original in getattr(self, "_restore", {}).items():
             setattr(combined, name, original)
 
+    def test_live_sense_source_preserves_offline_state(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            (data_dir / "sense_now_latest.json").write_text(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "capturedAt": "2026-07-12T19:58:00Z",
+                        "online": False,
+                        "connectionState": "OFFLINE",
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            self.patch_module(DATA_DIR=data_dir)
+
+            source = combined.live_sense_source()
+
+        self.assertEqual(source["status"], "offline")
+        self.assertEqual(source["detail"], "OFFLINE")
+
+    def test_live_sense_ev_watts_requires_fresh_online_category(self) -> None:
+        now = datetime(2026, 7, 12, 21, 22, tzinfo=ZoneInfo("America/Los_Angeles"))
+        sense_now = {
+            "ok": True,
+            "online": True,
+            "capturedAt": "2026-07-13T04:21:30Z",
+            "devices": [
+                {"id": "always_on", "watts": 200},
+                {"id": "category-ev", "watts": 7280.0},
+            ],
+        }
+
+        self.assertEqual(combined.live_sense_ev_watts(sense_now, now), 7280.0)
+        sense_now["capturedAt"] = "2026-07-13T04:10:00Z"
+        self.assertIsNone(combined.live_sense_ev_watts(sense_now, now))
+        sense_now["capturedAt"] = "2026-07-13T04:21:30Z"
+        sense_now["online"] = False
+        self.assertIsNone(combined.live_sense_ev_watts(sense_now, now))
+
     def test_daily_summary_uses_standalone_sce_interval_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             data_dir = Path(tmp)
