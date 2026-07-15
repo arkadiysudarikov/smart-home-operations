@@ -5,6 +5,7 @@ import importlib.util
 import contextlib
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -662,6 +663,153 @@ class ActionServerTest(unittest.TestCase):
             self.assertEqual(action_server.main(), 0)
 
         schedule_check.assert_called_once()
+
+    def test_screen_override_is_private_and_persistent_until_cancelled(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "display_awake_override.json"
+            self.patch_module(DISPLAY_AWAKE_OVERRIDE_PATH=path, DATA_DIR=Path(tmp))
+
+            enabled = action_server.set_screens_override(True)
+            enabled_payload = json.loads(path.read_text())
+            disabled = action_server.set_screens_override(False)
+            disabled_payload = json.loads(path.read_text())
+            mode = os.stat(path).st_mode & 0o777
+
+        self.assertTrue(enabled["enabled"])
+        self.assertTrue(enabled_payload["enabled"])
+        self.assertFalse(disabled["enabled"])
+        self.assertFalse(disabled_payload["enabled"])
+        self.assertEqual(mode, 0o600)
+
+    def test_action_status_includes_sanitized_display_detail(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            status_path = Path(tmp) / "latest_display_awake.json"
+            status_path.write_text(json.dumps({"ok": True, "mode": "shadow", "targets": {"office": {"wouldHold": True}}}))
+            self.patch_module(
+                ACTION_STATUS_PATHS={"displayAwake": status_path},
+                DISPLAY_AWAKE_STATUS_PATH=status_path,
+            )
+
+            status = action_server.action_status()
+
+        self.assertEqual(status["actions"]["displayAwake"]["detail"]["mode"], "shadow")
+        self.assertTrue(status["actions"]["displayAwake"]["detail"]["targets"]["office"]["wouldHold"])
+
+    def test_display_observability_reports_healthy_launchd_and_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            generated = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+            status_path = root / "latest_display_awake.json"
+            summary_path = root / "latest_display_awake_summary.json"
+            events_path = root / "display_awake_events.jsonl"
+            status_path.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "status": "shadow",
+                        "mode": "shadow",
+                        "generatedAt": generated,
+                        "health": {"status": "healthy", "setupRequired": [], "degradedReasons": []},
+                        "unifi": {"ok": True},
+                        "mappingConfigured": True,
+                        "enrollment": {"watch": True, "iphone": True},
+                        "presence": {
+                            "confirmedRoom": "office",
+                            "source": "watch",
+                            "devices": {
+                                "watch": {"fresh": True, "ageSeconds": 12},
+                                "iphone": {"fresh": True, "ageSeconds": 25},
+                            },
+                        },
+                        "targets": {
+                            "m2-office-mini": {
+                                "eligible": True,
+                                "wouldHold": True,
+                                "reasons": ["presence_room"],
+                                "probe": {"reachable": True, "idleSeconds": 42},
+                            }
+                        },
+                    }
+                )
+            )
+            summary_path.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "eventCount": 2,
+                        "targets": {"m2-office-mini": {"predictedHoldSeconds": 3600}},
+                    }
+                )
+            )
+            events_path.write_text(json.dumps({"timestamp": generated, "presence": {"confirmedRoom": "office"}}) + "\n")
+            self.patch_module(
+                DISPLAY_AWAKE_STATUS_PATH=status_path,
+                DISPLAY_AWAKE_SUMMARY_PATH=summary_path,
+                DISPLAY_AWAKE_EVENTS_PATH=events_path,
+            )
+            with (
+                mock.patch.object(action_server, "load_config", return_value={"display_awake": {"poll_seconds": 30}}),
+                mock.patch.object(
+                    action_server,
+                    "run",
+                    return_value={
+                        "ok": True,
+                        "stdout": "state = running\npid = 123\nruns = 4\nlast exit code = 0\n",
+                        "stderr": "",
+                    },
+                ),
+            ):
+                result = action_server.display_awake_observability()
+                page = action_server.render_display_page().decode()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "shadow")
+        self.assertTrue(result["unifi"]["ok"])
+        self.assertEqual(result["pollSeconds"], 30)
+        self.assertEqual(result["launchd"]["pid"], 123)
+        self.assertEqual(result["summary"]["eventCount"], 2)
+        self.assertEqual(len(result["recentEvents"]), 1)
+        self.assertIn("Display Awake", page)
+        self.assertIn("M2 Office Mini", page)
+        self.assertIn("Presence matches room", page)
+        self.assertIn("Shadow mode records these decisions", page)
+        self.assertIn("Screens Awake", page)
+        self.assertNotIn("Screens Awake 1h", page)
+        self.assertNotIn("setInterval", page)
+        self.assertIn("office", page)
+
+    def test_display_duration_uses_compact_human_units(self) -> None:
+        self.assertEqual(action_server.display_duration(None), "—")
+        self.assertEqual(action_server.display_duration(42), "42s")
+        self.assertEqual(action_server.display_duration(125), "2m 05s")
+        self.assertEqual(action_server.display_duration(7320), "2h 02m")
+
+    def test_display_observability_marks_stale_status_unhealthy(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            status_path = Path(tmp) / "latest_display_awake.json"
+            status_path.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "generatedAt": "2026-01-01T00:00:00-08:00",
+                        "unifi": {"ok": True},
+                        "health": {"status": "healthy"},
+                    }
+                )
+            )
+            self.patch_module(
+                DISPLAY_AWAKE_STATUS_PATH=status_path,
+                DISPLAY_AWAKE_SUMMARY_PATH=Path(tmp) / "summary.json",
+                DISPLAY_AWAKE_EVENTS_PATH=Path(tmp) / "events.jsonl",
+            )
+            with (
+                mock.patch.object(action_server, "load_config", return_value={"display_awake": {"poll_seconds": 30}}),
+                mock.patch.object(action_server, "display_launchd_status", return_value={"loaded": True}),
+            ):
+                result = action_server.display_awake_observability()
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "stale")
 
     def test_send_json_ignores_client_disconnect(self) -> None:
         class BrokenWriter:

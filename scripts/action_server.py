@@ -32,6 +32,10 @@ ALARM_CACHE_REFRESH_STATUS_PATH = DATA_DIR / "latest_alarm_cache_refresh.json"
 UNIFI_OCCUPANCY_RECOVERY_STATUS_PATH = DATA_DIR / "latest_unifi_occupancy_recovery.json"
 GARAGE_LIGHT_HOLD_STATUS_PATH = DATA_DIR / "garage_light_hold.json"
 GARAGE_ACTIVITY_EVENTS_PATH = DATA_DIR / "garage_activity_events.jsonl"
+DISPLAY_AWAKE_STATUS_PATH = DATA_DIR / "latest_display_awake.json"
+DISPLAY_AWAKE_SUMMARY_PATH = DATA_DIR / "latest_display_awake_summary.json"
+DISPLAY_AWAKE_EVENTS_PATH = DATA_DIR / "display_awake_events.jsonl"
+DISPLAY_AWAKE_OVERRIDE_PATH = DATA_DIR / "display_awake_override.json"
 ENERGY_REFRESH_STATUS_PATH = DATA_DIR / "latest_energy_refresh.json"
 ENERGY_REFRESH_LOCK_PATH = DATA_DIR / "refresh_energy.lock"
 ACTION_STATUS_PATHS = {
@@ -43,6 +47,7 @@ ACTION_STATUS_PATHS = {
     "alarmRefresh": ALARM_CACHE_REFRESH_STATUS_PATH,
     "unifiOccupancyRecovery": UNIFI_OCCUPANCY_RECOVERY_STATUS_PATH,
     "garageActivity": GARAGE_LIGHT_HOLD_STATUS_PATH,
+    "displayAwake": DISPLAY_AWAKE_STATUS_PATH,
 }
 SCE_REFRESH_LOCK = threading.Lock()
 ENERGY_RECONCILE_LOCK = threading.Lock()
@@ -515,6 +520,11 @@ def action_status() -> dict[str, Any]:
     normalize_action_statuses(actions)
     if "garageActivity" in actions:
         actions["garageActivity"]["activityReport"] = garage_activity_report(actions["garageActivity"])
+    if "displayAwake" in actions:
+        display_detail = display_awake_observability()
+        actions["displayAwake"]["detail"] = display_detail
+        actions["displayAwake"]["ok"] = display_detail.get("ok")
+        actions["displayAwake"]["status"] = display_detail.get("status")
     failed = [name for name, status in actions.items() if status_is_failure(status)]
     degraded = [name for name, status in actions.items() if status_is_action_degraded(status)]
     return {
@@ -593,8 +603,276 @@ def load_json_file(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def display_launchd_status() -> dict[str, Any]:
+    service = f"gui/{os.getuid()}/com.arkadiy.smart-home-display-awake"
+    result = run(["launchctl", "print", service], timeout=10)
+    if not result.get("ok"):
+        return {"loaded": False, "service": service}
+    output = str(result.get("stdout") or "")
+    state = re.search(r"\bstate = ([^\n]+)", output)
+    pid = re.search(r"\bpid = ([0-9]+)", output)
+    runs = re.search(r"\bruns = ([0-9]+)", output)
+    exit_code = re.search(r"\blast exit code = (-?[0-9]+)", output)
+    return {
+        "loaded": True,
+        "service": service,
+        "state": state.group(1).strip() if state else None,
+        "pid": int(pid.group(1)) if pid else None,
+        "runs": int(runs.group(1)) if runs else None,
+        "lastExitCode": int(exit_code.group(1)) if exit_code else None,
+    }
+
+
+def display_awake_observability() -> dict[str, Any]:
+    status = load_json_file(DISPLAY_AWAKE_STATUS_PATH)
+    summary = load_json_file(DISPLAY_AWAKE_SUMMARY_PATH)
+    recent_events = read_jsonl_tail(DISPLAY_AWAKE_EVENTS_PATH, 30)
+    generated_at = status.get("generatedAt")
+    age_hours = source_age_hours(generated_at)
+    age_seconds = round(age_hours * 3600, 1) if age_hours is not None else None
+    display_config = load_config().get("display_awake")
+    poll_seconds = int(display_config.get("poll_seconds") or 30) if isinstance(display_config, dict) else 30
+    stale_after_seconds = max(120, poll_seconds * 4)
+    missing = not bool(status)
+    stale = age_seconds is None or age_seconds > stale_after_seconds
+    unifi_ok = (status.get("unifi") or {}).get("ok") if isinstance(status.get("unifi"), dict) else None
+    launchd = display_launchd_status()
+    health = status.get("health") if isinstance(status.get("health"), dict) else {}
+    if missing:
+        overall = "missing"
+    elif stale:
+        overall = "stale"
+    elif not launchd.get("loaded"):
+        overall = "service_unloaded"
+    elif unifi_ok is False or health.get("status") == "degraded":
+        overall = "degraded"
+    elif health.get("status") == "setup_required":
+        overall = "setup_required"
+    else:
+        overall = str(status.get("status") or "healthy")
+    ok = overall not in {"missing", "stale", "service_unloaded", "degraded"}
+    return {
+        "ok": ok,
+        "status": overall,
+        "generatedAt": generated_at,
+        "ageSeconds": age_seconds,
+        "staleAfterSeconds": stale_after_seconds,
+        "mode": status.get("mode"),
+        "health": health,
+        "unifi": status.get("unifi"),
+        "pollSeconds": poll_seconds,
+        "launchd": launchd,
+        "enrollment": status.get("enrollment"),
+        "mappingConfigured": status.get("mappingConfigured"),
+        "presence": status.get("presence"),
+        "manualOverride": status.get("manualOverride"),
+        "lights": status.get("lights"),
+        "targets": status.get("targets"),
+        "summary": summary,
+        "recentEvents": recent_events,
+    }
+
+
 def html_escape(value: Any) -> str:
     return html.escape("" if value is None else str(value), quote=True)
+
+
+def display_target_name(target_id: str) -> str:
+    names = {
+        "m2-office-mini": "M2 Office Mini",
+        "m2-garage-mini": "M2 Garage Mini",
+        "m4-bar-mini": "M4 Bar Mini",
+        "m4-office-mini": "M4 Office Mini",
+        "m2-macbook-pro": "M2 MacBook Pro",
+    }
+    return names.get(target_id, target_id.replace("-", " ").title())
+
+
+def display_duration(value: Any) -> str:
+    try:
+        seconds = max(0, int(float(value)))
+    except (TypeError, ValueError):
+        return "—"
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes, seconds = divmod(seconds, 60)
+    if minutes < 60:
+        return f"{minutes}m {seconds:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    if hours < 24:
+        return f"{hours}h {minutes:02d}m"
+    days, hours = divmod(hours, 24)
+    return f"{days}d {hours}h"
+
+
+def display_reason_label(reason: Any) -> str:
+    labels = {
+        "presence_room": "Presence matches room",
+        "recent_activity": "Recent keyboard or mouse activity",
+        "light_plus_activity": "Mapped light plus recent activity",
+        "manual_override": "Manual override",
+        "unreachable": "Unreachable",
+        "logged_out": "Logged out",
+        "locked": "Locked",
+        "battery_power": "Running on battery",
+        "lid_closed": "Lid closed",
+    }
+    key = str(reason)
+    return labels.get(key, key.replace("_", " ").capitalize())
+
+
+def render_display_page() -> bytes:
+    observability = display_awake_observability()
+    targets = observability.get("targets") if isinstance(observability.get("targets"), dict) else {}
+    summary = observability.get("summary") if isinstance(observability.get("summary"), dict) else {}
+    summary_targets = summary.get("targets") if isinstance(summary.get("targets"), dict) else {}
+    would_hold_count = sum(1 for item in targets.values() if isinstance(item, dict) and item.get("wouldHold"))
+    predicted_total = sum(
+        float((summary_targets.get(target_id) or {}).get("predictedHoldSeconds") or 0)
+        for target_id in targets
+        if isinstance(summary_targets.get(target_id), dict)
+    )
+    lease_total = sum(
+        float((summary_targets.get(target_id) or {}).get("leaseActiveSeconds") or 0)
+        for target_id in targets
+        if isinstance(summary_targets.get(target_id), dict)
+    )
+    target_cards: list[str] = []
+    for target_id, item in targets.items():
+        if not isinstance(item, dict):
+            continue
+        probe = item.get("probe") if isinstance(item.get("probe"), dict) else {}
+        totals = summary_targets.get(target_id) if isinstance(summary_targets.get(target_id), dict) else {}
+        reasons = item.get("reasons") or []
+        ineligible = item.get("ineligibleReasons") or []
+        badges = "".join(
+            f"<span class='reason'>{html_escape(display_reason_label(reason))}</span>"
+            for reason in (reasons or ineligible)
+        ) or "<span class='reason muted'>No active hold reason</span>"
+        reachable = probe.get("reachable") is True
+        eligible = item.get("eligible") is True
+        would_hold = item.get("wouldHold") is True
+        decision = "Would hold" if would_hold else "Release"
+        decision_class = "good" if would_hold else "quiet"
+        machine_meta = f"{item.get('room') or 'unmapped'} · {'reachable' if reachable else 'unreachable'}"
+        power = "AC" if probe.get("onAcPower") is True else "battery" if probe.get("onAcPower") is False else "unknown"
+        lid = "closed" if probe.get("lidClosed") is True else "open" if probe.get("lidClosed") is False else "unknown"
+        target_cards.append(
+            f"""<details class="machine">
+<summary><span class="machine-grid">
+  <span><span class="machine-name">{html_escape(display_target_name(str(target_id)))}</span><br><span class="muted tiny">{html_escape(machine_meta)}</span></span>
+  <span><span class="muted tiny">Idle</span><br><strong>{html_escape(display_duration(probe.get('idleSeconds')))}</strong></span>
+  <span><span class="muted tiny">Eligible</span><br><strong class="{'good' if eligible else 'quiet'}">{'Yes' if eligible else 'No'}</strong></span>
+  <span><span class="muted tiny">Decision</span><br><strong class="{decision_class}">{decision}</strong></span>
+  <span class="muted tiny reason-summary">{html_escape(', '.join(str(value) for value in (reasons or ineligible)) or 'no active hold reason')}</span>
+</span></summary>
+<div class="machine-detail">
+  <div><span class="muted tiny">Why</span><div class="reason-list">{badges}</div></div>
+  <div class="facts compact">
+    <div><span class="muted tiny">Session</span><strong>{'locked' if probe.get('locked') else 'unlocked'}</strong></div>
+    <div><span class="muted tiny">Power / lid</span><strong>{html_escape(power)} / {html_escape(lid)}</strong></div>
+    <div><span class="muted tiny">Mapped light</span><strong>{'on' if item.get('lightOn') is True else 'off' if item.get('lightOn') is False else 'none'}</strong></div>
+    <div><span class="muted tiny">Predicted today</span><strong>{html_escape(display_duration(totals.get('predictedHoldSeconds') or 0))}</strong></div>
+    <div><span class="muted tiny">Lease time today</span><strong>{html_escape(display_duration(totals.get('leaseActiveSeconds') or 0))}</strong></div>
+    <div><span class="muted tiny">Transitions</span><strong>{html_escape(totals.get('wouldHoldTransitions') or 0)}</strong></div>
+  </div>
+</div></details>"""
+        )
+    target_markup = "\n".join(target_cards) or "<div class='empty'>No display-manager status has been recorded.</div>"
+    recent = observability.get("recentEvents") if isinstance(observability.get("recentEvents"), list) else []
+    event_cards: list[str] = []
+    for item in reversed(recent[-12:]):
+        if not isinstance(item, dict):
+            continue
+        event_targets = item.get("targets") if isinstance(item.get("targets"), dict) else {}
+        holding = [display_target_name(str(key)) for key, value in event_targets.items() if isinstance(value, dict) and value.get("wouldHold")]
+        blocked = [display_target_name(str(key)) for key, value in event_targets.items() if isinstance(value, dict) and value.get("ineligibleReasons")]
+        room = (item.get("presence") or {}).get("confirmedRoom") if isinstance(item.get("presence"), dict) else None
+        source = (item.get("presence") or {}).get("source") if isinstance(item.get("presence"), dict) else None
+        detail_parts = [f"Holding: {', '.join(holding)}" if holding else "Holding: none"]
+        if blocked:
+            detail_parts.append(f"Ineligible: {', '.join(blocked)}")
+        event_cards.append(
+            "<li>"
+            f"<span class='event-dot'></span><div><strong>{html_escape(room or 'No confirmed room')}</strong>"
+            f" <span class='muted'>via {html_escape(source or 'none')}</span><br>"
+            f"<span class='tiny'>{html_escape(' · '.join(detail_parts))}</span></div>"
+            f"<time>{html_escape(item.get('timestamp'))}</time></li>"
+        )
+    event_markup = "\n".join(event_cards) or "<li class='empty'>No decision changes recorded.</li>"
+    presence = observability.get("presence") if isinstance(observability.get("presence"), dict) else {}
+    devices = presence.get("devices") if isinstance(presence.get("devices"), dict) else {}
+    watch = devices.get("watch") if isinstance(devices.get("watch"), dict) else {}
+    iphone = devices.get("iphone") if isinstance(devices.get("iphone"), dict) else {}
+    unifi = observability.get("unifi") if isinstance(observability.get("unifi"), dict) else {}
+    launchd = observability.get("launchd") if isinstance(observability.get("launchd"), dict) else {}
+    status = str(observability.get("status") or "missing")
+    status_class = "good" if observability.get("ok") else "warn"
+    mode = str(observability.get("mode") or "not running")
+    shadow_note = (
+        "Shadow mode records these decisions but launches no caffeinate leases."
+        if mode == "shadow"
+        else "Enforcement is active; every hold still passes the lock, power, lid, and reachability gates."
+        if mode == "enforce"
+        else "The controller has not produced status yet."
+    )
+    body = f"""<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Display Observability</title><style>
+* {{ box-sizing:border-box; }}
+:root {{ color-scheme:light dark; --bg:#f8fafc; --panel:#fff; --panel2:#f1f5f9; --text:#172033; --muted:#64748b; --border:#dbe3ec; --accent:#0f766e; --good:#15803d; --warn:#b45309; }}
+@media (prefers-color-scheme:dark) {{ :root {{ --bg:#0b1120; --panel:#111827; --panel2:#182235; --text:#e5edf7; --muted:#94a3b8; --border:#2b3a50; --accent:#5eead4; --good:#4ade80; --warn:#fbbf24; }} }}
+body {{ margin:0; background:var(--bg); color:var(--text); font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
+.shell {{ width:min(1100px,100%); margin:0 auto; padding:28px 20px 48px; display:grid; gap:14px; }}
+h1,h2,p {{ margin:0; }} h1 {{ font-size:22px; }} h2 {{ font-size:15px; margin-top:8px; }}
+.topline,.presence,.summary-grid,.machine-grid,.machine-detail,.facts,.actions,.event-list li {{ display:flex; align-items:center; justify-content:space-between; gap:12px; }}
+.topline,.actions,.facts {{ flex-wrap:wrap; }} .muted {{ color:var(--muted); }} .tiny {{ font-size:12px; }}
+.badge,.reason {{ display:inline-flex; align-items:center; gap:6px; border:1px solid var(--border); border-radius:999px; padding:4px 9px; background:var(--panel2); white-space:nowrap; }}
+.dot,.event-dot {{ width:8px; height:8px; border-radius:50%; background:var(--muted); flex:0 0 auto; }} .dot.good,.event-dot {{ background:var(--good); }} .dot.warn {{ background:var(--warn); }}
+.good {{ color:var(--good); }} .quiet {{ color:var(--muted); }} .warn {{ color:var(--warn); }}
+.presence {{ padding:13px 15px; border:1px solid var(--border); border-radius:12px; background:var(--panel2); }}
+.presence-main {{ display:flex; align-items:center; gap:11px; }} .presence-icon {{ display:grid; place-items:center; width:34px; height:34px; border:1px solid var(--border); border-radius:50%; color:var(--accent); font-size:19px; }}
+.facts {{ justify-content:flex-start; }} .facts > div {{ min-width:92px; }} .facts strong {{ display:block; font-size:13px; }}
+.summary-grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-items:stretch; }}
+.summary-card {{ padding:12px 14px; border:1px solid var(--border); border-radius:12px; background:var(--panel); }} .summary-card strong {{ display:block; font-size:20px; margin-top:2px; }}
+.actions {{ justify-content:flex-start; }} button {{ appearance:none; border:1px solid var(--accent); background:var(--accent); color:var(--bg); border-radius:8px; padding:9px 12px; font:inherit; font-weight:600; cursor:pointer; }}
+button.secondary {{ background:transparent; color:var(--accent); }} button.tertiary {{ border-color:var(--border); background:var(--panel); color:var(--text); }} button:disabled {{ opacity:.55; cursor:wait; }}
+.notice,.empty {{ padding:11px 13px; border:1px solid var(--border); border-radius:10px; background:var(--panel2); color:var(--muted); }}
+.machine-list {{ display:grid; gap:7px; }} .machine {{ border:1px solid var(--border); border-radius:10px; background:var(--panel); overflow:hidden; }}
+.machine summary {{ padding:11px 12px; cursor:pointer; list-style:none; }} .machine summary::-webkit-details-marker {{ display:none; }} .machine[open] {{ border-color:var(--accent); box-shadow:inset 3px 0 0 var(--accent); }}
+.machine-grid {{ display:grid; grid-template-columns:minmax(160px,1.35fr) repeat(3,minmax(82px,.65fr)) minmax(160px,1.3fr); align-items:center; }} .machine-name {{ font-weight:700; }}
+.machine-detail {{ align-items:flex-start; padding:13px 15px 15px; border-top:1px solid var(--border); background:var(--panel2); }} .machine-detail > div:first-child {{ min-width:230px; }}
+.facts.compact {{ display:grid; grid-template-columns:repeat(3,minmax(95px,1fr)); flex:1; }} .reason-list {{ display:flex; gap:6px; flex-wrap:wrap; margin-top:7px; }} .reason {{ background:var(--panel); font-size:12px; }}
+.event-list {{ list-style:none; margin:0; padding:0; border:1px solid var(--border); border-radius:10px; background:var(--panel); overflow:hidden; }} .event-list li {{ justify-content:flex-start; padding:10px 12px; border-bottom:1px solid var(--border); }} .event-list li:last-child {{ border-bottom:0; }} .event-list li div {{ flex:1; }} time {{ color:var(--muted); font-size:11px; text-align:right; max-width:220px; }}
+.footer {{ color:var(--muted); font-size:12px; }} a {{ color:var(--accent); }} #result {{ min-height:20px; white-space:pre-wrap; }}
+@media (max-width:720px) {{ .summary-grid {{ grid-template-columns:1fr; }} .machine-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .machine-grid > :first-child,.machine-grid > :last-child {{ grid-column:1/-1; }} .machine-detail {{ display:grid; }} .facts.compact {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .presence {{ align-items:flex-start; }} }}
+@media (max-width:430px) {{ .shell {{ padding:18px 12px 36px; }} .presence {{ display:grid; }} .facts.compact {{ grid-template-columns:1fr 1fr; }} time {{ display:none; }} }}
+</style></head><body>
+<main class="shell">
+  <header class="topline"><div><h1>Display Awake</h1><p class="muted tiny">Updated {html_escape(observability.get('generatedAt') or 'never')} · age {html_escape(display_duration(observability.get('ageSeconds')))}</p></div><span class="badge"><span class="dot {status_class}"></span>{html_escape(mode)} · {html_escape(status)}</span></header>
+  <section class="presence"><div class="presence-main"><div class="presence-icon">⌁</div><div><span class="muted tiny">Confirmed presence</span><strong>{html_escape(presence.get('confirmedRoom') or 'No confirmed room')}</strong></div></div><div class="facts"><div><span class="muted tiny">Source</span><strong>{html_escape(presence.get('source') or 'none')}</strong></div><div><span class="muted tiny">Watch</span><strong>{'fresh' if watch.get('fresh') else 'not fresh'} · {html_escape(display_duration(watch.get('ageSeconds')))}</strong></div><div><span class="muted tiny">iPhone</span><strong>{'fresh' if iphone.get('fresh') else 'not fresh'} · {html_escape(display_duration(iphone.get('ageSeconds')))}</strong></div><div><span class="muted tiny">Override</span><strong>{'Manual' if observability.get('manualOverride') else 'Auto'}</strong></div></div></section>
+  <section class="summary-grid"><div class="summary-card"><span class="muted tiny">Would hold now</span><strong>{would_hold_count} of {len(targets)}</strong></div><div class="summary-card"><span class="muted tiny">Predicted / actual</span><strong>{html_escape(display_duration(predicted_total))} / {html_escape(display_duration(lease_total))}</strong></div><div class="summary-card"><span class="muted tiny">UniFi / controller</span><strong>{'healthy' if unifi.get('ok') is True else 'unavailable'} · {'loaded' if launchd.get('loaded') else 'unloaded'}</strong><span class="muted tiny">poll {html_escape(observability.get('pollSeconds'))}s</span></div></section>
+  <div class="notice">{html_escape(shadow_note)}</div>
+  <div class="actions"><button data-action="/action/screens-awake">Screens Awake</button><button class="secondary" data-action="/action/screens-auto">Screens Auto</button><button class="tertiary" id="refresh" type="button">Refresh status</button></div>
+  <div id="result" class="muted tiny"></div>
+  <h2>Mac decisions</h2><section class="machine-list">{target_markup}</section>
+  <h2>Recent decision changes</h2><ol class="event-list">{event_markup}</ol>
+  <p class="footer">JSON: <a href="/status/displays">/status/displays</a> · <a href="/energy">Energy dashboard</a></p>
+</main>
+<script>
+document.querySelectorAll('button[data-action]').forEach((button)=>button.addEventListener('click',async()=>{{
+  button.disabled=true;
+  try {{
+    const response=await fetch(button.dataset.action,{{method:'POST'}});
+    const payload=await response.json();
+    document.getElementById('result').textContent=payload.ok ? 'Action accepted. Refresh status to see the next controller decision.' : JSON.stringify(payload);
+  }} catch(error) {{ document.getElementById('result').textContent=String(error); }}
+  finally {{ button.disabled=false; }}
+}}));
+document.getElementById('refresh').addEventListener('click',()=>location.reload());
+</script>
+</body></html>"""
+    return body.encode()
 
 
 def render_energy_page() -> bytes:
@@ -664,6 +942,8 @@ def render_energy_page() -> bytes:
     <button data-action="/action/reconcile-energy">Refresh All Energy</button>
     <button class="secondary" data-action="/action/refresh-sce">Refresh SCE</button>
     <button class="secondary" data-action="/action/refresh-alarm-cache">Refresh Alarm.com</button>
+    <button class="secondary" data-action="/action/screens-awake">Screens Awake</button>
+    <button class="secondary" data-action="/action/screens-auto">Screens Auto</button>
   </div>
   <div id="result" class="muted"></div>
   <div class="panel">
@@ -685,6 +965,7 @@ def render_energy_page() -> bytes:
     </table>
   </div>
   <p class="muted">JSON: <code>/status/energy</code></p>
+  <p class="muted"><a href="/displays">Display observability</a></p>
   <script>
     document.querySelectorAll('button[data-action]').forEach((button) => {{
       button.addEventListener('click', async () => {{
@@ -1587,6 +1868,22 @@ def silence_alerts() -> dict[str, Any]:
     }
 
 
+def set_screens_override(enabled: bool) -> dict[str, Any]:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "ok": True,
+        "enabled": enabled,
+        "status": "manual" if enabled else "automatic",
+        "updatedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+    }
+    temporary = DISPLAY_AWAKE_OVERRIDE_PATH.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    os.chmod(temporary, 0o600)
+    temporary.replace(DISPLAY_AWAKE_OVERRIDE_PATH)
+    os.chmod(DISPLAY_AWAKE_OVERRIDE_PATH, 0o600)
+    return {**payload, "path": str(DISPLAY_AWAKE_OVERRIDE_PATH)}
+
+
 class Handler(BaseHTTPRequestHandler):
     server_version = "SmartHomeActions/1.0"
 
@@ -1626,6 +1923,9 @@ class Handler(BaseHTTPRequestHandler):
             return 200, action_status()
         if path == "/status/energy":
             return 200, energy_status()
+        if path == "/status/displays":
+            payload = display_awake_observability()
+            return (200 if payload["ok"] else 503), payload
         if path == "/action/run-check":
             payload = run_smart_home_check()
             return (200 if payload["ok"] else 500), payload
@@ -1648,6 +1948,12 @@ class Handler(BaseHTTPRequestHandler):
                 remote_addr=self.client_address[0] if self.client_address else None,
             )
             return (202 if payload["ok"] else 500), payload
+        if path == "/action/screens-awake":
+            payload = set_screens_override(True)
+            return 200, payload
+        if path == "/action/screens-auto":
+            payload = set_screens_override(False)
+            return 200, payload
         if path == "/action/panel-home":
             payload = set_alarm_panel("home")
             return (202 if payload["ok"] else 500), payload
@@ -1669,6 +1975,9 @@ class Handler(BaseHTTPRequestHandler):
         return 404, {"ok": False, "error": "unknown endpoint"}
 
     def do_GET(self) -> None:
+        if self.path == "/displays":
+            self.send_html(200, render_display_page())
+            return
         if self.path in {"/", "/energy"}:
             self.send_html(200, render_energy_page())
             return

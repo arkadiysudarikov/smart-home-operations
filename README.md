@@ -169,11 +169,32 @@ Install the periodic local monitor:
 ./scripts/install_monitor.sh
 ```
 
+The installer also provisions the presence-aware display manager. It starts in
+`shadow` mode and cannot create a display assertion until an explicit local mode
+change. Personal Watch/iPhone identifiers and the Home-derived access-point room
+map live only in permission-restricted runtime files under
+`~/Library/Application Support/SmartHomeMonitor/data/`; they are never stored in
+the repository or emitted in reports. Use
+`scripts/display_awake_manager.py --list-candidates` from the runtime to obtain
+sanitized enrollment tokens, provide both tokens with `--enroll-watch` and
+`--enroll-iphone`, and record reviewed Home mappings with repeated
+`--set-room-map 'ACCESS POINT=room'`. The `⚙️ Screens Awake` and
+`⚙️ Screens Auto` action switches enable and cancel the persistent manual
+override; both still respect lock, login, reachability, laptop power, and lid
+safety gates. The local `/displays` page and `/status/displays` JSON endpoint
+show controller/LaunchAgent health, enrollment and mapping readiness, current
+presence, each Mac's decision reasons, recent decision changes, and accumulated
+shadow/enforcement durations. Long controller gaps are excluded from duration
+totals rather than being misreported as awake time.
+
 The monitor writes:
 
 - `data/latest.json`
 - `data/latest_events.json`
 - `data/latest_characteristics.json`
+- `data/latest_display_awake.json`
+- `data/latest_display_awake_summary.json`
+- `data/display_awake_events.jsonl`
 - `data/latest_alarm_com.json`
 - `data/alarm_com_automation_rules.json`
 - `data/latest_alarm_homebridge_state.json`
