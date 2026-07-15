@@ -1040,6 +1040,253 @@ class ActionServerTest(unittest.TestCase):
 
         self.assertEqual(handler.status, 200)
 
+    def test_energy_history_days_are_limited_to_dashboard_ranges(self) -> None:
+        self.assertEqual(action_server.normalized_energy_history_days("1"), 1)
+        self.assertEqual(action_server.normalized_energy_history_days("90"), 90)
+        self.assertIsNone(action_server.normalized_energy_history_days("365"))
+        self.assertIsNone(action_server.normalized_energy_history_days("bad"))
+
+    def test_get_cannot_execute_action_endpoint(self) -> None:
+        class FakeHandler:
+            path = "/action/restart-homebridge"
+            headers: dict[str, str] = {}
+
+        with mock.patch.object(action_server, "restart_homebridge") as restart:
+            status, payload = action_server.Handler.route(FakeHandler())
+
+        self.assertEqual(status, 405)
+        self.assertFalse(payload["ok"])
+        restart.assert_not_called()
+
+    def test_cross_origin_post_cannot_execute_action_endpoint(self) -> None:
+        class FakeHandler:
+            path = "/action/restart-homebridge"
+            headers = {"Origin": "https://attacker.example", "Host": "127.0.0.1:18765"}
+
+            request_origin_allowed = action_server.Handler.request_origin_allowed
+
+        with mock.patch.object(action_server, "restart_homebridge") as restart:
+            status, payload = action_server.Handler.route(FakeHandler(), allow_actions=True)
+
+        self.assertEqual(status, 403)
+        self.assertFalse(payload["ok"])
+        restart.assert_not_called()
+
+    def test_daily_energy_rows_follow_selected_range(self) -> None:
+        now = datetime.fromisoformat("2026-07-15T12:00:00-07:00")
+        rows = [
+            {"date": "2026-04-16", "sceDeliveredKwh": 1.0},
+            {"date": "2026-06-15", "sceDeliveredKwh": 1.0},
+            {"date": "2026-07-08", "sceDeliveredKwh": 1.0},
+            {"date": "2026-07-14", "sceDeliveredKwh": 1.0},
+            {"date": "2026-07-15", "sceDeliveredKwh": None},
+        ]
+
+        self.assertEqual(
+            [row["date"] for row in action_server.filter_daily_energy_rows(rows, 7, now)],
+            ["2026-07-08", "2026-07-14"],
+        )
+        self.assertEqual(
+            [row["date"] for row in action_server.filter_daily_energy_rows(rows, 30, now)],
+            ["2026-06-15", "2026-07-08", "2026-07-14"],
+        )
+        self.assertEqual(len(action_server.filter_daily_energy_rows(rows, 90, now)), 4)
+
+    def test_energy_status_filters_observability_daily_rows(self) -> None:
+        rows = [
+            {"date": "2026-04-16", "sceDeliveredKwh": 1.0},
+            {"date": "2026-07-08", "sceDeliveredKwh": 1.0},
+            {"date": "2026-07-14", "sceDeliveredKwh": 1.0},
+        ]
+
+        def fake_status(path: Path) -> dict[str, Any]:
+            if path.name == "latest_energy_observability.json":
+                return {"dailyComparison": rows}
+            return {}
+
+        with mock.patch.object(action_server, "read_json_status", side_effect=fake_status), \
+             mock.patch.object(action_server, "operational_source_status", return_value=[]), \
+             mock.patch.object(action_server, "load_json_file", side_effect=fake_status):
+            payload = action_server.energy_status(30)
+
+        self.assertEqual(payload["observability"]["dailyComparison"], rows[-2:])
+
+    def test_energy_status_propagates_quality_and_filters_peaks_to_range(self) -> None:
+        observability = {
+            "quality": {"status": "degraded"},
+            "dailyComparison": [{"date": "2026-07-14", "sceDeliveredKwh": 1.0, "availableSourceCount": 3}],
+            "peakEvents": [
+                {"start": "2026-07-14T12:00:00-07:00", "sceImportKw": 8.0},
+                {"start": "2026-07-13T12:00:00-07:00", "sceImportKw": 20.0},
+            ],
+        }
+
+        def fake_load(path: Path) -> dict[str, Any]:
+            return observability if path.name == "latest_energy_observability.json" else {}
+
+        with mock.patch.object(action_server, "read_json_status", return_value={}), \
+             mock.patch.object(action_server, "operational_source_status", return_value=[]), \
+             mock.patch.object(action_server, "load_json_file", side_effect=fake_load):
+            payload = action_server.energy_status(1)
+
+        self.assertEqual(payload["status"], "degraded")
+        self.assertIn("observabilityQuality", payload["degradedSources"])
+        self.assertEqual([item["start"] for item in payload["observability"]["peakEvents"]], ["2026-07-14T12:00:00-07:00"])
+
+    def test_energy_observation_history_reads_stored_samples(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "smart_home.sqlite"
+            with action_server.sqlite3.connect(db_path) as db:
+                db.execute(
+                    """
+                    create table energy_observations (
+                      captured_at text primary key, envoy_production_kw real, envoy_site_load_kw real,
+                      envoy_grid_net_kw real, envoy_storage_kw real, battery_percent real,
+                      battery_charging integer, battery_discharging integer, sense_load_kw real,
+                      sense_solar_kw real, alarm_mtd_kwh real, alarm_projected_kwh real,
+                      energy_alert_count integer, active_states_json text not null
+                    )
+                    """
+                )
+                db.execute(
+                    "insert into energy_observations values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                        3.2, 3.1, 0.1, -2.0, 53.0, 1, 0, 0.6, 3.0, 502.0, 1393.0, 1,
+                        json.dumps(["battery_charging"]),
+                    ),
+                )
+            self.patch_module(DB_PATH=db_path)
+
+            rows = action_server.energy_observation_history(7)
+
+            self.assertEqual(len(rows), 1)
+            self.assertTrue(rows[0]["batteryCharging"])
+            self.assertEqual(rows[0]["states"], ["battery_charging"])
+
+    def test_energy_observation_history_honors_max_points(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "smart_home.sqlite"
+            now = datetime.now(timezone.utc)
+            with action_server.sqlite3.connect(db_path) as db:
+                db.execute(
+                    "create table energy_observations (captured_at text primary key, "
+                    "envoy_production_kw real, envoy_site_load_kw real, envoy_grid_net_kw real, "
+                    "envoy_storage_kw real, battery_percent real, battery_charging integer, "
+                    "battery_discharging integer, sense_load_kw real, sense_solar_kw real, "
+                    "alarm_mtd_kwh real, alarm_projected_kwh real, energy_alert_count integer, "
+                    "active_states_json text not null)"
+                )
+                for index in range(421):
+                    captured = (now - action_server.timedelta(minutes=421 - index)).isoformat()
+                    db.execute(
+                        "insert into energy_observations values (?, 1, 1, 1, 1, 50, 0, 0, 1, 1, 1, 1, 0, '[]')",
+                        (captured,),
+                    )
+            self.patch_module(DB_PATH=db_path)
+
+            rows = action_server.energy_observation_history(7, max_points=420)
+
+            self.assertLessEqual(len(rows), 420)
+
+    def test_energy_chart_marks_partial_days_and_uses_roving_tabindex(self) -> None:
+        chart = action_server.energy_line_chart(
+            "Load", "Daily load", [
+                {"date": "2026-07-13", "load": 10.0, "complete": True},
+                {"date": "2026-07-14", "load": 4.0, "complete": False},
+                {"date": "2026-07-15", "load": 12.0, "complete": True},
+            ], "date", [("load", "Load", "#123456", "complete")], " kWh", allow_negative=False,
+        )
+
+        self.assertEqual(chart.count("tabindex='0'"), 1)
+        self.assertEqual(chart.count("tabindex='-1'"), 2)
+        self.assertIn("partial day", chart)
+        self.assertIn("class='data-point partial'", chart)
+        self.assertNotIn(">-", chart)
+
+    def test_energy_age_formatter_includes_units(self) -> None:
+        self.assertEqual(action_server.display_energy_age({"ageHours": 0.5}), "30 min")
+        self.assertEqual(action_server.display_energy_age({"ageHours": 12}), "12.0 h")
+        self.assertEqual(action_server.display_energy_age({"ageHours": 72}), "3.0 d")
+
+    def test_detached_background_job_uses_child_pid(self) -> None:
+        fake_process = mock.Mock(pid=4321)
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(action_server, "LOG_DIR", Path(tmp)), \
+             mock.patch.object(action_server.subprocess, "Popen", return_value=fake_process) as popen:
+            pid = action_server.spawn_background_job("reconcile", "2026-07-15T10:00:00-07:00")
+
+        self.assertEqual(pid, 4321)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        self.assertIn("--background-job", popen.call_args.args[0])
+
+    def test_stale_action_status_is_recovered_after_worker_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "latest_sce_refresh.json"
+            path.write_text(json.dumps({"ok": None, "status": "running", "workerPid": 999999}) + "\n")
+            self.patch_module(SCE_REFRESH_STATUS_PATH=path)
+
+            status = action_server.read_json_status(path)
+
+            self.assertEqual(status["status"], "interrupted")
+            self.assertTrue(status["staleRunningRecovered"])
+
+    def test_interrupted_action_is_degraded(self) -> None:
+        self.assertTrue(action_server.status_is_action_degraded({"ok": None, "status": "interrupted"}))
+
+    def test_energy_dashboard_explains_sources_and_history(self) -> None:
+        self.patch_module(
+            energy_status=lambda days=7: {
+                "generatedAt": "2026-07-15T10:00:00-07:00",
+                "refresh": {"status": "complete"},
+                "observationHistory": [],
+                "observability": {
+                    "generatedAt": "2026-07-15T10:00:00-07:00",
+                    "live": {"envoyProductionKw": 3.2, "alarmProjectedKwh": 1391.0, "alarmBudgetKwh": 680.0},
+                    "quality": {
+                        "status": "ready",
+                        "overlapPairCount": 100,
+                        "comparableDayCount": 7,
+                        "sourceSemantics": [
+                            {"source": "SCE", "measurement": "Utility import/export", "use": "Billing truth"}
+                        ],
+                    },
+                    "dailyComparison": [
+                        {
+                            "date": "2026-07-14",
+                            "sceDeliveredKwh": 45.4,
+                            "alarmClampKwh": 51.4,
+                            "availableSourceCount": 2,
+                        }
+                    ],
+                    "peakEvents": [],
+                },
+            }
+        )
+
+        page = action_server.render_energy_page(30).decode()
+
+        self.assertIn("Smart Home Energy Observability", page)
+        self.assertIn("Source definitions", page)
+        self.assertIn("90-day local observation retention", page)
+        self.assertIn("/status/energy?days=30", page)
+        self.assertIn("Selected-range source coverage", page)
+        self.assertIn("SCE 1/1 days", page)
+        self.assertIn("Selected period · 30 days", page)
+        self.assertIn("data-days='30'", page)
+        self.assertIn("Grid delivered", page)
+        self.assertIn("Average net / day", page)
+        self.assertIn("Live energy flow — collected observation window", page)
+        self.assertIn("id='range-chart'", page)
+        self.assertIn("aria-current='page'", page)
+        self.assertIn("aria-live='polite'", page)
+        self.assertIn("<title id='chart-title-", page)
+        self.assertIn("tabindex='0'", page)
+        self.assertIn("ArrowRight", page)
+        self.assertIn("attempt<300", page)
+        self.assertIn("105% above budget", page)
+        self.assertLess(page.index("Daily utility grid exchange — 30 days"), page.index("Live energy flow — collected observation window"))
+
 
 if __name__ == "__main__":
     unittest.main()

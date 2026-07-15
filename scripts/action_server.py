@@ -7,6 +7,7 @@ import html
 import os
 import re
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor"
 CONFIG_PATH = ROOT / "config" / "sources.json"
 DATA_DIR = ROOT / "data"
+DB_PATH = DATA_DIR / "smart_home.sqlite"
 REPORT_DIR = ROOT / "reports"
 LOG_DIR = ROOT / "logs"
 SCE_REFRESH_STATUS_PATH = DATA_DIR / "latest_sce_refresh.json"
@@ -211,6 +213,40 @@ def recover_stale_energy_refresh_payload(path: Path, payload: dict[str, Any]) ->
     return updated
 
 
+def recover_stale_action_payload(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
+    managed_paths = {
+        SCE_REFRESH_STATUS_PATH,
+        ENERGY_RECONCILE_STATUS_PATH,
+        GATE_TEST_STATUS_PATH,
+        ALARM_CACHE_REFRESH_STATUS_PATH,
+    }
+    if path not in managed_paths or payload.get("status") != "running" or payload.get("finishedAt"):
+        return payload
+    worker_pid = payload.get("workerPid")
+    started_at = parse_dt(payload.get("startedAt"))
+    expired_legacy_status = bool(
+        worker_pid is None
+        and started_at
+        and datetime.now(timezone.utc).astimezone() - started_at > timedelta(minutes=30)
+    )
+    if isinstance(worker_pid, int) and process_is_running(worker_pid):
+        return payload
+    if worker_pid is None and not expired_legacy_status:
+        return payload
+    updated = dict(payload)
+    updated.update(
+        {
+            "ok": None,
+            "status": "interrupted",
+            "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+            "staleRunningRecovered": True,
+            "staleRunningRecoveryReason": "worker_process_ended",
+        }
+    )
+    path.write_text(json.dumps(updated, indent=2, sort_keys=True) + "\n")
+    return updated
+
+
 def read_json_status(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {"exists": False, "path": str(path)}
@@ -222,6 +258,7 @@ def read_json_status(path: Path) -> dict[str, Any]:
     if not isinstance(payload, dict):
         return {"exists": True, "path": str(path), "ok": False, "error": "status file is not a JSON object"}
     payload = recover_stale_energy_refresh_payload(path, payload)
+    payload = recover_stale_action_payload(path, payload)
 
     status = {
         "exists": True,
@@ -362,7 +399,7 @@ def status_is_degraded(status: dict[str, Any]) -> bool:
 
 
 def status_is_action_degraded(status: dict[str, Any]) -> bool:
-    return status_is_failure(status)
+    return status_is_failure(status) or status.get("status") == "interrupted"
 
 
 def reconcile_was_superseded_by_refresh(reconcile: dict[str, Any], refresh: dict[str, Any]) -> bool:
@@ -539,7 +576,79 @@ def action_status() -> dict[str, Any]:
     }
 
 
-def energy_status() -> dict[str, Any]:
+def normalized_energy_history_days(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed in {1, 7, 30, 90} else None
+
+
+def energy_observation_history(days: int = 7, max_points: int = 420) -> list[dict[str, Any]]:
+    if not DB_PATH.exists():
+        return []
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    try:
+        with sqlite3.connect(DB_PATH) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                """
+                select captured_at, envoy_production_kw, envoy_site_load_kw, envoy_grid_net_kw,
+                       envoy_storage_kw, battery_percent, battery_charging, battery_discharging,
+                       sense_load_kw, sense_solar_kw, alarm_mtd_kwh, alarm_projected_kwh,
+                       energy_alert_count, active_states_json
+                  from energy_observations
+                 where julianday(captured_at) >= julianday(?)
+                 order by julianday(captured_at) asc
+                """,
+                (cutoff,),
+            ).fetchall()
+    except (sqlite3.Error, OSError):
+        return []
+    if max_points == 2 and len(rows) > 2:
+        rows = [rows[0], rows[-1]]
+    elif max_points > 2 and len(rows) > max_points:
+        bucket_count = max_points - 2
+        bucket_size = (len(rows) - 2) / bucket_count
+        sampled = [rows[0]]
+        magnitude_keys = ("envoy_production_kw", "envoy_site_load_kw", "envoy_grid_net_kw", "sense_load_kw")
+        for bucket in range(bucket_count):
+            start = 1 + int(bucket * bucket_size)
+            end = min(len(rows) - 1, 1 + int((bucket + 1) * bucket_size))
+            candidates = rows[start:max(start + 1, end)]
+            sampled.append(
+                max(candidates, key=lambda row: max(abs(float(row[key] or 0)) for key in magnitude_keys))
+            )
+        sampled.append(rows[-1])
+        rows = sampled[:max_points]
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            states = json.loads(row["active_states_json"] or "[]")
+        except json.JSONDecodeError:
+            states = []
+        result.append(
+            {
+                "capturedAt": row["captured_at"],
+                "envoyProductionKw": row["envoy_production_kw"],
+                "envoySiteLoadKw": row["envoy_site_load_kw"],
+                "envoyGridNetKw": row["envoy_grid_net_kw"],
+                "envoyStorageKw": row["envoy_storage_kw"],
+                "batteryPercent": row["battery_percent"],
+                "batteryCharging": bool(row["battery_charging"]),
+                "batteryDischarging": bool(row["battery_discharging"]),
+                "senseLoadKw": row["sense_load_kw"],
+                "senseSolarKw": row["sense_solar_kw"],
+                "alarmMonthToDateKwh": row["alarm_mtd_kwh"],
+                "alarmProjectedKwh": row["alarm_projected_kwh"],
+                "energyAlertCount": row["energy_alert_count"],
+                "states": states if isinstance(states, list) else [],
+            }
+        )
+    return result
+
+
+def energy_status(history_days: int = 7) -> dict[str, Any]:
     combined = read_json_status(DATA_DIR / "latest_combined_energy_monitor.json")
     refresh = read_json_status(ENERGY_REFRESH_STATUS_PATH)
     sce = read_json_status(SCE_API_STATUS_PATH)
@@ -550,6 +659,13 @@ def energy_status() -> dict[str, Any]:
     sense_now = read_json_status(DATA_DIR / "sense_now_latest.json")
     envoy = read_json_status(DATA_DIR / "latest_envoy_direct.json")
     automation = read_json_status(DATA_DIR / "latest_energy_automation_opportunities.json")
+    observability = read_json_status(DATA_DIR / "latest_energy_observability.json")
+    observability_payload = load_json_file(DATA_DIR / "latest_energy_observability.json")
+    if isinstance(observability, dict):
+        observability = dict(observability)
+        observability["dailyComparison"] = filter_daily_energy_rows(
+            observability.get("dailyComparison") or [], history_days
+        )
     statuses = {
         "refresh": refresh,
         "sce": sce,
@@ -564,6 +680,9 @@ def energy_status() -> dict[str, Any]:
     }
     failed = [name for name, status in statuses.items() if status_is_failure(status)]
     degraded = [name for name, status in statuses.items() if status_is_degraded(status)]
+    quality_degraded = (observability_payload.get("quality") or {}).get("status") == "degraded"
+    if quality_degraded:
+        degraded.append("observabilityQuality")
     payload = {
         "ok": not failed,
         "status": "failed" if failed else "degraded" if degraded else "ok",
@@ -580,17 +699,47 @@ def energy_status() -> dict[str, Any]:
         "senseNow": sense_now,
         "envoy": envoy,
         "automationOpportunities": automation,
+        "observability": observability,
         "combined": combined,
         "operationalSourceStatus": operational_source_status(),
+        "historyDays": history_days,
+        "observationHistory": energy_observation_history(history_days),
     }
     combined_payload = load_json_file(DATA_DIR / "latest_combined_energy_monitor.json")
     if combined_payload:
         payload["sourceStatus"] = combined_payload.get("sourceStatus", [])
         payload["alerts"] = combined_payload.get("alerts", [])
-        payload["dailySummary"] = combined_payload.get("dailySummary", [])[-10:]
+        payload["dailySummary"] = filter_daily_energy_rows(
+            combined_payload.get("dailySummary", []), history_days
+        )
     automation_payload = load_json_file(DATA_DIR / "latest_energy_automation_opportunities.json")
     if automation_payload:
         payload["opportunities"] = automation_payload.get("opportunities", [])
+    if observability_payload:
+        observability_payload = dict(observability_payload)
+        selected_daily = filter_daily_energy_rows(
+            observability_payload.get("dailyComparison") or [], history_days
+        )
+        observability_payload["dailyComparison"] = selected_daily
+        dates = [str(row.get("date") or "") for row in selected_daily]
+        range_peaks = [
+            event for event in observability_payload.get("peakEvents") or []
+            if dates and dates[0] <= str(event.get("start") or "")[:10] <= dates[-1]
+        ][:12]
+        observability_payload["peakEvents"] = range_peaks
+        comparable = sum(int(row.get("availableSourceCount") or 0) >= 3 for row in selected_daily)
+        selected_status = "ready" if selected_daily and comparable >= max(1, round(len(selected_daily) * 0.75)) else "degraded"
+        observability_payload["selectedRangeQuality"] = {
+            "status": selected_status,
+            "dayCount": len(selected_daily),
+            "comparableDayCount": comparable,
+        }
+        payload["observability"] = observability_payload
+        if selected_status == "degraded" and "selectedRangeQuality" not in payload["degradedSources"]:
+            payload["degradedSources"].append("selectedRangeQuality")
+            payload["degraded"] = True
+            if payload["status"] != "failed":
+                payload["status"] = "degraded"
     return payload
 
 
@@ -892,117 +1041,396 @@ document.getElementById('refresh').addEventListener('click',()=>location.reload(
     return body.encode()
 
 
-def render_energy_page() -> bytes:
-    status = energy_status()
-    sources = status.get("operationalSourceStatus") or status.get("sourceStatus") or []
-    alerts = status.get("alerts") or []
-    opportunities = status.get("opportunities") or []
+def display_energy_value(value: Any, suffix: str = "", digits: int = 1) -> str:
+    if not isinstance(value, (int, float)):
+        return "n/a"
+    return f"{value:.{digits}f}{suffix}"
+
+
+def display_energy_age(item: dict[str, Any]) -> str:
+    hours = item.get("ageHours")
+    if isinstance(hours, (int, float)):
+        if hours < 1:
+            return f"{max(0, round(hours * 60))} min"
+        if hours < 48:
+            return f"{hours:.1f} h"
+        return f"{hours / 24:.1f} d"
+    days = item.get("ageDays")
+    return f"{float(days):.1f} d" if isinstance(days, (int, float)) else "n/a"
+
+
+def filter_daily_energy_rows(rows: list[dict[str, Any]], days: int, now: datetime | None = None) -> list[dict[str, Any]]:
+    fallback_date = (now or datetime.now(timezone.utc).astimezone()).date()
+    sce_dates: list[Any] = []
+    for row in rows:
+        if not isinstance(row.get("sceDeliveredKwh"), (int, float)) or row.get("sceComplete") is False:
+            continue
+        try:
+            sce_dates.append(datetime.fromisoformat(str(row.get("date"))).date())
+        except (TypeError, ValueError):
+            continue
+    range_end = max(sce_dates) if sce_dates else fallback_date
+    cutoff = range_end - timedelta(days=days - 1)
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            row_date = datetime.fromisoformat(str(row.get("date"))).date()
+        except (TypeError, ValueError):
+            continue
+        if cutoff <= row_date <= range_end and row.get("sceComplete") is not False:
+            filtered.append(row)
+    return filtered
+
+
+def energy_line_chart(
+    title: str,
+    subtitle: str,
+    rows: list[dict[str, Any]],
+    x_key: str,
+    series: list[tuple[str, str, str, str | None]],
+    unit: str,
+    allow_negative: bool = True,
+) -> str:
+    width, height = 920, 300
+    left, right, top, bottom = 58, 20, 58, 46
+    values = [
+        float(row[key])
+        for row in rows
+        for key, _label, _color, _complete_key in series
+        if isinstance(row.get(key), (int, float))
+    ]
+    if not values or not rows:
+        return f"<div class='empty'><strong>{html_escape(title)}</strong><br>No observations yet.</div>"
+    low = min(0.0, min(values)) if allow_negative else 0.0
+    high = max(values)
+    if high <= low:
+        high = low + 1
+    pad = (high - low) * 0.08
+    low = low - pad if allow_negative and low < 0 else 0.0
+    high += pad
+    plot_w = width - left - right
+    plot_h = height - top - bottom
+
+    def x_pos(index: int) -> float:
+        return left + (plot_w * index / max(1, len(rows) - 1))
+
+    def y_pos(value: float) -> float:
+        return top + (high - value) * plot_h / (high - low)
+
+    parts = [
+        f"<svg class='chart' viewBox='0 0 {width} {height}' role='img' aria-labelledby='chart-title-{abs(hash(title))} chart-desc-{abs(hash(title))}'>",
+        f"<title id='chart-title-{abs(hash(title))}'>{html_escape(title)}</title>",
+        f"<desc id='chart-desc-{abs(hash(title))}'>{html_escape(subtitle)} Values use {html_escape(unit.strip() or 'kilowatts')}.</desc>",
+        f"<text x='18' y='25' class='chart-title'>{html_escape(title)}</text>",
+        f"<text x='18' y='43' class='chart-subtitle'>{html_escape(subtitle)}</text>",
+    ]
+    for tick in range(5):
+        value = low + (high - low) * tick / 4
+        y = y_pos(value)
+        parts.append(f"<line x1='{left}' y1='{y:.1f}' x2='{width-right}' y2='{y:.1f}' class='gridline'/>")
+        parts.append(f"<text x='{left-7}' y='{y+4:.1f}' text-anchor='end' class='axis'>{value:.1f}{html_escape(unit)}</text>")
+    point_tab_assigned = False
+    for series_index, (key, label, color, complete_key) in enumerate(series):
+        numeric_points = [
+            (index, float(row[key]), complete_key is None or row.get(complete_key) is not False)
+            for index, row in enumerate(rows)
+            if isinstance(row.get(key), (int, float))
+        ]
+        segments: list[list[tuple[int, float]]] = []
+        for index, value, complete in numeric_points:
+            if not complete:
+                continue
+            if not segments or index != segments[-1][-1][0] + 1:
+                segments.append([])
+            segments[-1].append((index, value))
+        for segment in segments:
+            if len(segment) >= 2:
+                points = " ".join(f"{x_pos(index):.1f},{y_pos(value):.1f}" for index, value in segment)
+                parts.append(f"<polyline points='{points}' fill='none' stroke='{color}' stroke-width='2.2'/>")
+        for point_index, (index, value, complete) in enumerate(numeric_points):
+            x_label = str(rows[index].get(x_key) or "unknown time")
+            accessible = f"{label}, {value:.2f}{unit}, {x_label}" + ("; partial day" if not complete else "")
+            tabindex = "0" if not point_tab_assigned else "-1"
+            point_tab_assigned = True
+            parts.append(
+                f"<circle class='data-point{' partial' if not complete else ''}' data-series='{series_index}' data-index='{point_index}' "
+                f"cx='{x_pos(index):.1f}' cy='{y_pos(value):.1f}' r='3.5' stroke='{color}' "
+                f"fill='{'none' if not complete else color}' tabindex='{tabindex}' aria-label='{html_escape(accessible)}'><title>{html_escape(accessible)}</title></circle>"
+            )
+    label_indexes = sorted({0, len(rows) // 2, len(rows) - 1})
+    for index in label_indexes:
+        label = str(rows[index].get(x_key) or "")
+        if "T" in label:
+            label = label.replace("T", " ")[:16]
+        else:
+            label = label[-5:]
+        parts.append(f"<text x='{x_pos(index):.1f}' y='{height-15}' text-anchor='middle' class='axis'>{html_escape(label)}</text>")
+    legend_x = left
+    for _key, label, color, _complete_key in series:
+        parts.append(f"<line x1='{legend_x}' y1='{height-34}' x2='{legend_x+18}' y2='{height-34}' stroke='{color}' stroke-width='3'/>")
+        parts.append(f"<text x='{legend_x+23}' y='{height-30}' class='legend'>{html_escape(label)}</text>")
+        legend_x += max(120, len(label) * 8 + 45)
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def render_energy_page(history_days: int = 7) -> bytes:
+    status = energy_status(history_days)
+    observability = status.get("observability") or {}
+    live = observability.get("live") or {}
+    quality = observability.get("quality") or {}
+    daily = filter_daily_energy_rows(observability.get("dailyComparison") or [], history_days)
+    history = status.get("observationHistory") or []
+    sources = observability.get("sourceStatus") or status.get("sourceStatus") or status.get("operationalSourceStatus") or []
     refresh = status.get("refresh") or {}
-    source_rows = "\n".join(
+    peak_events = observability.get("peakEvents") or []
+    semantics = quality.get("sourceSemantics") or []
+    coverage_fields = (
+        ("SCE", "sceDeliveredKwh", "sceComplete"),
+        ("Alarm.com", "alarmClampKwh", None),
+        ("Envoy", "envoySiteLoadKwh", "envoyComplete"),
+        ("Sense", "senseLoadKwh", "senseComplete"),
+    )
+    coverage_counts = {
+        label: sum(
+            isinstance(row.get(field), (int, float)) and (not complete_field or row.get(complete_field) is not False)
+            for row in daily
+        )
+        for label, field, complete_field in coverage_fields
+    }
+    comparable_range_days = sum(int(row.get("availableSourceCount") or 0) >= 3 for row in daily)
+    range_quality_status = "complete" if daily and all(count == len(daily) for count in coverage_counts.values()) else "limited"
+    if daily:
+        range_start, range_end = str(daily[0].get("date") or ""), str(daily[-1].get("date") or "")
+        peak_events = [
+            item for item in peak_events
+            if range_start <= str(item.get("start") or "")[:10] <= range_end
+        ]
+    else:
+        peak_events = []
+
+    range_label = "1 day" if history_days == 1 else f"{history_days} days"
+    sce_delivered_total = sum(float(row.get("sceDeliveredKwh") or 0) for row in daily)
+    sce_received_total = sum(float(row.get("sceReceivedKwh") or 0) for row in daily)
+    sce_net_total = sum(float(row.get("sceNetImportKwh") or 0) for row in daily)
+    sce_net_daily_average = sce_net_total / len(daily) if daily else None
+    peak_sce_row = max(
+        (row for row in daily if isinstance(row.get("sceDeliveredKwh"), (int, float))),
+        key=lambda row: float(row.get("sceDeliveredKwh") or 0),
+        default=None,
+    )
+    range_cards = [
+        ("Grid delivered", display_energy_value(sce_delivered_total, " kWh"), range_label),
+        ("Grid exported", display_energy_value(sce_received_total, " kWh"), range_label),
+        ("Net grid import", display_energy_value(sce_net_total, " kWh"), range_label),
+        ("Average net / day", display_energy_value(sce_net_daily_average, " kWh"), f"{len(daily)} completed {'day' if len(daily) == 1 else 'days'}"),
+        (
+            "Peak import day",
+            display_energy_value((peak_sce_row or {}).get("sceDeliveredKwh"), " kWh"),
+            str((peak_sce_row or {}).get("date") or "No SCE data"),
+        ),
+    ]
+    range_card_markup = "".join(
+        f"<div class='card range-card'><span>{html_escape(label)}</span><strong>{html_escape(value)}</strong><small>{html_escape(note)}</small></div>"
+        for label, value, note in range_cards
+    )
+
+    projected = live.get("alarmProjectedKwh")
+    budget = live.get("alarmBudgetKwh")
+    over_budget = projected - budget if isinstance(projected, (int, float)) and isinstance(budget, (int, float)) else None
+    budget_note = (
+        f"{over_budget:.0f} kWh over · {over_budget / budget:.0%} above budget"
+        if isinstance(over_budget, (int, float)) and over_budget > 0 and budget
+        else f"Budget {display_energy_value(budget, ' kWh', 0)}"
+    )
+    cards = [
+        ("Solar production", display_energy_value(live.get("envoyProductionKw"), " kW"), "Envoy live"),
+        ("Total site load", display_energy_value(live.get("envoySiteLoadKw"), " kW"), "Includes storage effects"),
+        ("Grid net", display_energy_value(live.get("envoyGridNetKw"), " kW", 2), "Positive import; negative export"),
+        ("Battery", display_energy_value(live.get("batteryPercent"), "%", 0), "Charging" if live.get("batteryCharging") else "Discharging" if live.get("batteryDischarging") else "Idle"),
+        ("Sense house load", display_energy_value(live.get("senseLoadKw"), " kW", 2), "Non-battery load"),
+        ("Alarm projection", display_energy_value(projected, " kWh", 0), budget_note),
+    ]
+    card_markup = "".join(
+        f"<div class='card'><span>{html_escape(label)}</span><strong>{html_escape(value)}</strong><small>{html_escape(note)}</small></div>"
+        for label, value, note in cards
+    )
+    source_rows = "".join(
         "<tr>"
         f"<td>{html_escape(item.get('source'))}</td>"
         f"<td><span class='pill {html_escape(item.get('status'))}'>{html_escape(item.get('status'))}</span></td>"
         f"<td>{html_escape(item.get('detail'))}</td>"
-        f"<td>{html_escape(round(float(item.get('ageHours')), 2) if isinstance(item.get('ageHours'), (int, float)) else item.get('ageDays'))}</td>"
+        f"<td>{html_escape(display_energy_age(item))}</td>"
         "</tr>"
         for item in sources
     )
-    alert_rows = "\n".join(
-        f"<li><strong>{html_escape(item.get('severity'))}</strong> {html_escape(item.get('title'))}: {html_escape(item.get('detail'))}</li>"
-        for item in alerts
-    ) or "<li>No combined-energy alerts.</li>"
-    opportunity_rows = "\n".join(
+    semantics_rows = "".join(
+        f"<tr><td>{html_escape(item.get('source'))}</td><td>{html_escape(item.get('measurement'))}</td><td>{html_escape(item.get('use'))}</td></tr>"
+        for item in semantics
+    )
+    peak_rows = "".join(
         "<tr>"
-        f"<td><span class='pill {html_escape(item.get('priority'))}'>{html_escape(item.get('priority'))}</span></td>"
-        f"<td>{html_escape(item.get('area'))}</td>"
-        f"<td>{html_escape(item.get('recommendation'))}</td>"
-        f"<td>{html_escape(item.get('automation'))}</td>"
+        f"<td>{html_escape(str(item.get('start') or '').replace('T', ' ')[:16])}</td>"
+        f"<td>{html_escape(display_energy_value(item.get('sceImportKw'), ' kW'))}</td>"
+        f"<td>{html_escape(display_energy_value(item.get('envoySiteLoadKw'), ' kW'))}</td>"
+        f"<td>{html_escape(display_energy_value(item.get('senseLoadKw'), ' kW'))}</td>"
         "</tr>"
-        for item in opportunities
-    ) or "<tr><td colspan='4'>No automation recommendations generated yet.</td></tr>"
-    body = f"""<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Smart Home Energy</title>
-  <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 32px; color: #1f2933; }}
-    h1 {{ font-size: 28px; margin-bottom: 4px; }}
-    .muted {{ color: #64748b; }}
-    .actions {{ display: flex; gap: 12px; flex-wrap: wrap; margin: 24px 0; }}
-    button {{ border: 1px solid #0f766e; background: #0f766e; color: white; border-radius: 6px; padding: 10px 14px; font-size: 14px; cursor: pointer; }}
-    button.secondary {{ background: white; color: #0f766e; }}
-    table {{ border-collapse: collapse; width: 100%; margin-top: 12px; }}
-    th, td {{ border-bottom: 1px solid #e2e8f0; text-align: left; padding: 10px 8px; vertical-align: top; }}
-    th {{ font-size: 12px; text-transform: uppercase; color: #64748b; }}
-    .pill {{ border-radius: 999px; padding: 3px 8px; background: #e2e8f0; }}
-    .pill.fresh, .pill.complete {{ background: #dcfce7; color: #166534; }}
-    .pill.stale, .pill.failed, .pill.missing, .pill.auth_required, .pill.unreachable, .pill.credentials_missing {{ background: #fee2e2; color: #991b1b; }}
-    .pill.downloaded, .pill.fallback, .pill.reachable {{ background: #fef3c7; color: #92400e; }}
-    .pill.high {{ background: #fee2e2; color: #991b1b; }}
-    .pill.medium {{ background: #fef3c7; color: #92400e; }}
-    .pill.low {{ background: #e0f2fe; color: #075985; }}
-    .panel {{ margin-top: 24px; }}
-    code {{ background: #f1f5f9; padding: 2px 4px; border-radius: 4px; }}
-  </style>
-</head>
-<body>
-  <h1>Smart Home Energy</h1>
-  <div class="muted">Generated {html_escape(status.get('generatedAt'))}</div>
-  <div class="panel">
-    <strong>Last refresh:</strong>
-    <span class="pill {html_escape(refresh.get('status'))}">{html_escape(refresh.get('status') or 'unknown')}</span>
-    <span class="muted">finished {html_escape(refresh.get('finishedAt'))}</span>
-  </div>
-  <div class="actions">
-    <button data-action="/action/reconcile-energy">Refresh All Energy</button>
-    <button class="secondary" data-action="/action/refresh-sce">Refresh SCE</button>
-    <button class="secondary" data-action="/action/refresh-alarm-cache">Refresh Alarm.com</button>
-    <button class="secondary" data-action="/action/screens-awake">Screens Awake</button>
-    <button class="secondary" data-action="/action/screens-auto">Screens Auto</button>
-  </div>
-  <div id="result" class="muted"></div>
-  <div class="panel">
-    <h2>Source Status</h2>
-    <table>
-      <thead><tr><th>Source</th><th>Status</th><th>Detail</th><th>Age</th></tr></thead>
-      <tbody>{source_rows}</tbody>
-    </table>
-  </div>
-  <div class="panel">
-    <h2>Alerts</h2>
-    <ul>{alert_rows}</ul>
-  </div>
-  <div class="panel">
-    <h2>Automation Opportunities</h2>
-    <table>
-      <thead><tr><th>Priority</th><th>Area</th><th>Recommendation</th><th>Automation Path</th></tr></thead>
-      <tbody>{opportunity_rows}</tbody>
-    </table>
-  </div>
-  <p class="muted">JSON: <code>/status/energy</code></p>
-  <p class="muted"><a href="/displays">Display observability</a></p>
-  <script>
-    document.querySelectorAll('button[data-action]').forEach((button) => {{
-      button.addEventListener('click', async () => {{
-        button.disabled = true;
-        document.getElementById('result').textContent = 'Requesting ' + button.textContent + '...';
-        try {{
-          const response = await fetch(button.dataset.action, {{ method: 'POST' }});
-          const payload = await response.json();
-          document.getElementById('result').textContent = JSON.stringify(payload, null, 2);
-        }} catch (error) {{
-          document.getElementById('result').textContent = String(error);
-        }} finally {{
-          button.disabled = false;
-        }}
-      }});
-    }});
-  </script>
-</body>
-</html>
-"""
+        for item in peak_events
+    ) or "<tr><td colspan='4'>No overlapping interval events yet.</td></tr>"
+    range_quality_row = (
+        "<li><strong>Selected-range source coverage</strong>: "
+        + ", ".join(f"{html_escape(label)} {count}/{len(daily)} days" for label, count in coverage_counts.items())
+        + f"; three-or-more-source comparison {comparable_range_days}/{len(daily)} days.</li>"
+    )
+    quality_rows = range_quality_row + "".join(
+        f"<li><strong>{html_escape(item.get('title'))}</strong>: {html_escape(item.get('detail'))}</li>"
+        for item in quality.get("issues") or []
+    ) or "<li>Freshness, overlap, and daily reconciliation checks pass.</li>"
+    live_window_start = str(history[0].get("capturedAt") or "") if history else ""
+    live_window_end = str(history[-1].get("capturedAt") or "") if history else ""
+    cadence_seconds = []
+    for first, second in zip(history, history[1:]):
+        try:
+            cadence_seconds.append(
+                (datetime.fromisoformat(str(second.get("capturedAt"))) - datetime.fromisoformat(str(first.get("capturedAt")))).total_seconds()
+            )
+        except (TypeError, ValueError):
+            continue
+    median_cadence = sorted(cadence_seconds)[len(cadence_seconds) // 2] if cadence_seconds else None
+    live_window_detail = (
+        f"{len(history)} retained samples from {live_window_start.replace('T', ' ')[:16]} to {live_window_end.replace('T', ' ')[:16]}"
+        + (f"; median cadence {median_cadence / 60:.1f} minutes." if median_cadence is not None else ".")
+        if history
+        else "No retained samples in the selected period."
+    )
+    live_chart = energy_line_chart(
+        "Live energy flow — collected observation window",
+        f"{live_window_detail} Positive grid values are imports.",
+        history,
+        "capturedAt",
+        [
+            ("envoyProductionKw", "Solar", "#d19a00", None),
+            ("envoySiteLoadKw", "Site load", "#2563eb", None),
+            ("envoyGridNetKw", "Grid net", "#dc2626", None),
+            ("senseLoadKw", "Sense load", "#7c3aed", None),
+        ],
+        " kW",
+    )
+    load_chart = energy_line_chart(
+        f"Daily gross-load comparison — {history_days} day{'s' if history_days != 1 else ''}",
+        "Alarm.com, Sense, and Envoy are complementary load views, not interchangeable meters.",
+        daily,
+        "date",
+        [
+            ("alarmClampKwh", "Alarm clamp", "#ea580c", None),
+            ("senseLoadKwh", "Sense load", "#7c3aed", "senseComplete"),
+            ("envoySiteLoadKwh", "Envoy site", "#2563eb", "envoyComplete"),
+        ],
+        " kWh",
+        allow_negative=False,
+    )
+    grid_chart = energy_line_chart(
+        f"Daily utility grid exchange — {history_days} day{'s' if history_days != 1 else ''}",
+        "SCE Green Button intervals are authoritative for delivered and received utility energy.",
+        daily,
+        "date",
+        [
+            ("sceDeliveredKwh", "Delivered", "#dc2626", "sceComplete"),
+            ("sceReceivedKwh", "Received", "#16a34a", "sceComplete"),
+            ("sceNetImportKwh", "Net import", "#0f766e", "sceComplete"),
+        ],
+        " kWh",
+    )
+    range_link_parts: list[str] = []
+    for days, label in ((1, "1d"), (7, "7d"), (30, "30d"), (90, "90d")):
+        current = " aria-current='page'" if history_days == days else ""
+        active = "active" if history_days == days else ""
+        range_link_parts.append(
+            f"<a class='range {active}' href='/energy?days={days}'{current}>{label}</a>"
+        )
+    range_links = " ".join(range_link_parts)
+    history_start = history[0].get("capturedAt") if history else None
+    range_summary = (
+        f"Selected window: {len(daily)} completed SCE days through {daily[-1].get('date') if daily else 'n/a'} "
+        f"and {len(history)} retained live samples. "
+        f"Live sampling began {history_start or 'today'}; retained utility history fills the longer views. "
+        + "Coverage: "
+        + ", ".join(f"{label} {count}/{len(daily)}" for label, count in coverage_counts.items())
+        + "."
+    )
+    body = f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Smart Home Energy Observability</title><style>
+:root {{ --bg:#f6f8fb; --panel:#fff; --ink:#172033; --muted:#657386; --line:#dce3eb; --accent:#0f766e; }}
+* {{ box-sizing:border-box }} body {{ margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif }}
+main {{ width:min(1180px,100%);margin:auto;padding:28px 20px 52px }} h1 {{ margin:0;font-size:28px }} h2 {{ margin:0 0 8px;font-size:18px }} .muted,small {{ color:var(--muted) }}
+.top,.actions,.ranges {{ display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap }} .actions {{ justify-content:flex-start;margin:18px 0 }}
+button,.range {{ border:1px solid var(--accent);border-radius:8px;padding:8px 11px;background:var(--accent);color:white;text-decoration:none;cursor:pointer }} button.secondary,.range {{ background:var(--panel);color:var(--accent) }} .range.active {{ background:var(--accent);color:white }}
+.range-overview {{ margin:18px 0 }} .range-heading {{ display:flex;align-items:end;justify-content:space-between;gap:10px;margin-bottom:9px;flex-wrap:wrap }} .range-heading h2 {{ font-size:21px;margin:0 }}
+.range-cards {{ display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px }} .range-card {{ border-top:3px solid var(--accent) }}
+.cards {{ display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:10px 0 18px }} .card,.panel {{ background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px }} .grid>.panel {{ min-width:0;overflow-x:auto }}
+.card span,.card small {{ display:block }} .card strong {{ display:block;font-size:24px;margin:5px 0 }} .grid {{ display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px }} .wide {{ grid-column:1/-1 }}
+.chart {{ width:100%;height:auto;display:block }} .chart-title {{ font-size:17px;font-weight:700;fill:var(--ink) }} .chart-subtitle,.axis,.legend {{ font-size:10px;fill:var(--muted) }} .gridline {{ stroke:var(--line);stroke-width:1 }} .data-point {{ stroke-width:1.5;opacity:.12 }} .data-point.partial {{ opacity:.8;stroke-width:2.5 }} .data-point:hover,.data-point:focus {{ opacity:1;stroke:var(--ink);stroke-width:2;outline:none }}
+table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top }} th {{ font-size:11px;text-transform:uppercase;color:var(--muted) }}
+.pill {{ border-radius:999px;padding:3px 7px;background:#e2e8f0 }} .pill.fresh,.pill.complete {{ background:#dcfce7;color:#166534 }} .pill.stale,.pill.failed,.pill.missing {{ background:#fee2e2;color:#991b1b }}
+.empty {{ min-height:180px;display:grid;place-content:center;text-align:center;color:var(--muted) }} code {{ background:#eef2f7;padding:2px 4px;border-radius:4px }}
+@media(max-width:980px) {{ .range-cards {{ grid-template-columns:repeat(2,minmax(0,1fr)) }} }}
+@media(max-width:820px) {{ .cards {{ grid-template-columns:1fr }} .grid {{ grid-template-columns:minmax(0,1fr) }} .wide {{ grid-column:auto }} }} @media(max-width:520px) {{ main {{ padding:20px 12px 40px }} .range-cards {{ grid-template-columns:1fr }} }}
+</style></head><body><main>
+<header class='top'><div><h1>Smart Home Energy</h1><div class='muted'>Updated {html_escape(observability.get('generatedAt') or status.get('generatedAt'))} · source quality {html_escape(quality.get('status') or 'collecting')} · selected range {range_quality_status}</div></div><div class='ranges'>{range_links}</div></header>
+<section class='range-overview' id='selected-range' data-days='{history_days}'><div class='range-heading'><h2>Selected period · {html_escape(range_label)}</h2><span class='muted'>{html_escape(daily[0].get('date') if daily else 'n/a')} → {html_escape(daily[-1].get('date') if daily else 'n/a')}</span></div><div class='range-cards'>{range_card_markup}</div></section>
+<section class='panel primary-chart' id='range-chart'>{grid_chart}</section>
+<h2>Live now</h2>
+<section class='cards'>{card_markup}</section>
+<div class='actions'><button data-action='/action/reconcile-energy' data-status-key='reconcileEnergy'>Refresh all</button><button class='secondary' data-action='/action/refresh-sce' data-status-key='refreshSce'>Refresh SCE</button><button class='secondary' data-action='/action/refresh-alarm-cache' data-status-key='alarmRefresh'>Refresh Alarm.com</button><span id='result' class='muted' role='status' aria-live='polite'></span></div>
+<p class='muted'>{html_escape(range_summary)}</p>
+<section class='grid'><div class='panel'>{load_chart}</div><div class='panel'>{live_chart}</div></section>
+<section class='grid'><div class='panel'><h2>Source definitions</h2><table><thead><tr><th>Source</th><th>Measures</th><th>Use</th></tr></thead><tbody>{semantics_rows}</tbody></table></div>
+<div class='panel'><h2>Data quality</h2><ul>{quality_rows}</ul><p class='muted'>{html_escape(quality.get('overlapPairCount'))} paired SCE/monitor intervals · {html_escape(quality.get('comparableDayCount'))} comparable days.</p></div>
+<div class='panel'><h2>Peak 15-minute events</h2><table><thead><tr><th>Start</th><th>SCE import</th><th>Envoy site</th><th>Sense</th></tr></thead><tbody>{peak_rows}</tbody></table></div>
+<div class='panel'><h2>Source freshness</h2><table><thead><tr><th>Source</th><th>Status</th><th>Detail</th><th>Age</th></tr></thead><tbody>{source_rows}</tbody></table></div></section>
+<p class='muted'>Refresh <span class='pill {html_escape(refresh.get('status'))}'>{html_escape(refresh.get('status') or 'unknown')}</span> · JSON <code>/status/energy?days={history_days}</code> · 90-day local observation retention.</p>
+<script>
+const result=document.getElementById('result');
+const wait=milliseconds=>new Promise(resolve=>setTimeout(resolve,milliseconds));
+async function pollAction(key,startedAt){{
+  for(let attempt=0;attempt<300;attempt++){{
+    await wait(3000);
+    const response=await fetch('/status',{{cache:'no-store'}});
+    const payload=await response.json();
+    const status=payload.actions?.[key]||{{}};
+    if(status.status==='running'||!status.finishedAt||status.finishedAt===startedAt){{
+      result.textContent='Refresh running…';
+      continue;
+    }}
+    result.textContent=status.ok===false?'Refresh failed. See status details.':'Refresh complete; updating dashboard…';
+    if(status.ok!==false) window.location.reload();
+    return;
+  }}
+  result.textContent='Refresh is taking longer than expected. Status will continue to be available in JSON.';
+}}
+document.querySelectorAll('button[data-action]').forEach(button=>button.addEventListener('click',async()=>{{
+  button.disabled=true;
+  result.textContent='Requesting '+button.textContent+'…';
+  try{{
+    const response=await fetch(button.dataset.action,{{method:'POST',headers:{{'Accept':'application/json'}}}});
+    const payload=await response.json();
+    if(!response.ok||!payload.ok) throw new Error(payload.error||JSON.stringify(payload));
+    result.textContent=payload.alreadyRunning?'Refresh already running…':'Refresh accepted…';
+    await pollAction(button.dataset.statusKey,payload.startedAt||'');
+  }}catch(error){{result.textContent=String(error)}}finally{{button.disabled=false}}
+}}));
+document.querySelectorAll('svg.chart').forEach(chart=>{{
+  const points=[...chart.querySelectorAll('.data-point')];
+  chart.addEventListener('keydown',event=>{{
+    const current=points.indexOf(document.activeElement);
+    if(current<0||!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+    event.preventDefault();
+    const next=event.key==='Home'?0:event.key==='End'?points.length-1:Math.max(0,Math.min(points.length-1,current+(event.key==='ArrowRight'?1:-1)));
+    points[current].tabIndex=-1; points[next].tabIndex=0; points[next].focus();
+  }});
+}});
+</script>
+</main></body></html>"""
     return body.encode()
 
 
@@ -1221,7 +1649,7 @@ def run_sce_refresh_background(started_at: str) -> None:
             }
         )
     finally:
-        SCE_REFRESH_LOCK.release()
+        safe_release(SCE_REFRESH_LOCK)
 
 
 def write_energy_reconcile_status(payload: dict[str, Any]) -> None:
@@ -1237,6 +1665,65 @@ def write_gate_test_status(payload: dict[str, Any]) -> None:
 def write_alarm_cache_refresh_status(payload: dict[str, Any]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ALARM_CACHE_REFRESH_STATUS_PATH.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+
+
+def safe_release(lock: threading.Lock) -> None:
+    try:
+        lock.release()
+    except RuntimeError:
+        pass
+
+
+def persisted_job_running(path: Path) -> bool:
+    payload = load_json_file(path)
+    pid = payload.get("workerPid")
+    return bool(payload.get("status") == "running" and isinstance(pid, int) and process_is_running(pid))
+
+
+def spawn_background_job(kind: str, started_at: str) -> int:
+    LOG_DIR.mkdir(parents=True, exist_ok=True)
+    log = (LOG_DIR / "action-background-jobs.log").open("a", encoding="utf-8")
+    try:
+        process = subprocess.Popen(
+            [sys.executable, str(Path(__file__).resolve()), "--background-job", kind, "--started-at", started_at],
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=log,
+            stderr=log,
+            start_new_session=True,
+        )
+    finally:
+        log.close()
+    return process.pid
+
+
+def start_background_process(
+    kind: str,
+    started_at: str,
+    writer: Any,
+    status_path: Path,
+    running_payload: dict[str, Any],
+    lock: Any,
+) -> int | None:
+    try:
+        worker_pid = spawn_background_job(kind, started_at)
+        current = load_json_file(status_path)
+        if current.get("status") == "running" and not current.get("finishedAt"):
+            writer({**running_payload, "workerPid": worker_pid})
+        return worker_pid
+    except Exception as error:
+        writer(
+            {
+                "ok": False,
+                "status": "failed",
+                "startedAt": started_at,
+                "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                "error": f"could not start background worker: {error}",
+            }
+        )
+        return None
+    finally:
+        safe_release(lock)
 
 
 def run_energy_reconcile_background(started_at: str) -> None:
@@ -1268,7 +1755,7 @@ def run_energy_reconcile_background(started_at: str) -> None:
             }
         )
     finally:
-        ENERGY_RECONCILE_LOCK.release()
+        safe_release(ENERGY_RECONCILE_LOCK)
 
 
 def run_gate_test_background(started_at: str) -> None:
@@ -1298,7 +1785,7 @@ def run_gate_test_background(started_at: str) -> None:
             }
         )
     finally:
-        GATE_TEST_LOCK.release()
+        safe_release(GATE_TEST_LOCK)
 
 
 def alarm_cache_stale_count() -> int | None:
@@ -1442,10 +1929,12 @@ def run_alarm_cache_refresh_background(started_at: str) -> None:
             }
         )
     finally:
-        ALARM_CACHE_REFRESH_LOCK.release()
+        safe_release(ALARM_CACHE_REFRESH_LOCK)
 
 
 def refresh_sce_data() -> dict[str, Any]:
+    if persisted_job_running(SCE_REFRESH_STATUS_PATH):
+        return {"ok": True, "scheduled": False, "alreadyRunning": True, "status": str(SCE_REFRESH_STATUS_PATH)}
     if not SCE_REFRESH_LOCK.acquire(blocking=False):
         return {
             "ok": True,
@@ -1462,10 +1951,16 @@ def refresh_sce_data() -> dict[str, Any]:
             "status": "running",
         }
     )
-    threading.Thread(target=run_sce_refresh_background, args=(started_at,), daemon=True).start()
+    worker_pid = start_background_process(
+        "sce", started_at, write_sce_refresh_status, SCE_REFRESH_STATUS_PATH,
+        {"ok": None, "scheduled": True, "startedAt": started_at, "status": "running"}, SCE_REFRESH_LOCK,
+    )
+    if worker_pid is None:
+        return {"ok": False, "scheduled": False, "status": str(SCE_REFRESH_STATUS_PATH)}
     return {
         "ok": True,
         "scheduled": True,
+        "startedAt": started_at,
         "sceApi": str(SCE_API_STATUS_PATH),
         "sceBills": str(REPORT_DIR / "sce_bill_readings.md"),
         "allEnergy": str(REPORT_DIR / "all_energy_pairing.md"),
@@ -1478,6 +1973,8 @@ def refresh_sce_data() -> dict[str, Any]:
 
 
 def refresh_and_reconcile_energy() -> dict[str, Any]:
+    if persisted_job_running(ENERGY_RECONCILE_STATUS_PATH):
+        return {"ok": True, "scheduled": False, "alreadyRunning": True, "status": str(ENERGY_RECONCILE_STATUS_PATH)}
     if not ENERGY_RECONCILE_LOCK.acquire(blocking=False):
         return {
             "ok": True,
@@ -1494,10 +1991,16 @@ def refresh_and_reconcile_energy() -> dict[str, Any]:
             "status": "running",
         }
     )
-    threading.Thread(target=run_energy_reconcile_background, args=(started_at,), daemon=True).start()
+    worker_pid = start_background_process(
+        "reconcile", started_at, write_energy_reconcile_status, ENERGY_RECONCILE_STATUS_PATH,
+        {"ok": None, "scheduled": True, "startedAt": started_at, "status": "running"}, ENERGY_RECONCILE_LOCK,
+    )
+    if worker_pid is None:
+        return {"ok": False, "scheduled": False, "status": str(ENERGY_RECONCILE_STATUS_PATH)}
     return {
         "ok": True,
         "scheduled": True,
+        "startedAt": started_at,
         "energyCosts": str(REPORT_DIR / "energy_costs.md"),
         "combinedEnergy": str(REPORT_DIR / "combined_energy_monitor.md"),
         "alerts": str(REPORT_DIR / "alerts.md"),
@@ -1508,6 +2011,8 @@ def refresh_and_reconcile_energy() -> dict[str, Any]:
 
 
 def start_gate_test() -> dict[str, Any]:
+    if persisted_job_running(GATE_TEST_STATUS_PATH):
+        return {"ok": True, "scheduled": False, "alreadyRunning": True, "status": str(GATE_TEST_STATUS_PATH), "report": str(REPORT_DIR / "alarm_gate_test.md")}
     if not GATE_TEST_LOCK.acquire(blocking=False):
         return {
             "ok": True,
@@ -1526,16 +2031,24 @@ def start_gate_test() -> dict[str, Any]:
             "report": str(REPORT_DIR / "alarm_gate_test.md"),
         }
     )
-    threading.Thread(target=run_gate_test_background, args=(started_at,), daemon=True).start()
+    worker_pid = start_background_process(
+        "gate-test", started_at, write_gate_test_status, GATE_TEST_STATUS_PATH,
+        {"ok": None, "scheduled": True, "startedAt": started_at, "status": "running", "report": str(REPORT_DIR / "alarm_gate_test.md")}, GATE_TEST_LOCK,
+    )
+    if worker_pid is None:
+        return {"ok": False, "scheduled": False, "status": str(GATE_TEST_STATUS_PATH), "report": str(REPORT_DIR / "alarm_gate_test.md")}
     return {
         "ok": True,
         "scheduled": True,
+        "startedAt": started_at,
         "status": str(GATE_TEST_STATUS_PATH),
         "report": str(REPORT_DIR / "alarm_gate_test.md"),
     }
 
 
 def refresh_alarm_cache() -> dict[str, Any]:
+    if persisted_job_running(ALARM_CACHE_REFRESH_STATUS_PATH):
+        return {"ok": True, "scheduled": False, "alreadyRunning": True, "status": str(ALARM_CACHE_REFRESH_STATUS_PATH), "report": str(REPORT_DIR / "alarm_homebridge_state.md")}
     if not ALARM_CACHE_REFRESH_LOCK.acquire(blocking=False):
         return {
             "ok": True,
@@ -1554,10 +2067,16 @@ def refresh_alarm_cache() -> dict[str, Any]:
             "report": str(REPORT_DIR / "alarm_homebridge_state.md"),
         }
     )
-    threading.Thread(target=run_alarm_cache_refresh_background, args=(started_at,), daemon=True).start()
+    worker_pid = start_background_process(
+        "alarm-cache", started_at, write_alarm_cache_refresh_status, ALARM_CACHE_REFRESH_STATUS_PATH,
+        {"ok": None, "scheduled": True, "startedAt": started_at, "status": "running", "report": str(REPORT_DIR / "alarm_homebridge_state.md")}, ALARM_CACHE_REFRESH_LOCK,
+    )
+    if worker_pid is None:
+        return {"ok": False, "scheduled": False, "status": str(ALARM_CACHE_REFRESH_STATUS_PATH), "report": str(REPORT_DIR / "alarm_homebridge_state.md")}
     return {
         "ok": True,
         "scheduled": True,
+        "startedAt": started_at,
         "status": str(ALARM_CACHE_REFRESH_STATUS_PATH),
         "report": str(REPORT_DIR / "alarm_homebridge_state.md"),
     }
@@ -1940,6 +2459,8 @@ class Handler(BaseHTTPRequestHandler):
         body = json.dumps(payload, indent=2, sort_keys=True).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Content-Length", str(len(body)))
         try:
             self.end_headers()
@@ -1950,6 +2471,10 @@ class Handler(BaseHTTPRequestHandler):
     def send_html(self, status: int, body: bytes) -> None:
         self.send_response(status)
         self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Referrer-Policy", "same-origin")
+        self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
         self.send_header("Content-Length", str(len(body)))
         try:
             self.end_headers()
@@ -1975,7 +2500,16 @@ class Handler(BaseHTTPRequestHandler):
             "userAgent": header_value("User-Agent"),
         }
 
-    def route(self) -> tuple[int, dict[str, Any]]:
+    def request_origin_allowed(self) -> bool:
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        expected = f"http://{self.headers.get('Host', '')}"
+        return origin == expected
+
+    def route(self, allow_actions: bool | None = None) -> tuple[int, dict[str, Any]]:
+        if allow_actions is None:
+            allow_actions = getattr(self, "command", "GET") == "POST"
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
@@ -1984,10 +2518,17 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/status":
             return 200, action_status()
         if path == "/status/energy":
-            return 200, energy_status()
+            days = normalized_energy_history_days((query.get("days") or [7])[0])
+            if days is None:
+                return 400, {"ok": False, "error": "days must be one of 1, 7, 30, or 90"}
+            return 200, energy_status(days)
         if path == "/status/displays":
             payload = display_awake_observability()
             return (200 if payload["ok"] else 503), payload
+        if path.startswith("/action/") and not allow_actions:
+            return 405, {"ok": False, "error": "action endpoints require POST"}
+        if path.startswith("/action/") and not self.request_origin_allowed():
+            return 403, {"ok": False, "error": "request origin is not allowed"}
         if path == "/action/run-check":
             payload = run_smart_home_check()
             return (200 if payload["ok"] else 500), payload
@@ -2047,17 +2588,26 @@ class Handler(BaseHTTPRequestHandler):
         return 404, {"ok": False, "error": "unknown endpoint"}
 
     def do_GET(self) -> None:
-        if self.path == "/displays":
+        parsed = urlparse(self.path)
+        if parsed.path == "/displays":
             self.send_html(200, render_display_page())
             return
-        if self.path in {"/", "/energy"}:
-            self.send_html(200, render_energy_page())
+        if parsed.path in {"/", "/energy"}:
+            query = parse_qs(parsed.query)
+            days = normalized_energy_history_days((query.get("days") or [7])[0])
+            if days is None:
+                self.send_response(303)
+                self.send_header("Location", "/energy?days=7")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+                return
+            self.send_html(200, render_energy_page(days))
             return
         status, payload = self.route()
         self.send_json(status, payload)
 
     def do_POST(self) -> None:
-        status, payload = self.route()
+        status, payload = self.route(allow_actions=True)
         self.send_json(status, payload)
 
 
@@ -2087,6 +2637,34 @@ class ReadOnlyDisplayHandler(Handler):
         self.send_json(405, {"ok": False, "error": "read-only dashboard; actions are disabled"})
 
 
+def execute_background_job(kind: str, started_at: str) -> int:
+    jobs = {
+        "sce": (run_sce_refresh_background, write_sce_refresh_status),
+        "reconcile": (run_energy_reconcile_background, write_energy_reconcile_status),
+        "gate-test": (run_gate_test_background, write_gate_test_status),
+        "alarm-cache": (run_alarm_cache_refresh_background, write_alarm_cache_refresh_status),
+    }
+    job = jobs.get(kind)
+    if job is None:
+        return 2
+    runner, writer = job
+    try:
+        runner(started_at)
+        return 0
+    except Exception as error:
+        writer(
+            {
+                "ok": False,
+                "status": "failed",
+                "startedAt": started_at,
+                "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                "error": f"{type(error).__name__}: {error}",
+                "workerPid": os.getpid(),
+            }
+        )
+        return 1
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the Smart Home action server.")
     parser.add_argument(
@@ -2094,7 +2672,14 @@ def main() -> int:
         action="store_true",
         help="allow the action server to expose live actions outside the runtime root",
     )
+    parser.add_argument("--background-job", choices=("sce", "reconcile", "gate-test", "alarm-cache"))
+    parser.add_argument("--started-at")
     args = parser.parse_args()
+    if args.background_job:
+        if not args.started_at:
+            parser.error("--started-at is required with --background-job")
+        os.chdir(ROOT)
+        return execute_background_job(args.background_job, args.started_at)
     if not args.force_outside_runtime and not running_from_runtime_root():
         print(
             json.dumps(

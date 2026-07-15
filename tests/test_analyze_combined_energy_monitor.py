@@ -21,6 +21,72 @@ SPEC.loader.exec_module(combined)
 
 
 class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
+    def test_sense_daily_completeness_follows_plotted_cloud_trend(self) -> None:
+        today = datetime.now().astimezone().date()
+        yesterday = today.fromordinal(today.toordinal() - 1).isoformat()
+
+        row = combined.build_daily_summary(
+            {}, {}, {}, {}, {"trends": {yesterday: {"consumption": {"total": 12.3}}}}
+        )[0]
+
+        self.assertEqual(row["senseLoadKwh"], 12.3)
+        self.assertTrue(row["senseComplete"])
+        self.assertFalse(row["senseIntervalComplete"])
+
+    def test_daily_summary_retains_more_than_ten_days(self) -> None:
+        trends = {
+            f"2026-06-{day:02d}": {"consumption": {"total": float(day)}}
+            for day in range(1, 13)
+        }
+
+        rows = combined.build_daily_summary({}, {}, {}, {}, {"trends": trends})
+
+        self.assertEqual(len(rows), 12)
+
+    def test_energy_cost_freshness_uses_report_generation_time(self) -> None:
+        now = datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        self.patch_module(live_envoy_source=lambda: {}, live_sense_source=lambda: {})
+
+        rows = combined.build_source_status(
+            now,
+            {"source_status_stale_hours": 24},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {
+                "generatedAt": "2026-07-15T11:59:00-07:00",
+                "model": {"latestClosedBill": {"periodEnd": "2026-05-07"}},
+            },
+        )
+
+        costs = next(row for row in rows if row["source"] == "Energy costs")
+        self.assertEqual(costs["status"], "fresh")
+        self.assertEqual(costs["detail"], "2026-07-15T11:59:00-07:00")
+
+    def test_energy_cost_freshness_still_flags_an_old_report(self) -> None:
+        now = datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        self.patch_module(live_envoy_source=lambda: {}, live_sense_source=lambda: {})
+
+        rows = combined.build_source_status(
+            now,
+            {"source_status_stale_hours": 24},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {
+                "generatedAt": "2026-07-13T11:59:00-07:00",
+                "model": {"latestClosedBill": {"periodEnd": "2026-07-08"}},
+            },
+        )
+
+        costs = next(row for row in rows if row["source"] == "Energy costs")
+        self.assertEqual(costs["status"], "stale")
+        self.assertEqual(costs["detail"], "2026-07-13T11:59:00-07:00")
+
     def patch_module(self, **replacements: object) -> None:
         self._restore = getattr(self, "_restore", {})
         for name, replacement in replacements.items():
