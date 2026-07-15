@@ -1446,7 +1446,7 @@ table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bott
 <p class='muted'>{html_escape(range_summary)}</p>
 <section class='grid'><div class='panel'>{load_chart}</div><div class='panel'>{live_chart}</div></section>
 <section class='grid'><div class='panel'><h2>Source definitions</h2><table><thead><tr><th>Source</th><th>Measures</th><th>Use</th></tr></thead><tbody>{semantics_rows}</tbody></table></div>
-<div class='panel'><h2>Data quality</h2><ul>{quality_rows}</ul><p class='muted'>{html_escape(quality.get('overlapPairCount'))} paired SCE/monitor intervals · {html_escape(quality.get('comparableDayCount'))} comparable days.</p></div>
+<div class='panel'><h2>Data quality</h2><ul>{quality_rows}</ul><p class='muted'>{html_escape(quality.get('overlapPairCount'))} paired SCE/monitor intervals · {html_escape(quality.get('comparableDayCount'))} comparable days in the {html_escape(quality.get('historyWindowDays') or 90)}-day quality window.</p></div>
 <div class='panel'><h2>Peak 15-minute events</h2><table><thead><tr><th>Start</th><th>SCE import</th><th>Envoy site</th><th>Sense</th></tr></thead><tbody>{peak_rows}</tbody></table></div>
 <div class='panel'><h2>Source freshness</h2><table><thead><tr><th>Source</th><th>Status</th><th>Detail</th><th>Age</th></tr></thead><tbody>{source_rows}</tbody></table></div></section>
 <p class='muted'>Refresh <span class='pill {html_escape(refresh.get('status'))}'>{html_escape(refresh.get('status') or 'unknown')}</span> · JSON <code>/status/energy?days={history_days}</code> · 90-day local observation retention.</p>
