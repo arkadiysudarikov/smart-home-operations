@@ -427,8 +427,18 @@ def build_overlap_pairs(intervals: list[SceInterval], samples: dict[str, list[di
         sense_kwh = estimate_interval_kwh(sense, interval.start, interval.end)
         if envoy_total_kwh is None and envoy_net_kwh is None and envoy_production_kwh is None and sense_kwh is None:
             continue
-        pairs.append(
-            {
+        invalid_metrics: list[str] = []
+        envoy_total_raw = envoy_total_kwh
+        envoy_production_raw = envoy_production_kwh
+        if envoy_total_kwh is not None and envoy_total_kwh < 0:
+            invalid_metrics.append("envoyConsumptionTotalKwhEstimate")
+            envoy_total_kwh = None
+        if envoy_production_kwh is not None and envoy_production_kwh < -0.01:
+            invalid_metrics.append("envoyProductionKwhEstimate")
+            envoy_production_kwh = None
+        elif envoy_production_kwh is not None and envoy_production_kwh < 0:
+            envoy_production_kwh = 0.0
+        pair = {
                 "start": interval.start.isoformat(timespec="seconds"),
                 "end": interval.end.isoformat(timespec="seconds"),
                 "sceDeliveredKwh": interval.delivered_kwh,
@@ -439,7 +449,13 @@ def build_overlap_pairs(intervals: list[SceInterval], samples: dict[str, list[di
                 "envoyProductionKwhEstimate": envoy_production_kwh,
                 "senseKwhEstimate": sense_kwh,
             }
-        )
+        if invalid_metrics:
+            pair["invalidMetrics"] = invalid_metrics
+        if envoy_total_raw is not None and envoy_total_raw != envoy_total_kwh:
+            pair["envoyConsumptionTotalKwhRawEstimate"] = envoy_total_raw
+        if envoy_production_raw is not None and envoy_production_raw != envoy_production_kwh:
+            pair["envoyProductionKwhRawEstimate"] = envoy_production_raw
+        pairs.append(pair)
     return pairs
 
 
@@ -547,6 +563,10 @@ def write_outputs(
                 ]
             )
 
+    invalid_reading_counts: dict[str, int] = {}
+    for pair in overlap_pairs:
+        for metric in pair.get("invalidMetrics") or []:
+            invalid_reading_counts[metric] = invalid_reading_counts.get(metric, 0) + 1
     payload = {
         "generatedAt": generated_at,
         "sceGreenButton": {
@@ -556,6 +576,7 @@ def write_outputs(
         "smartHomeMonitor": monitor_summary,
         "overlapPairCount": len(overlap_pairs),
         "overlapPairs": overlap_pairs,
+        "invalidReadingCounts": invalid_reading_counts,
         "sceBills": bill_rows,
         "realtimeSenseEnvoy": realtime_summary,
     }

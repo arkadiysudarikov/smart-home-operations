@@ -484,14 +484,17 @@ def build_daily_summary(
         if not day:
             continue
         item = days.setdefault(day, {"date": day})
+        item["senseTrendAvailable"] = True
         add_sum(item, "senseLoadKwh", (row.get("consumption") or {}).get("total"))
         add_sum(item, "senseSolarProductionKwh", (row.get("production") or {}).get("total"))
 
     out: list[dict[str, Any]] = []
+    today = datetime.now(timezone.utc).astimezone().date().isoformat()
     for day in sorted(days):
         item = days[day]
         item["envoyComplete"] = item.get("envoyIntervalCount") in {92, 96, 100}
-        item["senseComplete"] = item.get("senseIntervalCount") in {92, 96, 100}
+        item["senseIntervalComplete"] = item.get("senseIntervalCount") in {92, 96, 100}
+        item["senseComplete"] = bool(item.get("senseTrendAvailable") and day < today)
         cp = num(item.get("chargepointKwh"))
         site = num(item.get("envoySiteLoadKwh")) or num(item.get("alarmEnergyClampKwh"))
         item["chargepointShareOfSiteLoad"] = cp / site if cp is not None and site else None

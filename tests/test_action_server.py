@@ -1111,6 +1111,28 @@ class ActionServerTest(unittest.TestCase):
 
         self.assertEqual(payload["observability"]["dailyComparison"], rows[-2:])
 
+    def test_energy_status_propagates_quality_and_filters_peaks_to_range(self) -> None:
+        observability = {
+            "quality": {"status": "degraded"},
+            "dailyComparison": [{"date": "2026-07-14", "sceDeliveredKwh": 1.0, "availableSourceCount": 3}],
+            "peakEvents": [
+                {"start": "2026-07-14T12:00:00-07:00", "sceImportKw": 8.0},
+                {"start": "2026-07-13T12:00:00-07:00", "sceImportKw": 20.0},
+            ],
+        }
+
+        def fake_load(path: Path) -> dict[str, Any]:
+            return observability if path.name == "latest_energy_observability.json" else {}
+
+        with mock.patch.object(action_server, "read_json_status", return_value={}), \
+             mock.patch.object(action_server, "operational_source_status", return_value=[]), \
+             mock.patch.object(action_server, "load_json_file", side_effect=fake_load):
+            payload = action_server.energy_status(1)
+
+        self.assertEqual(payload["status"], "degraded")
+        self.assertIn("observabilityQuality", payload["degradedSources"])
+        self.assertEqual([item["start"] for item in payload["observability"]["peakEvents"]], ["2026-07-14T12:00:00-07:00"])
+
     def test_energy_observation_history_reads_stored_samples(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             db_path = Path(tmp) / "smart_home.sqlite"
@@ -1167,6 +1189,37 @@ class ActionServerTest(unittest.TestCase):
 
             self.assertLessEqual(len(rows), 420)
 
+    def test_energy_chart_marks_partial_days_and_uses_roving_tabindex(self) -> None:
+        chart = action_server.energy_line_chart(
+            "Load", "Daily load", [
+                {"date": "2026-07-13", "load": 10.0, "complete": True},
+                {"date": "2026-07-14", "load": 4.0, "complete": False},
+                {"date": "2026-07-15", "load": 12.0, "complete": True},
+            ], "date", [("load", "Load", "#123456", "complete")], " kWh", allow_negative=False,
+        )
+
+        self.assertEqual(chart.count("tabindex='0'"), 1)
+        self.assertEqual(chart.count("tabindex='-1'"), 2)
+        self.assertIn("partial day", chart)
+        self.assertIn("class='data-point partial'", chart)
+        self.assertNotIn(">-", chart)
+
+    def test_energy_age_formatter_includes_units(self) -> None:
+        self.assertEqual(action_server.display_energy_age({"ageHours": 0.5}), "30 min")
+        self.assertEqual(action_server.display_energy_age({"ageHours": 12}), "12.0 h")
+        self.assertEqual(action_server.display_energy_age({"ageHours": 72}), "3.0 d")
+
+    def test_detached_background_job_uses_child_pid(self) -> None:
+        fake_process = mock.Mock(pid=4321)
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch.object(action_server, "LOG_DIR", Path(tmp)), \
+             mock.patch.object(action_server.subprocess, "Popen", return_value=fake_process) as popen:
+            pid = action_server.spawn_background_job("reconcile", "2026-07-15T10:00:00-07:00")
+
+        self.assertEqual(pid, 4321)
+        self.assertTrue(popen.call_args.kwargs["start_new_session"])
+        self.assertIn("--background-job", popen.call_args.args[0])
+
     def test_stale_action_status_is_recovered_after_worker_exits(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "latest_sce_refresh.json"
@@ -1189,7 +1242,7 @@ class ActionServerTest(unittest.TestCase):
                 "observationHistory": [],
                 "observability": {
                     "generatedAt": "2026-07-15T10:00:00-07:00",
-                    "live": {"envoyProductionKw": 3.2},
+                    "live": {"envoyProductionKw": 3.2, "alarmProjectedKwh": 1391.0, "alarmBudgetKwh": 680.0},
                     "quality": {
                         "status": "ready",
                         "overlapPairCount": 100,
@@ -1229,6 +1282,9 @@ class ActionServerTest(unittest.TestCase):
         self.assertIn("aria-live='polite'", page)
         self.assertIn("<title id='chart-title-", page)
         self.assertIn("tabindex='0'", page)
+        self.assertIn("ArrowRight", page)
+        self.assertIn("attempt<300", page)
+        self.assertIn("105% above budget", page)
         self.assertLess(page.index("Daily utility grid exchange — 30 days"), page.index("Live energy flow — collected observation window"))
 
 

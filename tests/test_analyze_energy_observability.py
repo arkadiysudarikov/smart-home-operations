@@ -106,6 +106,28 @@ class AnalyzeEnergyObservabilityTest(unittest.TestCase):
         self.assertIsNone(event["envoySiteLoadKw"])
         self.assertIsNone(event["senseLoadKw"])
 
+    def test_peak_events_retains_all_candidates_for_range_filtering(self) -> None:
+        rows = [
+            {"start": f"2026-07-14T{hour:02d}:00:00-07:00", "sceDeliveredKwh": float(hour)}
+            for hour in range(15)
+        ]
+
+        events = analyzer.peak_events({"overlapPairs": rows})
+
+        self.assertEqual(len(events), 15)
+        self.assertGreater(events[0]["sceImportKw"], events[-1]["sceImportKw"])
+
+    def test_invalid_envoy_counts_degrade_quality(self) -> None:
+        quality = analyzer.source_quality(
+            {},
+            {"overlapPairCount": 20, "invalidReadingCounts": {"envoyConsumptionTotalKwhEstimate": 3}},
+            [{"availableSourceCount": 3}],
+        )
+
+        self.assertEqual(quality["status"], "degraded")
+        self.assertIn("Invalid Envoy gross-load intervals", [item["title"] for item in quality["issues"]])
+
+
     def test_persist_observation_creates_queryable_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             original_data_dir = analyzer.DATA_DIR

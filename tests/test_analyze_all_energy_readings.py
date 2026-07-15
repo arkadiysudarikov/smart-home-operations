@@ -18,6 +18,38 @@ SPEC.loader.exec_module(analyze_all_energy_readings)
 
 
 class AnalyzeAllEnergyReadingsTest(unittest.TestCase):
+    def test_negative_envoy_gross_load_is_quarantined(self) -> None:
+        start = analyze_all_energy_readings.parse_iso("2026-07-15T10:00:00-07:00")
+        end = analyze_all_energy_readings.parse_iso("2026-07-15T10:15:00-07:00")
+        interval = analyze_all_energy_readings.SceInterval(start=start, end=end, delivered_kwh=1.0)
+
+        pair = analyze_all_energy_readings.build_overlap_pairs(
+            [interval],
+            {
+                "envoy:Consumption Total": [
+                    {"capturedAt": start, "kw": -2.0},
+                    {"capturedAt": end, "kw": -2.0},
+                ]
+            },
+        )[0]
+
+        self.assertIsNone(pair["envoyConsumptionTotalKwhEstimate"])
+        self.assertEqual(pair["envoyConsumptionTotalKwhRawEstimate"], -0.5)
+        self.assertIn("envoyConsumptionTotalKwhEstimate", pair["invalidMetrics"])
+
+    def test_tiny_negative_envoy_production_noise_is_clamped_to_zero(self) -> None:
+        start = analyze_all_energy_readings.parse_iso("2026-07-15T10:00:00-07:00")
+        end = analyze_all_energy_readings.parse_iso("2026-07-15T10:15:00-07:00")
+        interval = analyze_all_energy_readings.SceInterval(start=start, end=end, delivered_kwh=1.0)
+
+        pair = analyze_all_energy_readings.build_overlap_pairs(
+            [interval],
+            {"envoy:Production": [{"capturedAt": start, "kw": -0.002}, {"capturedAt": end, "kw": -0.002}]},
+        )[0]
+
+        self.assertEqual(pair["envoyProductionKwhEstimate"], 0.0)
+        self.assertNotIn("envoyProductionKwhEstimate", pair.get("invalidMetrics", []))
+
     def test_interval_estimate_uses_time_weighted_integration(self) -> None:
         start = analyze_all_energy_readings.parse_iso("2026-07-15T10:00:00-07:00")
         end = analyze_all_energy_readings.parse_iso("2026-07-15T10:15:00-07:00")

@@ -157,7 +157,7 @@ def live_summary(latest: dict[str, Any], sense_now: dict[str, Any], alarm: dict[
     }
 
 
-def peak_events(all_energy: dict[str, Any], limit: int = 12) -> list[dict[str, Any]]:
+def peak_events(all_energy: dict[str, Any], limit: int | None = None) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for item in all_energy.get("overlapPairs") or []:
         if not isinstance(item, dict):
@@ -175,7 +175,8 @@ def peak_events(all_energy: dict[str, Any], limit: int = 12) -> list[dict[str, A
                 "senseLoadKw": rounded(value * 4) if (value := num(item.get("senseKwhEstimate"))) is not None else None,
             }
         )
-    return sorted(rows, key=lambda item: item["sceImportKw"], reverse=True)[:limit]
+    ordered = sorted(rows, key=lambda item: item["sceImportKw"], reverse=True)
+    return ordered[:limit] if limit is not None else ordered
 
 
 def source_quality(combined: dict[str, Any], all_energy: dict[str, Any], daily: list[dict[str, Any]]) -> dict[str, Any]:
@@ -228,10 +229,21 @@ def source_quality(combined: dict[str, Any], all_energy: dict[str, Any], daily: 
                 "detail": f"SCE through {sce_coverage_date}; " + ", ".join(lagging_monitors),
             }
         )
+    invalid_counts = all_energy.get("invalidReadingCounts") or {}
+    invalid_envoy = int(invalid_counts.get("envoyConsumptionTotalKwhEstimate") or 0)
+    if invalid_envoy:
+        issues.append(
+            {
+                "severity": "warning",
+                "title": "Invalid Envoy gross-load intervals",
+                "detail": f"{invalid_envoy} negative physical readings were excluded from daily load totals.",
+            }
+        )
     return {
         "status": "ready" if not issues else "degraded",
         "overlapPairCount": overlap,
         "comparableDayCount": comparable_days,
+        "invalidReadingCounts": invalid_counts,
         "issues": issues,
         "sourceSemantics": [
             {"source": "SCE", "measurement": "Utility grid import/export", "use": "Billing and net-grid truth"},
