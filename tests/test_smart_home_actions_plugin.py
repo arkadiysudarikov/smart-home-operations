@@ -65,6 +65,8 @@ process.stdout.write(JSON.stringify(actions));
         self.assertNotIn("getCharacteristic(this.Characteristic.ConfiguredName)", source)
         self.assertIn("this.Characteristic.Name, action.name", source)
         self.assertIn("this.api.updatePlatformAccessories([accessory])", source)
+        self.assertIn('"X-Smart-Home-Source": PLUGIN_NAME', source)
+        self.assertIn('"X-Smart-Home-Reason": `homekit-switch:${action.id || "custom"}`', source)
 
 
 if __name__ == "__main__":

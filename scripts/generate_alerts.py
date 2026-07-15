@@ -662,6 +662,8 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         return "Refresh Sense and Envoy data, then check the combined energy report to see whether the meter difference remains."
     if title == "Homebridge is not running":
         return "Restart Homebridge, then run the smart-home check again after accessories reconnect."
+    if title == "Homebridge advertisements use the wrong IP":
+        return "Confirm the Mac's reserved IP matches Homebridge mDNS configuration, restart Homebridge once, then verify every HAP hostname resolves to the active IP."
     if title == "Homebridge storage permissions are too open":
         return "Run the Homebridge permission hardening step and rerun the monitor to verify storage paths."
     if title == "UniFi occupancy authentication is failing":
@@ -1087,6 +1089,27 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
                 "severity": "critical",
                 "title": "Homebridge is not running",
                 "detail": f"Current launchd state is `{launchd_state}`.",
+            }
+        )
+
+    advertisements = hb.get("advertisements", {})
+    advertisement_mismatches = advertisements.get("mismatches") or []
+    if advertisements.get("status") == "mismatch" and advertisement_mismatches:
+        examples = []
+        for item in advertisement_mismatches[:4]:
+            name = item.get("name") or item.get("hostname") or "Homebridge"
+            resolved = ", ".join(item.get("resolvedIPv4") or []) or "none"
+            examples.append(f"{name} -> {resolved}")
+        alerts.append(
+            {
+                "severity": "warning",
+                "title": "Homebridge advertisements use the wrong IP",
+                "detail": (
+                    f"Expected `{advertisements.get('configuredIPv4')}` but found "
+                    f"`{len(advertisement_mismatches)}` mismatched advertisement(s): "
+                    + "; ".join(examples)
+                    + "."
+                ),
             }
         )
 

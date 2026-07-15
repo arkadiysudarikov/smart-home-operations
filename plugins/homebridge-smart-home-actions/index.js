@@ -139,6 +139,10 @@ class SmartHomeActionsPlatform {
       const response = await fetch(url, {
         method: action.method || "POST",
         signal: controller.signal,
+        headers: {
+          "X-Smart-Home-Source": PLUGIN_NAME,
+          "X-Smart-Home-Reason": `homekit-switch:${action.id || "custom"}`,
+        },
       });
       const body = await response.text().catch(() => "");
 

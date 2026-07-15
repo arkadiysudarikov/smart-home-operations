@@ -205,6 +205,28 @@ def smarthq_event(captured_at: str, message: str) -> dict[str, Any]:
 
 
 class GenerateAlertsTest(unittest.TestCase):
+    def test_build_alerts_reports_wrong_homebridge_advertisement_ip(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["advertisements"] = {
+            "status": "mismatch",
+            "configuredIPv4": "192.168.0.69",
+            "mismatches": [
+                {
+                    "name": "Homebridge Dummy",
+                    "hostname": "0E_F8_15_C2_EC_AC.local",
+                    "resolvedIPv4": ["192.168.0.172"],
+                }
+            ],
+        }
+
+        alerts = generate_alerts.build_alerts(base_config(), latest, [])
+
+        alert = next(item for item in alerts if item["title"] == "Homebridge advertisements use the wrong IP")
+        self.assertEqual(alert["severity"], "warning")
+        self.assertIn("192.168.0.69", alert["detail"])
+        self.assertIn("192.168.0.172", alert["detail"])
+        self.assertIn("restart Homebridge once", generate_alerts.recommended_action(alert))
+
     def patch_module(self, **replacements: Any) -> None:
         self._restore = getattr(self, "_restore", {})
         for name, replacement in replacements.items():
