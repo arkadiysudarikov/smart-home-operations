@@ -61,7 +61,9 @@ labeled power-fallback samples:
 
 The notifier requires a fresh observed `InUse` cycle before it can alert, sends
 one reminder after 20 minutes when the door remains closed, and suppresses
-spoken announcements outside the configured daytime window. Sense/Envoy power
+spoken announcements outside the configured daytime window. The spoken clip is
+generated locally and played on the configured HomePod through Music's AirPlay
+interface; the previous Music output selection is restored afterward. Sense/Envoy power
 data stays in `shadow` mode until multiple SmartHQ-labeled cycles have been
 reviewed; it cannot generate a fallback alert while shadowed.
 

@@ -199,21 +199,57 @@ def mac_notification(message: str, title: str) -> dict[str, Any]:
     return {"ok": proc.returncode == 0, "returncode": proc.returncode, "error": proc.stderr.strip() or None}
 
 
-def run_shortcut(name: str, message: str) -> dict[str, Any]:
-    available = subprocess.run(["shortcuts", "list"], text=True, capture_output=True, timeout=15, check=False)
-    names = {line.strip() for line in available.stdout.splitlines()}
-    if name not in names:
-        return {"ok": False, "skipped": True, "error": f"shortcut not found: {name}"}
-    input_path = DATA_DIR / "washer_announcement.txt"
-    input_path.write_text(message + "\n")
-    proc = subprocess.run(
-        ["shortcuts", "run", name, "--input-path", str(input_path)],
+def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]:
+    targets = [str(item) for item in config.get("homepod_targets", []) if str(item).strip()]
+    if not targets:
+        return {"ok": False, "skipped": True, "error": "no HomePod targets configured"}
+    audio_path = DATA_DIR / "washer_finished.aiff"
+    speech = subprocess.run(
+        ["say", "-o", str(audio_path), message],
         text=True,
         capture_output=True,
-        timeout=30,
+        timeout=20,
         check=False,
     )
-    return {"ok": proc.returncode == 0, "returncode": proc.returncode, "error": proc.stderr.strip() or None}
+    if speech.returncode != 0:
+        return {"ok": False, "returncode": speech.returncode, "error": speech.stderr.strip() or "say failed"}
+
+    target_list = "{" + ", ".join(json.dumps(name) for name in targets) + "}"
+    volume = max(0, min(100, int(config.get("homepod_volume", 45))))
+    delay_seconds = max(2, min(30, int(config.get("homepod_clip_seconds", 5))))
+    script = f'''tell application "Music"
+set originalDevices to current AirPlay devices
+set targetNames to {target_list}
+set targetDevices to {{}}
+repeat with deviceItem in every AirPlay device
+    if (name of deviceItem is in targetNames) and (available of deviceItem) then set end of targetDevices to deviceItem
+end repeat
+if (count of targetDevices) is 0 then error "No configured HomePod is available"
+try
+    set current AirPlay devices to targetDevices
+    delay 1
+    repeat with deviceItem in targetDevices
+        set sound volume of deviceItem to {volume}
+    end repeat
+    play POSIX file {json.dumps(str(audio_path))} once true
+    delay {delay_seconds}
+    stop
+    set current AirPlay devices to originalDevices
+on error errorMessage number errorNumber
+    try
+        stop
+        set current AirPlay devices to originalDevices
+    end try
+    error errorMessage number errorNumber
+end try
+end tell'''
+    proc = subprocess.run(["osascript", "-e", script], text=True, capture_output=True, timeout=45, check=False)
+    return {
+        "ok": proc.returncode == 0,
+        "returncode": proc.returncode,
+        "targets": targets,
+        "error": proc.stderr.strip() or None,
+    }
 
 
 def power_observation(current: dict[str, Any], now: datetime) -> dict[str, Any]:
@@ -259,10 +295,7 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
         elif action == "notify_reminder":
             results.append({"action": action, **mac_notification("The washer finished 20 minutes ago and the door is still closed.", "Unload Washer")})
         elif action == "announce_finish" and config.get("homepod_enabled", False):
-            results.append({
-                "action": action,
-                **run_shortcut(str(config.get("homepod_shortcut", "Announce Washer Finished")), "The washer has finished."),
-            })
+            results.append({"action": action, **homepod_announcement("The washer has finished.", config)})
     return results
 
 
