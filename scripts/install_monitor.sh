@@ -10,6 +10,8 @@ ACTIONS_PLIST_DST="$HOME/Library/LaunchAgents/com.arkadiy.smart-home-actions.pli
 DISPLAY_PLIST_SRC="$ROOT/launchagents/com.arkadiy.smart-home-display-awake.plist"
 DISPLAY_PLIST_DST="$HOME/Library/LaunchAgents/com.arkadiy.smart-home-display-awake.plist"
 
+"$ROOT/scripts/check_install_source.sh" "$ROOT"
+
 mkdir -p "$HOME/Library/LaunchAgents"
 mkdir -p "$RUNTIME"
 mkdir -p "$RUNTIME/logs"
