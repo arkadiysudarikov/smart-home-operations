@@ -187,6 +187,12 @@ presence, each Mac's decision reasons, recent decision changes, and accumulated
 shadow/enforcement durations. Long controller gaps are excluded from duration
 totals rather than being misreported as awake time.
 
+The action server remains loopback-only on port `18765`. A separate read-only
+phone dashboard listens on the local network at
+`http://m2-office-mini.local:18766/displays`. That listener exposes only the
+display dashboard, its sanitized JSON status, and a health endpoint; all POST
+requests and other action-server routes are rejected.
+
 The monitor writes:
 
 - `data/latest.json`
