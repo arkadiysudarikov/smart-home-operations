@@ -52,6 +52,8 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
                 "smart_home_ev_charging_v2": "🔋 Car Charging",
                 "smart_home_washer_finished_v1": "🧺 Washer Done",
                 "smart_home_washer_unload_v1": "🧺 Unload Washer",
+                "smart_home_dryer_finished_v1": "🧺 Dryer Done",
+                "smart_home_dryer_unload_v1": "🧺 Unload Dryer",
             },
         )
 
@@ -84,6 +86,8 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             "smart_home_ev_charging_v2",
             "smart_home_washer_finished_v1",
             "smart_home_washer_unload_v1",
+            "smart_home_dryer_finished_v1",
+            "smart_home_dryer_unload_v1",
         }
         for tile in tiles:
             visible_text = tile["name"].split(" ", 1)[1]

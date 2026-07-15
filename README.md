@@ -52,14 +52,15 @@ Run storage maintenance and alerts:
 ./scripts/generate_alerts.py
 ```
 
-Process SmartHQ washer state, send the completion/unload pulses, and collect
-labeled power-fallback samples:
+Process SmartHQ washer or dryer state, send the completion/unload pulses, and
+collect labeled power-fallback samples:
 
 ```sh
 ./scripts/washer_notifier.py
+./scripts/washer_notifier.py --appliance dryer
 ```
 
-The notifier requires a fresh observed `InUse` cycle before it can alert, sends
+Each appliance notifier requires a fresh observed `InUse` cycle before it can alert, sends
 one reminder after 20 minutes when the door remains closed, and suppresses
 spoken announcements outside the configured daytime window. The spoken clip is
 generated locally and played on the configured HomePod through Music's AirPlay
@@ -216,8 +217,11 @@ The monitor writes:
 - `data/latest_display_awake.json`
 - `data/latest_display_awake_summary.json`
 - `data/latest_washer_notifier.json`
+- `data/latest_dryer_notifier.json`
 - `data/washer_notifier_state.json`
+- `data/dryer_notifier_state.json`
 - `data/washer_power_shadow.jsonl`
+- `data/dryer_power_shadow.jsonl`
 - `data/display_awake_events.jsonl`
 - `data/latest_alarm_com.json`
 - `data/alarm_com_automation_rules.json`
@@ -231,6 +235,7 @@ The monitor writes:
 - `data/smart_home.sqlite`
 - `reports/latest.md`
 - `reports/washer_notifications.md`
+- `reports/dryer_notifications.md`
 - `reports/patterns.md`
 - `reports/energy_pairing.md`
 - `reports/chargepoint_pairing.md`

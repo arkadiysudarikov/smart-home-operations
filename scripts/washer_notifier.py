@@ -17,9 +17,6 @@ CONFIG_PATH = ROOT / "config" / "sources.json"
 DATA_DIR = ROOT / "data"
 REPORT_DIR = ROOT / "reports"
 LATEST_PATH = DATA_DIR / "latest.json"
-STATE_PATH = DATA_DIR / "washer_notifier_state.json"
-STATUS_PATH = DATA_DIR / "latest_washer_notifier.json"
-POWER_LOG_PATH = DATA_DIR / "washer_power_shadow.jsonl"
 SENSE_NOW_PATH = DATA_DIR / "sense_now_latest.json"
 ENVOY_PATH = DATA_DIR / "latest_envoy_direct.json"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
@@ -73,15 +70,17 @@ def find_characteristic(latest: dict[str, Any], accessory: str, service: str, ch
     return None
 
 
-def current_washer_state(latest: dict[str, Any], config: dict[str, Any], now: datetime) -> dict[str, Any]:
+def current_appliance_state(latest: dict[str, Any], config: dict[str, Any], now: datetime) -> dict[str, Any]:
     captured_at = parse_time(latest.get("captured_at"))
     max_age_minutes = int(config.get("max_snapshot_age_minutes", 10))
     fresh = bool(captured_at and timedelta(0) <= now - captured_at <= timedelta(minutes=max_age_minutes))
     accessory = str(config.get("accessory", "Washer"))
-    in_use = bool_value(find_characteristic(latest, accessory, "Washer", "InUse"))
+    cycle_service = str(config.get("cycle_service", accessory))
+    door_service = str(config.get("door_service", f"{accessory} Door"))
+    in_use = bool_value(find_characteristic(latest, accessory, cycle_service, "InUse"))
     if in_use is None:
         in_use = bool_value(find_characteristic(latest, accessory, "Cycle Status", "MotionDetected"))
-    door_open = bool_value(find_characteristic(latest, accessory, "Washer Door", "ContactSensorState"))
+    door_open = bool_value(find_characteristic(latest, accessory, door_service, "ContactSensorState"))
     return {
         "capturedAt": captured_at.isoformat(timespec="seconds") if captured_at else None,
         "fresh": fresh,
@@ -203,7 +202,8 @@ def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]
     targets = [str(item) for item in config.get("homepod_targets", []) if str(item).strip()]
     if not targets:
         return {"ok": False, "skipped": True, "error": "no HomePod targets configured"}
-    audio_path = DATA_DIR / "washer_finished.aiff"
+    appliance_id = str(config.get("id", "washer"))
+    audio_path = DATA_DIR / f"{appliance_id}_finished.aiff"
     speech = subprocess.run(
         ["say", "-o", str(audio_path), message],
         text=True,
@@ -252,7 +252,7 @@ end tell'''
     }
 
 
-def power_observation(current: dict[str, Any], now: datetime) -> dict[str, Any]:
+def power_observation(current: dict[str, Any], now: datetime, appliance_id: str) -> dict[str, Any]:
     sense = load_json(SENSE_NOW_PATH, {})
     envoy = load_json(ENVOY_PATH, {})
     devices = sense.get("devices", []) if isinstance(sense, dict) else []
@@ -261,6 +261,7 @@ def power_observation(current: dict[str, Any], now: datetime) -> dict[str, Any]:
     total = next((item.get("wNow") for item in consumption if item.get("measurementType") == "total-consumption"), None)
     return {
         "capturedAt": now.isoformat(timespec="seconds"),
+        "appliance": appliance_id,
         "sourceSnapshotAt": current.get("capturedAt"),
         "inUse": current.get("inUse"),
         "doorOpen": current.get("doorOpen"),
@@ -281,8 +282,10 @@ def write_json(path: Path, payload: dict[str, Any]) -> None:
 def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     webhook_url = str(config.get("webhook_url", "http://127.0.0.1:63743"))
-    finish_id = str(config.get("finish_sensor_id", "smart_home_washer_finished_v1"))
-    reminder_id = str(config.get("reminder_sensor_id", "smart_home_washer_unload_v1"))
+    appliance_name = str(config.get("display_name", config.get("accessory", "Washer")))
+    appliance_lower = appliance_name.lower()
+    finish_id = str(config["finish_sensor_id"])
+    reminder_id = str(config["reminder_sensor_id"])
     for action in actions:
         if dry_run:
             results.append({"action": action, "ok": True, "dryRun": True})
@@ -291,25 +294,32 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
             result = webhook_set(webhook_url, sensor_id, action.endswith("_on"))
             results.append({"action": action, **result})
         elif action == "notify_finish":
-            results.append({"action": action, **mac_notification("The washer has finished.", "Washer Finished")})
+            results.append({"action": action, **mac_notification(f"The {appliance_lower} has finished.", f"{appliance_name} Finished")})
         elif action == "notify_reminder":
-            results.append({"action": action, **mac_notification("The washer finished 20 minutes ago and the door is still closed.", "Unload Washer")})
+            minutes = int(config.get("reminder_minutes", 20))
+            results.append({
+                "action": action,
+                **mac_notification(
+                    f"The {appliance_lower} finished {minutes} minutes ago and the door is still closed.",
+                    f"Unload {appliance_name}",
+                ),
+            })
         elif action == "announce_finish" and config.get("homepod_enabled", False):
-            results.append({"action": action, **homepod_announcement("The washer has finished.", config)})
+            results.append({"action": action, **homepod_announcement(f"The {appliance_lower} has finished.", config)})
     return results
 
 
-def write_report(payload: dict[str, Any]) -> None:
+def write_report(payload: dict[str, Any], report_path: Path, appliance_name: str) -> None:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     current = payload["current"]
     state = payload["state"]
     lines = [
-        "# Washer Notifications",
+        f"# {appliance_name} Notifications",
         "",
         f"- Checked: `{payload['generatedAt']}`",
         f"- SmartHQ snapshot fresh: `{current.get('fresh')}`",
-        f"- Washer running: `{current.get('inUse')}`",
-        f"- Washer door open: `{current.get('doorOpen')}`",
+        f"- {appliance_name} running: `{current.get('inUse')}`",
+        f"- {appliance_name} door open: `{current.get('doorOpen')}`",
         f"- Waiting to be unloaded: `{state.get('awaitingUnload', False)}`",
         f"- Completed cycles observed: `{state.get('completedCycles', 0)}`",
         f"- Power fallback: `shadow` (collecting labeled samples; not allowed to alert yet)",
@@ -321,33 +331,42 @@ def write_report(payload: dict[str, Any]) -> None:
         lines.extend(f"- `{item['action']}`: `{'ok' if item.get('ok') else 'failed'}`" for item in payload["results"])
     else:
         lines.append("- No notification action was needed.")
-    (REPORT_DIR / "washer_notifications.md").write_text("\n".join(lines) + "\n")
+    report_path.write_text("\n".join(lines) + "\n")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Send washer-finished and unload-reminder notifications.")
+    parser = argparse.ArgumentParser(description="Send laundry-finished and unload-reminder notifications.")
+    parser.add_argument("--appliance", choices=("washer", "dryer"), default="washer")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--now", help="override the current local time for testing")
     args = parser.parse_args()
 
     full_config = load_json(CONFIG_PATH, {})
-    config = full_config.get("washer_notifications", {})
+    appliance_id = args.appliance
+    appliance_name = appliance_id.title()
+    config = full_config.get(f"{appliance_id}_notifications", {})
     if not config.get("enabled", False):
-        print("Washer notifications are disabled.")
+        print(f"{appliance_name} notifications are disabled.")
         return 0
+    config = {"id": appliance_id, "display_name": appliance_name, **config}
+    state_path = DATA_DIR / f"{appliance_id}_notifier_state.json"
+    status_path = DATA_DIR / f"latest_{appliance_id}_notifier.json"
+    power_log_path = DATA_DIR / f"{appliance_id}_power_shadow.jsonl"
+    report_path = REPORT_DIR / f"{appliance_id}_notifications.md"
     now = parse_time(args.now) if args.now else datetime.now(timezone.utc).astimezone(LOCAL_TZ)
     assert now is not None
     latest = load_json(LATEST_PATH, {})
-    current = current_washer_state(latest, config, now)
-    prior = load_json(STATE_PATH, {})
+    current = current_appliance_state(latest, config, now)
+    prior = load_json(state_path, {})
     state, actions = evolve_state(prior, current, now, config)
     results = execute_actions(actions, config, args.dry_run)
-    observation = power_observation(current, now)
+    observation = power_observation(current, now, appliance_id)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    with POWER_LOG_PATH.open("a") as handle:
+    with power_log_path.open("a") as handle:
         handle.write(json.dumps(observation, sort_keys=True) + "\n")
     payload = {
         "generatedAt": now.isoformat(timespec="seconds"),
+        "appliance": appliance_id,
         "ok": all(item.get("ok") for item in results),
         "current": current,
         "state": state,
@@ -356,9 +375,9 @@ def main() -> int:
         "powerFallback": {"mode": "shadow", "observation": observation},
     }
     if not args.dry_run:
-        write_json(STATE_PATH, state)
-        write_json(STATUS_PATH, payload)
-        write_report(payload)
+        write_json(state_path, state)
+        write_json(status_path, payload)
+        write_report(payload, report_path, appliance_name)
     print(json.dumps(payload, indent=2, sort_keys=True))
     return 0 if payload["ok"] else 1
 

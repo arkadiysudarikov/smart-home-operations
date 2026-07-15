@@ -121,10 +121,52 @@ class WasherNotifierTest(unittest.TestCase):
                 }
             },
         }
-        current = washer_notifier.current_washer_state(latest, config(), now)
+        current = washer_notifier.current_appliance_state(latest, {**config(), "accessory": "Washer"}, now)
         self.assertTrue(current["fresh"])
         self.assertTrue(current["inUse"])
         self.assertFalse(current["doorOpen"])
+
+    def test_reads_dryer_characteristics_from_snapshot(self) -> None:
+        now = datetime(2026, 7, 15, 12, 0, tzinfo=TZ)
+        latest = {
+            "captured_at": (now - timedelta(minutes=1)).isoformat(),
+            "homeEvents": {
+                "currentCharacteristics": {
+                    "in-use": {"accessory": "Dryer", "service": "Dryer", "characteristic": "InUse", "value": 0},
+                    "door": {"accessory": "Dryer", "service": "Dryer Door", "characteristic": "ContactSensorState", "value": 1},
+                }
+            },
+        }
+        current = washer_notifier.current_appliance_state(latest, {**config(), "accessory": "Dryer"}, now)
+        self.assertTrue(current["fresh"])
+        self.assertFalse(current["inUse"])
+        self.assertTrue(current["doorOpen"])
+
+    def test_dryer_actions_use_dryer_messages_and_sensors(self) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def notification(message: str, title: str) -> dict:
+            calls.append((message, title))
+            return {"ok": True}
+
+        with (
+            mock.patch.object(washer_notifier, "mac_notification", side_effect=notification),
+            mock.patch.object(washer_notifier, "webhook_set", return_value={"ok": True}),
+        ):
+            results = washer_notifier.execute_actions(
+                ["finish_on", "notify_finish", "notify_reminder"],
+                {
+                    "accessory": "Dryer",
+                    "display_name": "Dryer",
+                    "finish_sensor_id": "dryer-finished",
+                    "reminder_sensor_id": "dryer-unload",
+                    "reminder_minutes": 20,
+                },
+                False,
+            )
+        self.assertTrue(all(item["ok"] for item in results))
+        self.assertEqual(calls[0], ("The dryer has finished.", "Dryer Finished"))
+        self.assertEqual(calls[1], ("The dryer finished 20 minutes ago and the door is still closed.", "Unload Dryer"))
 
     def test_homepod_announcement_uses_configured_target_and_restores_output(self) -> None:
         completed = SimpleNamespace(returncode=0, stderr="", stdout="")
