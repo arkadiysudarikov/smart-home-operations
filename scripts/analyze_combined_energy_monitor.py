@@ -316,10 +316,6 @@ def build_source_status(
     sense_fallback_end = (bill_home.get("sense") or {}).get("end")
     envoy_timestamp = envoy_live.get("timestamp") if envoy_live else envoy_fallback_end
     sense_timestamp = sense_live.get("timestamp") if sense_live else sense_fallback_end
-    latest_cost_bill = (energy_costs.get("model") or {}).get("latestClosedBill") or {}
-    cost_basis_end = latest_cost_bill.get("periodEnd")
-    cost_age = age_hours(now, cost_basis_end)
-
     rows = [
         {
             "source": "Envoy",
@@ -353,9 +349,9 @@ def build_source_status(
         },
         {
             "source": "Energy costs",
-            "status": status_label(cost_age, stale_hours),
-            "ageHours": cost_age,
-            "detail": f"latest closed bill through {cost_basis_end}" if cost_basis_end else "no closed bill basis",
+            "status": status_label(age_hours(now, energy_costs.get("generatedAt")), stale_hours),
+            "ageHours": age_hours(now, energy_costs.get("generatedAt")),
+            "detail": energy_costs.get("generatedAt"),
         },
     ]
     for row in rows:

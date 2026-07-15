@@ -43,7 +43,7 @@ class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
 
         self.assertEqual(len(rows), 12)
 
-    def test_energy_cost_freshness_uses_latest_closed_bill_date(self) -> None:
+    def test_energy_cost_freshness_uses_report_generation_time(self) -> None:
         now = datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
         self.patch_module(live_envoy_source=lambda: {}, live_sense_source=lambda: {})
 
@@ -62,8 +62,31 @@ class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
         )
 
         costs = next(row for row in rows if row["source"] == "Energy costs")
+        self.assertEqual(costs["status"], "fresh")
+        self.assertEqual(costs["detail"], "2026-07-15T11:59:00-07:00")
+
+    def test_energy_cost_freshness_still_flags_an_old_report(self) -> None:
+        now = datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        self.patch_module(live_envoy_source=lambda: {}, live_sense_source=lambda: {})
+
+        rows = combined.build_source_status(
+            now,
+            {"source_status_stale_hours": 24},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {
+                "generatedAt": "2026-07-13T11:59:00-07:00",
+                "model": {"latestClosedBill": {"periodEnd": "2026-07-08"}},
+            },
+        )
+
+        costs = next(row for row in rows if row["source"] == "Energy costs")
         self.assertEqual(costs["status"], "stale")
-        self.assertIn("2026-05-07", costs["detail"])
+        self.assertEqual(costs["detail"], "2026-07-13T11:59:00-07:00")
+
     def patch_module(self, **replacements: object) -> None:
         self._restore = getattr(self, "_restore", {})
         for name, replacement in replacements.items():
