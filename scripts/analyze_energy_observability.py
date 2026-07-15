@@ -208,7 +208,31 @@ def peak_events(all_energy: dict[str, Any], limit: int | None = None) -> list[di
     return ordered[:limit] if limit is not None else ordered
 
 
-def source_quality(combined: dict[str, Any], all_energy: dict[str, Any], daily: list[dict[str, Any]]) -> dict[str, Any]:
+def daily_rows_for_quality_window(
+    daily: list[dict[str, Any]], generated_at: str, days: int = HISTORY_RETENTION_DAYS
+) -> list[dict[str, Any]]:
+    try:
+        end_date = datetime.fromisoformat(generated_at).date()
+    except (TypeError, ValueError):
+        return []
+    cutoff = end_date - timedelta(days=max(1, days) - 1)
+    result: list[dict[str, Any]] = []
+    for row in daily:
+        try:
+            row_date = datetime.fromisoformat(str(row.get("date") or "")).date()
+        except ValueError:
+            continue
+        if cutoff <= row_date <= end_date:
+            result.append(row)
+    return result
+
+
+def source_quality(
+    combined: dict[str, Any],
+    all_energy: dict[str, Any],
+    daily: list[dict[str, Any]],
+    history_window_days: int | None = None,
+) -> dict[str, Any]:
     statuses = [item for item in combined.get("sourceStatus") or [] if isinstance(item, dict)]
     meter_sources = {"SCE", "Envoy", "Sense", "Alarm.com", "ChargePoint"}
     degraded = [
@@ -218,6 +242,10 @@ def source_quality(combined: dict[str, Any], all_energy: dict[str, Any], daily: 
     ]
     overlap = int(all_energy.get("overlapPairCount") or 0)
     comparable_days = sum(1 for row in daily if row.get("availableSourceCount", 0) >= 3)
+    comparable_dates = [
+        str(row.get("date")) for row in daily if row.get("availableSourceCount", 0) >= 3 and row.get("date")
+    ]
+    quality_window_days = history_window_days or len(daily)
     issues: list[dict[str, str]] = []
     if degraded:
         issues.append(
@@ -240,7 +268,11 @@ def source_quality(combined: dict[str, Any], all_energy: dict[str, Any], daily: 
             {
                 "severity": "warning",
                 "title": "Historical comparison coverage is limited",
-                "detail": f"{comparable_days} of {len(daily)} retained days have at least three complete sources.",
+                "detail": (
+                    f"{comparable_days} of {len(daily)} days in the {quality_window_days}-day quality window "
+                    "have at least three complete sources."
+                    + (f" Comparable coverage starts {comparable_dates[0]}." if comparable_dates else "")
+                ),
             }
         )
     source_meta = combined.get("sources") or {}
@@ -272,6 +304,10 @@ def source_quality(combined: dict[str, Any], all_energy: dict[str, Any], daily: 
         "status": "ready" if not issues else "degraded",
         "overlapPairCount": overlap,
         "comparableDayCount": comparable_days,
+        "historyWindowDays": quality_window_days,
+        "historyDayCount": len(daily),
+        "comparisonCoverageStart": comparable_dates[0] if comparable_dates else None,
+        "comparisonCoverageEnd": comparable_dates[-1] if comparable_dates else None,
         "invalidReadingCounts": invalid_counts,
         "issues": issues,
         "sourceSemantics": [
@@ -343,6 +379,7 @@ def build_payload() -> dict[str, Any]:
     alarm = load_json(ROOT / "config" / "alarm_energy_readings.json")
     generated_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     daily = build_daily_comparison(combined, alarm, sce_daily_rows())
+    quality_daily = daily_rows_for_quality_window(daily, generated_at, HISTORY_RETENTION_DAYS)
     live = live_summary(latest, sense_now, alarm)
     payload = {
         "ok": bool(combined),
@@ -351,7 +388,7 @@ def build_payload() -> dict[str, Any]:
         "live": live,
         "dailyComparison": daily,
         "peakEvents": peak_events(all_energy),
-        "quality": source_quality(combined, all_energy, daily),
+        "quality": source_quality(combined, all_energy, quality_daily, HISTORY_RETENTION_DAYS),
         "sourceStatus": combined.get("sourceStatus") or [],
         "states": combined.get("states") or [],
     }
@@ -375,6 +412,7 @@ def write_report(payload: dict[str, Any]) -> None:
         f"- Quality: `{quality.get('status')}`",
         f"- SCE/monitor interval overlap: `{quality.get('overlapPairCount')}` pairs",
         f"- Comparable daily rows: `{quality.get('comparableDayCount')}`",
+        f"- Quality window: `{quality.get('historyWindowDays')}` days; `{quality.get('historyDayCount')}` daily rows",
         f"- Live solar / site load / grid: `{fmt(live.get('envoyProductionKw'))}` / `{fmt(live.get('envoySiteLoadKw'))}` / `{fmt(live.get('envoyGridNetKw'))}` kW",
         f"- Battery: `{fmt(live.get('batteryPercent'), 0)}`%; storage `{fmt(live.get('envoyStorageKw'))}` kW",
         f"- Sense non-battery load: `{fmt(live.get('senseLoadKw'))}` kW",

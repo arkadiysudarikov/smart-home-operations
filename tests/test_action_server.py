@@ -1255,6 +1255,7 @@ class ActionServerTest(unittest.TestCase):
                         "status": "ready",
                         "overlapPairCount": 100,
                         "comparableDayCount": 7,
+                        "historyWindowDays": 90,
                         "sourceSemantics": [
                             {"source": "SCE", "measurement": "Utility import/export", "use": "Billing truth"}
                         ],
@@ -1283,6 +1284,7 @@ class ActionServerTest(unittest.TestCase):
         self.assertIn("Smart Home Energy Observability", page)
         self.assertIn("Source definitions", page)
         self.assertIn("90-day local observation retention", page)
+        self.assertIn("comparable days in the 90-day quality window", page)
         self.assertIn("/status/energy?days=30", page)
         self.assertIn("Selected-range source coverage", page)
         self.assertIn("SCE 1/1 days", page)

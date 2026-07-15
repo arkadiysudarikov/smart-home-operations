@@ -214,10 +214,40 @@ class AnalyzeEnergyObservabilityTest(unittest.TestCase):
     def test_sparse_historical_coverage_degrades_quality(self) -> None:
         daily = [{"availableSourceCount": 3}] + [{"availableSourceCount": 1} for _ in range(9)]
 
-        quality = analyzer.source_quality({}, {"overlapPairCount": 20}, daily)
+        quality = analyzer.source_quality({}, {"overlapPairCount": 20}, daily, 90)
 
         self.assertEqual(quality["status"], "degraded")
         self.assertIn("Historical comparison coverage is limited", [item["title"] for item in quality["issues"]])
+        self.assertEqual(quality["historyWindowDays"], 90)
+        self.assertEqual(quality["historyDayCount"], 10)
+        self.assertIn("1 of 10 days in the 90-day quality window", quality["issues"][0]["detail"])
+
+    def test_quality_window_excludes_older_utility_archive_rows(self) -> None:
+        daily = [
+            {"date": "2026-04-16", "availableSourceCount": 1},
+            {"date": "2026-04-17", "availableSourceCount": 1},
+            {"date": "2026-07-14", "availableSourceCount": 3},
+            {"date": "2026-07-15", "availableSourceCount": 3},
+        ]
+
+        rows = analyzer.daily_rows_for_quality_window(daily, "2026-07-15T15:00:00-07:00", 90)
+
+        self.assertEqual([row["date"] for row in rows], ["2026-04-17", "2026-07-14", "2026-07-15"])
+
+    def test_quality_reports_comparable_coverage_dates(self) -> None:
+        quality = analyzer.source_quality(
+            {},
+            {"overlapPairCount": 20},
+            [
+                {"date": "2026-07-06", "availableSourceCount": 3},
+                {"date": "2026-07-07", "availableSourceCount": 1},
+                {"date": "2026-07-08", "availableSourceCount": 3},
+            ],
+            90,
+        )
+
+        self.assertEqual(quality["comparisonCoverageStart"], "2026-07-06")
+        self.assertEqual(quality["comparisonCoverageEnd"], "2026-07-08")
 
 
 if __name__ == "__main__":
