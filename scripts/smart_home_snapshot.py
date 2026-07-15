@@ -32,6 +32,7 @@ DRIFT_CHECK_FILES = [
     "scripts/analyze_chargepoint_pairing.py",
     "scripts/analyze_combined_energy_monitor.py",
     "scripts/analyze_energy_automation_opportunities.py",
+    "scripts/analyze_energy_observability.py",
     "scripts/analyze_energy_costs.py",
     "scripts/analyze_energy_pairing.py",
     "scripts/analyze_meter_reconciliation.py",

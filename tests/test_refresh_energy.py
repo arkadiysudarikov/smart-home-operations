@@ -19,6 +19,12 @@ SPEC.loader.exec_module(refresh_energy)
 
 
 class RefreshEnergyTest(unittest.TestCase):
+    def test_refresh_plan_keeps_post_capture_snapshot_before_observability(self) -> None:
+        source = (ROOT / "scripts" / "refresh_energy.py").read_text()
+
+        self.assertEqual(source.count('("snapshot_post_capture", [py, "scripts/smart_home_snapshot.py"'), 2)
+        self.assertLess(source.index('"snapshot_post_capture"'), source.index('"analyze_energy_observability"'))
+
     def test_recent_status_rejects_explicit_non_true_ok(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "status.json"

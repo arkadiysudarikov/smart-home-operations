@@ -7,6 +7,7 @@ import html
 import os
 import re
 import signal
+import sqlite3
 import subprocess
 import sys
 import threading
@@ -22,6 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor"
 CONFIG_PATH = ROOT / "config" / "sources.json"
 DATA_DIR = ROOT / "data"
+DB_PATH = DATA_DIR / "smart_home.sqlite"
 REPORT_DIR = ROOT / "reports"
 LOG_DIR = ROOT / "logs"
 SCE_REFRESH_STATUS_PATH = DATA_DIR / "latest_sce_refresh.json"
@@ -539,7 +541,69 @@ def action_status() -> dict[str, Any]:
     }
 
 
-def energy_status() -> dict[str, Any]:
+def normalized_energy_history_days(value: Any) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return 7
+    return parsed if parsed in {1, 7, 30, 90} else 7
+
+
+def energy_observation_history(days: int = 7, max_points: int = 420) -> list[dict[str, Any]]:
+    if not DB_PATH.exists():
+        return []
+    cutoff = (datetime.now(timezone.utc).astimezone() - timedelta(days=days)).isoformat(timespec="seconds")
+    try:
+        with sqlite3.connect(DB_PATH) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                """
+                select captured_at, envoy_production_kw, envoy_site_load_kw, envoy_grid_net_kw,
+                       envoy_storage_kw, battery_percent, battery_charging, battery_discharging,
+                       sense_load_kw, sense_solar_kw, alarm_mtd_kwh, alarm_projected_kwh,
+                       energy_alert_count, active_states_json
+                  from energy_observations
+                 where captured_at >= ?
+                 order by captured_at asc
+                """,
+                (cutoff,),
+            ).fetchall()
+    except (sqlite3.Error, OSError):
+        return []
+    if len(rows) > max_points:
+        step = max(1, len(rows) // max_points)
+        sampled = list(rows[::step])
+        if sampled[-1]["captured_at"] != rows[-1]["captured_at"]:
+            sampled.append(rows[-1])
+        rows = sampled
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            states = json.loads(row["active_states_json"] or "[]")
+        except json.JSONDecodeError:
+            states = []
+        result.append(
+            {
+                "capturedAt": row["captured_at"],
+                "envoyProductionKw": row["envoy_production_kw"],
+                "envoySiteLoadKw": row["envoy_site_load_kw"],
+                "envoyGridNetKw": row["envoy_grid_net_kw"],
+                "envoyStorageKw": row["envoy_storage_kw"],
+                "batteryPercent": row["battery_percent"],
+                "batteryCharging": bool(row["battery_charging"]),
+                "batteryDischarging": bool(row["battery_discharging"]),
+                "senseLoadKw": row["sense_load_kw"],
+                "senseSolarKw": row["sense_solar_kw"],
+                "alarmMonthToDateKwh": row["alarm_mtd_kwh"],
+                "alarmProjectedKwh": row["alarm_projected_kwh"],
+                "energyAlertCount": row["energy_alert_count"],
+                "states": states if isinstance(states, list) else [],
+            }
+        )
+    return result
+
+
+def energy_status(history_days: int = 7) -> dict[str, Any]:
     combined = read_json_status(DATA_DIR / "latest_combined_energy_monitor.json")
     refresh = read_json_status(ENERGY_REFRESH_STATUS_PATH)
     sce = read_json_status(SCE_API_STATUS_PATH)
@@ -550,6 +614,12 @@ def energy_status() -> dict[str, Any]:
     sense_now = read_json_status(DATA_DIR / "sense_now_latest.json")
     envoy = read_json_status(DATA_DIR / "latest_envoy_direct.json")
     automation = read_json_status(DATA_DIR / "latest_energy_automation_opportunities.json")
+    observability = read_json_status(DATA_DIR / "latest_energy_observability.json")
+    if isinstance(observability, dict):
+        observability = dict(observability)
+        observability["dailyComparison"] = filter_daily_energy_rows(
+            observability.get("dailyComparison") or [], history_days
+        )
     statuses = {
         "refresh": refresh,
         "sce": sce,
@@ -580,8 +650,11 @@ def energy_status() -> dict[str, Any]:
         "senseNow": sense_now,
         "envoy": envoy,
         "automationOpportunities": automation,
+        "observability": observability,
         "combined": combined,
         "operationalSourceStatus": operational_source_status(),
+        "historyDays": history_days,
+        "observationHistory": energy_observation_history(history_days),
     }
     combined_payload = load_json_file(DATA_DIR / "latest_combined_energy_monitor.json")
     if combined_payload:
@@ -591,6 +664,13 @@ def energy_status() -> dict[str, Any]:
     automation_payload = load_json_file(DATA_DIR / "latest_energy_automation_opportunities.json")
     if automation_payload:
         payload["opportunities"] = automation_payload.get("opportunities", [])
+    observability_payload = load_json_file(DATA_DIR / "latest_energy_observability.json")
+    if observability_payload:
+        observability_payload = dict(observability_payload)
+        observability_payload["dailyComparison"] = filter_daily_energy_rows(
+            observability_payload.get("dailyComparison") or [], history_days
+        )
+        payload["observability"] = observability_payload
     return payload
 
 
@@ -892,13 +972,170 @@ document.getElementById('refresh').addEventListener('click',()=>location.reload(
     return body.encode()
 
 
-def render_energy_page() -> bytes:
-    status = energy_status()
-    sources = status.get("operationalSourceStatus") or status.get("sourceStatus") or []
-    alerts = status.get("alerts") or []
-    opportunities = status.get("opportunities") or []
+def display_energy_value(value: Any, suffix: str = "", digits: int = 1) -> str:
+    if not isinstance(value, (int, float)):
+        return "n/a"
+    return f"{value:.{digits}f}{suffix}"
+
+
+def filter_daily_energy_rows(rows: list[dict[str, Any]], days: int, now: datetime | None = None) -> list[dict[str, Any]]:
+    fallback_date = (now or datetime.now(timezone.utc).astimezone()).date()
+    sce_dates: list[Any] = []
+    for row in rows:
+        if not isinstance(row.get("sceDeliveredKwh"), (int, float)):
+            continue
+        try:
+            sce_dates.append(datetime.fromisoformat(str(row.get("date"))).date())
+        except (TypeError, ValueError):
+            continue
+    range_end = max(sce_dates) if sce_dates else fallback_date
+    cutoff = range_end - timedelta(days=days - 1)
+    filtered: list[dict[str, Any]] = []
+    for row in rows:
+        try:
+            row_date = datetime.fromisoformat(str(row.get("date"))).date()
+        except (TypeError, ValueError):
+            continue
+        if cutoff <= row_date <= range_end:
+            filtered.append(row)
+    return filtered
+
+
+def energy_line_chart(
+    title: str,
+    subtitle: str,
+    rows: list[dict[str, Any]],
+    x_key: str,
+    series: list[tuple[str, str, str]],
+    unit: str,
+) -> str:
+    width, height = 920, 300
+    left, right, top, bottom = 58, 20, 58, 46
+    values = [
+        float(row[key])
+        for row in rows
+        for key, _label, _color in series
+        if isinstance(row.get(key), (int, float))
+    ]
+    if not values or not rows:
+        return f"<div class='empty'><strong>{html_escape(title)}</strong><br>No observations yet.</div>"
+    low = min(0.0, min(values))
+    high = max(values)
+    if high <= low:
+        high = low + 1
+    pad = (high - low) * 0.08
+    low -= pad
+    high += pad
+    plot_w = width - left - right
+    plot_h = height - top - bottom
+
+    def x_pos(index: int) -> float:
+        return left + (plot_w * index / max(1, len(rows) - 1))
+
+    def y_pos(value: float) -> float:
+        return top + (high - value) * plot_h / (high - low)
+
+    parts = [
+        f"<svg class='chart' viewBox='0 0 {width} {height}' role='img' aria-label='{html_escape(title)}'>",
+        f"<text x='18' y='25' class='chart-title'>{html_escape(title)}</text>",
+        f"<text x='18' y='43' class='chart-subtitle'>{html_escape(subtitle)}</text>",
+    ]
+    for tick in range(5):
+        value = low + (high - low) * tick / 4
+        y = y_pos(value)
+        parts.append(f"<line x1='{left}' y1='{y:.1f}' x2='{width-right}' y2='{y:.1f}' class='gridline'/>")
+        parts.append(f"<text x='{left-7}' y='{y+4:.1f}' text-anchor='end' class='axis'>{value:.1f}{html_escape(unit)}</text>")
+    for key, label, color in series:
+        points = [
+            f"{x_pos(index):.1f},{y_pos(float(row[key])):.1f}"
+            for index, row in enumerate(rows)
+            if isinstance(row.get(key), (int, float))
+        ]
+        if len(points) >= 2:
+            parts.append(f"<polyline points='{' '.join(points)}' fill='none' stroke='{color}' stroke-width='2.2'/>")
+        elif points:
+            x, y = points[0].split(",")
+            parts.append(f"<circle cx='{x}' cy='{y}' r='3.5' fill='{color}'/>")
+    label_indexes = sorted({0, len(rows) // 2, len(rows) - 1})
+    for index in label_indexes:
+        label = str(rows[index].get(x_key) or "")
+        if "T" in label:
+            label = label.replace("T", " ")[:16]
+        else:
+            label = label[-5:]
+        parts.append(f"<text x='{x_pos(index):.1f}' y='{height-15}' text-anchor='middle' class='axis'>{html_escape(label)}</text>")
+    legend_x = left
+    for _key, label, color in series:
+        parts.append(f"<line x1='{legend_x}' y1='{height-34}' x2='{legend_x+18}' y2='{height-34}' stroke='{color}' stroke-width='3'/>")
+        parts.append(f"<text x='{legend_x+23}' y='{height-30}' class='legend'>{html_escape(label)}</text>")
+        legend_x += max(120, len(label) * 8 + 45)
+    parts.append("</svg>")
+    return "".join(parts)
+
+
+def render_energy_page(history_days: int = 7) -> bytes:
+    status = energy_status(history_days)
+    observability = status.get("observability") or {}
+    live = observability.get("live") or {}
+    quality = observability.get("quality") or {}
+    daily = filter_daily_energy_rows(observability.get("dailyComparison") or [], history_days)
+    history = status.get("observationHistory") or []
+    sources = observability.get("sourceStatus") or status.get("sourceStatus") or status.get("operationalSourceStatus") or []
     refresh = status.get("refresh") or {}
-    source_rows = "\n".join(
+    peak_events = observability.get("peakEvents") or []
+    semantics = quality.get("sourceSemantics") or []
+    coverage_fields = (
+        ("SCE", "sceDeliveredKwh"),
+        ("Alarm.com", "alarmClampKwh"),
+        ("Envoy", "envoySiteLoadKwh"),
+        ("Sense", "senseLoadKwh"),
+    )
+    coverage_counts = {
+        label: sum(isinstance(row.get(field), (int, float)) for row in daily)
+        for label, field in coverage_fields
+    }
+    comparable_range_days = sum(int(row.get("availableSourceCount") or 0) >= 3 for row in daily)
+    range_quality_status = "complete" if daily and all(count == len(daily) for count in coverage_counts.values()) else "limited"
+
+    range_label = "1 day" if history_days == 1 else f"{history_days} days"
+    sce_delivered_total = sum(float(row.get("sceDeliveredKwh") or 0) for row in daily)
+    sce_received_total = sum(float(row.get("sceReceivedKwh") or 0) for row in daily)
+    sce_net_total = sum(float(row.get("sceNetImportKwh") or 0) for row in daily)
+    sce_net_daily_average = sce_net_total / len(daily) if daily else None
+    peak_sce_row = max(
+        (row for row in daily if isinstance(row.get("sceDeliveredKwh"), (int, float))),
+        key=lambda row: float(row.get("sceDeliveredKwh") or 0),
+        default=None,
+    )
+    range_cards = [
+        ("Grid delivered", display_energy_value(sce_delivered_total, " kWh"), range_label),
+        ("Grid exported", display_energy_value(sce_received_total, " kWh"), range_label),
+        ("Net grid import", display_energy_value(sce_net_total, " kWh"), range_label),
+        ("Average net / day", display_energy_value(sce_net_daily_average, " kWh"), f"{len(daily)} completed {'day' if len(daily) == 1 else 'days'}"),
+        (
+            "Peak import day",
+            display_energy_value((peak_sce_row or {}).get("sceDeliveredKwh"), " kWh"),
+            str((peak_sce_row or {}).get("date") or "No SCE data"),
+        ),
+    ]
+    range_card_markup = "".join(
+        f"<div class='card range-card'><span>{html_escape(label)}</span><strong>{html_escape(value)}</strong><small>{html_escape(note)}</small></div>"
+        for label, value, note in range_cards
+    )
+
+    cards = [
+        ("Solar production", display_energy_value(live.get("envoyProductionKw"), " kW"), "Envoy live"),
+        ("Total site load", display_energy_value(live.get("envoySiteLoadKw"), " kW"), "Includes storage effects"),
+        ("Grid net", display_energy_value(live.get("envoyGridNetKw"), " kW", 2), "Positive import; negative export"),
+        ("Battery", display_energy_value(live.get("batteryPercent"), "%", 0), "Charging" if live.get("batteryCharging") else "Discharging" if live.get("batteryDischarging") else "Idle"),
+        ("Sense house load", display_energy_value(live.get("senseLoadKw"), " kW", 2), "Non-battery load"),
+        ("Alarm projection", display_energy_value(live.get("alarmProjectedKwh"), " kWh", 0), f"Budget {display_energy_value(live.get('alarmBudgetKwh'), ' kWh', 0)}"),
+    ]
+    card_markup = "".join(
+        f"<div class='card'><span>{html_escape(label)}</span><strong>{html_escape(value)}</strong><small>{html_escape(note)}</small></div>"
+        for label, value, note in cards
+    )
+    source_rows = "".join(
         "<tr>"
         f"<td>{html_escape(item.get('source'))}</td>"
         f"<td><span class='pill {html_escape(item.get('status'))}'>{html_escape(item.get('status'))}</span></td>"
@@ -907,102 +1144,117 @@ def render_energy_page() -> bytes:
         "</tr>"
         for item in sources
     )
-    alert_rows = "\n".join(
-        f"<li><strong>{html_escape(item.get('severity'))}</strong> {html_escape(item.get('title'))}: {html_escape(item.get('detail'))}</li>"
-        for item in alerts
-    ) or "<li>No combined-energy alerts.</li>"
-    opportunity_rows = "\n".join(
+    semantics_rows = "".join(
+        f"<tr><td>{html_escape(item.get('source'))}</td><td>{html_escape(item.get('measurement'))}</td><td>{html_escape(item.get('use'))}</td></tr>"
+        for item in semantics
+    )
+    peak_rows = "".join(
         "<tr>"
-        f"<td><span class='pill {html_escape(item.get('priority'))}'>{html_escape(item.get('priority'))}</span></td>"
-        f"<td>{html_escape(item.get('area'))}</td>"
-        f"<td>{html_escape(item.get('recommendation'))}</td>"
-        f"<td>{html_escape(item.get('automation'))}</td>"
+        f"<td>{html_escape(str(item.get('start') or '').replace('T', ' ')[:16])}</td>"
+        f"<td>{html_escape(display_energy_value(item.get('sceImportKw'), ' kW'))}</td>"
+        f"<td>{html_escape(display_energy_value(item.get('envoySiteLoadKw'), ' kW'))}</td>"
+        f"<td>{html_escape(display_energy_value(item.get('senseLoadKw'), ' kW'))}</td>"
         "</tr>"
-        for item in opportunities
-    ) or "<tr><td colspan='4'>No automation recommendations generated yet.</td></tr>"
-    body = f"""<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Smart Home Energy</title>
-  <style>
-    body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 32px; color: #1f2933; }}
-    h1 {{ font-size: 28px; margin-bottom: 4px; }}
-    .muted {{ color: #64748b; }}
-    .actions {{ display: flex; gap: 12px; flex-wrap: wrap; margin: 24px 0; }}
-    button {{ border: 1px solid #0f766e; background: #0f766e; color: white; border-radius: 6px; padding: 10px 14px; font-size: 14px; cursor: pointer; }}
-    button.secondary {{ background: white; color: #0f766e; }}
-    table {{ border-collapse: collapse; width: 100%; margin-top: 12px; }}
-    th, td {{ border-bottom: 1px solid #e2e8f0; text-align: left; padding: 10px 8px; vertical-align: top; }}
-    th {{ font-size: 12px; text-transform: uppercase; color: #64748b; }}
-    .pill {{ border-radius: 999px; padding: 3px 8px; background: #e2e8f0; }}
-    .pill.fresh, .pill.complete {{ background: #dcfce7; color: #166534; }}
-    .pill.stale, .pill.failed, .pill.missing, .pill.auth_required, .pill.unreachable, .pill.credentials_missing {{ background: #fee2e2; color: #991b1b; }}
-    .pill.downloaded, .pill.fallback, .pill.reachable {{ background: #fef3c7; color: #92400e; }}
-    .pill.high {{ background: #fee2e2; color: #991b1b; }}
-    .pill.medium {{ background: #fef3c7; color: #92400e; }}
-    .pill.low {{ background: #e0f2fe; color: #075985; }}
-    .panel {{ margin-top: 24px; }}
-    code {{ background: #f1f5f9; padding: 2px 4px; border-radius: 4px; }}
-  </style>
-</head>
-<body>
-  <h1>Smart Home Energy</h1>
-  <div class="muted">Generated {html_escape(status.get('generatedAt'))}</div>
-  <div class="panel">
-    <strong>Last refresh:</strong>
-    <span class="pill {html_escape(refresh.get('status'))}">{html_escape(refresh.get('status') or 'unknown')}</span>
-    <span class="muted">finished {html_escape(refresh.get('finishedAt'))}</span>
-  </div>
-  <div class="actions">
-    <button data-action="/action/reconcile-energy">Refresh All Energy</button>
-    <button class="secondary" data-action="/action/refresh-sce">Refresh SCE</button>
-    <button class="secondary" data-action="/action/refresh-alarm-cache">Refresh Alarm.com</button>
-    <button class="secondary" data-action="/action/screens-awake">Screens Awake</button>
-    <button class="secondary" data-action="/action/screens-auto">Screens Auto</button>
-  </div>
-  <div id="result" class="muted"></div>
-  <div class="panel">
-    <h2>Source Status</h2>
-    <table>
-      <thead><tr><th>Source</th><th>Status</th><th>Detail</th><th>Age</th></tr></thead>
-      <tbody>{source_rows}</tbody>
-    </table>
-  </div>
-  <div class="panel">
-    <h2>Alerts</h2>
-    <ul>{alert_rows}</ul>
-  </div>
-  <div class="panel">
-    <h2>Automation Opportunities</h2>
-    <table>
-      <thead><tr><th>Priority</th><th>Area</th><th>Recommendation</th><th>Automation Path</th></tr></thead>
-      <tbody>{opportunity_rows}</tbody>
-    </table>
-  </div>
-  <p class="muted">JSON: <code>/status/energy</code></p>
-  <p class="muted"><a href="/displays">Display observability</a></p>
-  <script>
-    document.querySelectorAll('button[data-action]').forEach((button) => {{
-      button.addEventListener('click', async () => {{
-        button.disabled = true;
-        document.getElementById('result').textContent = 'Requesting ' + button.textContent + '...';
-        try {{
-          const response = await fetch(button.dataset.action, {{ method: 'POST' }});
-          const payload = await response.json();
-          document.getElementById('result').textContent = JSON.stringify(payload, null, 2);
-        }} catch (error) {{
-          document.getElementById('result').textContent = String(error);
-        }} finally {{
-          button.disabled = false;
-        }}
-      }});
-    }});
-  </script>
-</body>
-</html>
-"""
+        for item in peak_events
+    ) or "<tr><td colspan='4'>No overlapping interval events yet.</td></tr>"
+    range_quality_row = (
+        "<li><strong>Selected-range source coverage</strong>: "
+        + ", ".join(f"{html_escape(label)} {count}/{len(daily)} days" for label, count in coverage_counts.items())
+        + f"; three-or-more-source comparison {comparable_range_days}/{len(daily)} days.</li>"
+    )
+    quality_rows = range_quality_row + "".join(
+        f"<li><strong>{html_escape(item.get('title'))}</strong>: {html_escape(item.get('detail'))}</li>"
+        for item in quality.get("issues") or []
+    ) or "<li>Freshness, overlap, and daily reconciliation checks pass.</li>"
+    live_window_start = str(history[0].get("capturedAt") or "") if history else ""
+    live_window_end = str(history[-1].get("capturedAt") or "") if history else ""
+    live_window_detail = (
+        f"{len(history)} five-minute samples from {live_window_start.replace('T', ' ')[:16]} to {live_window_end.replace('T', ' ')[:16]}."
+        if history
+        else "No five-minute samples in the selected period."
+    )
+    live_chart = energy_line_chart(
+        "Live energy flow — collected observation window",
+        f"{live_window_detail} Positive grid values are imports.",
+        history,
+        "capturedAt",
+        [
+            ("envoyProductionKw", "Solar", "#d19a00"),
+            ("envoySiteLoadKw", "Site load", "#2563eb"),
+            ("envoyGridNetKw", "Grid net", "#dc2626"),
+            ("senseLoadKw", "Sense load", "#7c3aed"),
+        ],
+        "",
+    )
+    load_chart = energy_line_chart(
+        f"Daily gross-load comparison — {history_days} day{'s' if history_days != 1 else ''}",
+        "Alarm.com, Sense, and Envoy are complementary load views, not interchangeable meters.",
+        daily,
+        "date",
+        [
+            ("alarmClampKwh", "Alarm clamp", "#ea580c"),
+            ("senseLoadKwh", "Sense load", "#7c3aed"),
+            ("envoySiteLoadKwh", "Envoy site", "#2563eb"),
+        ],
+        "",
+    )
+    grid_chart = energy_line_chart(
+        f"Daily utility grid exchange — {history_days} day{'s' if history_days != 1 else ''}",
+        "SCE Green Button intervals are authoritative for delivered and received utility energy.",
+        daily,
+        "date",
+        [
+            ("sceDeliveredKwh", "Delivered", "#dc2626"),
+            ("sceReceivedKwh", "Received", "#16a34a"),
+            ("sceNetImportKwh", "Net import", "#0f766e"),
+        ],
+        "",
+    )
+    range_links = " ".join(
+        f"<a class='range {'active' if history_days == days else ''}' href='/energy?days={days}'>{label}</a>"
+        for days, label in ((1, "1d"), (7, "7d"), (30, "30d"), (90, "90d"))
+    )
+    history_start = history[0].get("capturedAt") if history else None
+    range_summary = (
+        f"Selected window: {len(daily)} completed SCE days through {daily[-1].get('date') if daily else 'n/a'} "
+        f"and {len(history)} five-minute live samples. "
+        f"Live sampling began {history_start or 'today'}; retained utility history fills the longer views. "
+        + "Coverage: "
+        + ", ".join(f"{label} {count}/{len(daily)}" for label, count in coverage_counts.items())
+        + "."
+    )
+    body = f"""<!doctype html><html><head><meta charset='utf-8'><meta name='viewport' content='width=device-width,initial-scale=1'>
+<title>Smart Home Energy Observability</title><style>
+:root {{ --bg:#f6f8fb; --panel:#fff; --ink:#172033; --muted:#657386; --line:#dce3eb; --accent:#0f766e; }}
+* {{ box-sizing:border-box }} body {{ margin:0;background:var(--bg);color:var(--ink);font:14px/1.45 -apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif }}
+main {{ width:min(1180px,100%);margin:auto;padding:28px 20px 52px }} h1 {{ margin:0;font-size:28px }} h2 {{ margin:0 0 8px;font-size:18px }} .muted,small {{ color:var(--muted) }}
+.top,.actions,.ranges {{ display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap }} .actions {{ justify-content:flex-start;margin:18px 0 }}
+button,.range {{ border:1px solid var(--accent);border-radius:8px;padding:8px 11px;background:var(--accent);color:white;text-decoration:none;cursor:pointer }} button.secondary,.range {{ background:var(--panel);color:var(--accent) }} .range.active {{ background:var(--accent);color:white }}
+.range-overview {{ margin:18px 0 }} .range-heading {{ display:flex;align-items:end;justify-content:space-between;gap:10px;margin-bottom:9px;flex-wrap:wrap }} .range-heading h2 {{ font-size:21px;margin:0 }}
+.range-cards {{ display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px }} .range-card {{ border-top:3px solid var(--accent) }}
+.cards {{ display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:10px 0 18px }} .card,.panel {{ background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px }}
+.card span,.card small {{ display:block }} .card strong {{ display:block;font-size:24px;margin:5px 0 }} .grid {{ display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px }} .wide {{ grid-column:1/-1 }}
+.chart {{ width:100%;height:auto;display:block }} .chart-title {{ font-size:17px;font-weight:700;fill:var(--ink) }} .chart-subtitle,.axis,.legend {{ font-size:10px;fill:var(--muted) }} .gridline {{ stroke:var(--line);stroke-width:1 }}
+table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top }} th {{ font-size:11px;text-transform:uppercase;color:var(--muted) }}
+.pill {{ border-radius:999px;padding:3px 7px;background:#e2e8f0 }} .pill.fresh,.pill.complete {{ background:#dcfce7;color:#166534 }} .pill.stale,.pill.failed,.pill.missing {{ background:#fee2e2;color:#991b1b }}
+.empty {{ min-height:180px;display:grid;place-content:center;text-align:center;color:var(--muted) }} code {{ background:#eef2f7;padding:2px 4px;border-radius:4px }}
+@media(max-width:980px) {{ .range-cards {{ grid-template-columns:repeat(2,minmax(0,1fr)) }} }}
+@media(max-width:820px) {{ .cards,.grid {{ grid-template-columns:1fr }} .wide {{ grid-column:auto }} }} @media(max-width:520px) {{ main {{ padding:20px 12px 40px }} .range-cards {{ grid-template-columns:1fr }} }}
+</style></head><body><main>
+<header class='top'><div><h1>Smart Home Energy</h1><div class='muted'>Updated {html_escape(observability.get('generatedAt') or status.get('generatedAt'))} · source quality {html_escape(quality.get('status') or 'collecting')} · selected range {range_quality_status}</div></div><div class='ranges'>{range_links}</div></header>
+<section class='range-overview' id='selected-range' data-days='{history_days}'><div class='range-heading'><h2>Selected period · {html_escape(range_label)}</h2><span class='muted'>{html_escape(daily[0].get('date') if daily else 'n/a')} → {html_escape(daily[-1].get('date') if daily else 'n/a')}</span></div><div class='range-cards'>{range_card_markup}</div></section>
+<h2>Live now</h2>
+<section class='cards'>{card_markup}</section>
+<div class='actions'><button data-action='/action/reconcile-energy'>Refresh all</button><button class='secondary' data-action='/action/refresh-sce'>Refresh SCE</button><button class='secondary' data-action='/action/refresh-alarm-cache'>Refresh Alarm.com</button><span id='result' class='muted'></span></div>
+<p class='muted'>{html_escape(range_summary)}</p>
+<section class='grid'><div class='panel wide primary-chart' id='range-chart'>{grid_chart}</div><div class='panel'>{load_chart}</div><div class='panel'>{live_chart}</div></section>
+<section class='grid'><div class='panel'><h2>Source definitions</h2><table><thead><tr><th>Source</th><th>Measures</th><th>Use</th></tr></thead><tbody>{semantics_rows}</tbody></table></div>
+<div class='panel'><h2>Data quality</h2><ul>{quality_rows}</ul><p class='muted'>{html_escape(quality.get('overlapPairCount'))} paired SCE/monitor intervals · {html_escape(quality.get('comparableDayCount'))} comparable days.</p></div>
+<div class='panel'><h2>Peak 15-minute events</h2><table><thead><tr><th>Start</th><th>SCE import</th><th>Envoy site</th><th>Sense</th></tr></thead><tbody>{peak_rows}</tbody></table></div>
+<div class='panel'><h2>Source freshness</h2><table><thead><tr><th>Source</th><th>Status</th><th>Detail</th><th>Age</th></tr></thead><tbody>{source_rows}</tbody></table></div></section>
+<p class='muted'>Refresh <span class='pill {html_escape(refresh.get('status'))}'>{html_escape(refresh.get('status') or 'unknown')}</span> · JSON <code>/status/energy?days={history_days}</code> · 90-day local observation retention.</p>
+<script>document.querySelectorAll('button[data-action]').forEach(button=>button.addEventListener('click',async()=>{{button.disabled=true;document.getElementById('result').textContent='Requesting '+button.textContent+'…';try{{const response=await fetch(button.dataset.action,{{method:'POST'}});const payload=await response.json();document.getElementById('result').textContent=payload.ok?'Accepted; refresh in a minute.':JSON.stringify(payload)}}catch(error){{document.getElementById('result').textContent=String(error)}}finally{{button.disabled=false}}}}));</script>
+</main></body></html>"""
     return body.encode()
 
 
@@ -1984,7 +2236,8 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/status":
             return 200, action_status()
         if path == "/status/energy":
-            return 200, energy_status()
+            days = normalized_energy_history_days((query.get("days") or [7])[0])
+            return 200, energy_status(days)
         if path == "/status/displays":
             payload = display_awake_observability()
             return (200 if payload["ok"] else 503), payload
@@ -2047,11 +2300,14 @@ class Handler(BaseHTTPRequestHandler):
         return 404, {"ok": False, "error": "unknown endpoint"}
 
     def do_GET(self) -> None:
-        if self.path == "/displays":
+        parsed = urlparse(self.path)
+        if parsed.path == "/displays":
             self.send_html(200, render_display_page())
             return
-        if self.path in {"/", "/energy"}:
-            self.send_html(200, render_energy_page())
+        if parsed.path in {"/", "/energy"}:
+            query = parse_qs(parsed.query)
+            days = normalized_energy_history_days((query.get("days") or [7])[0])
+            self.send_html(200, render_energy_page(days))
             return
         status, payload = self.route()
         self.send_json(status, payload)
