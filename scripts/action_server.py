@@ -721,7 +721,7 @@ def display_reason_label(reason: Any) -> str:
     return labels.get(key, key.replace("_", " ").capitalize())
 
 
-def render_display_page() -> bytes:
+def render_display_page(*, read_only: bool = False) -> bytes:
     observability = display_awake_observability()
     targets = observability.get("targets") if isinstance(observability.get("targets"), dict) else {}
     summary = observability.get("summary") if isinstance(observability.get("summary"), dict) else {}
@@ -816,6 +816,30 @@ def render_display_page() -> bytes:
         if mode == "enforce"
         else "The controller has not produced status yet."
     )
+    controls_markup = (
+        "<div class=\"notice\">Read-only phone view. Display controls remain available only on the local controller.</div>"
+        "<div class=\"actions\"><button class=\"tertiary\" id=\"refresh\" type=\"button\">Refresh status</button></div>"
+        if read_only
+        else "<div class=\"actions\"><button data-action=\"/action/screens-awake\">Screens Awake</button>"
+        "<button class=\"secondary\" data-action=\"/action/screens-auto\">Screens Auto</button>"
+        "<button class=\"tertiary\" id=\"refresh\" type=\"button\">Refresh status</button></div>"
+    )
+    footer_markup = (
+        '<p class="footer">Read-only JSON: <a href="/status/displays">/status/displays</a></p>'
+        if read_only
+        else '<p class="footer">JSON: <a href="/status/displays">/status/displays</a> · <a href="/energy">Energy dashboard</a></p>'
+    )
+    action_script = "" if read_only else """
+document.querySelectorAll('button[data-action]').forEach((button)=>button.addEventListener('click',async()=>{
+  button.disabled=true;
+  try {
+    const response=await fetch(button.dataset.action,{method:'POST'});
+    const payload=await response.json();
+    document.getElementById('result').textContent=payload.ok ? 'Action accepted. Refresh status to see the next controller decision.' : JSON.stringify(payload);
+  } catch(error) { document.getElementById('result').textContent=String(error); }
+  finally { button.disabled=false; }
+}));
+"""
     body = f"""<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Display Observability</title><style>
@@ -853,22 +877,14 @@ button.secondary {{ background:transparent; color:var(--accent); }} button.terti
   <section class="presence"><div class="presence-main"><div class="presence-icon">⌁</div><div><span class="muted tiny">Confirmed presence</span><strong>{html_escape(presence.get('confirmedRoom') or 'No confirmed room')}</strong></div></div><div class="facts"><div><span class="muted tiny">Source</span><strong>{html_escape(presence.get('source') or 'none')}</strong></div><div><span class="muted tiny">Watch</span><strong>{'fresh' if watch.get('fresh') else 'not fresh'} · {html_escape(display_duration(watch.get('ageSeconds')))}</strong></div><div><span class="muted tiny">iPhone</span><strong>{'fresh' if iphone.get('fresh') else 'not fresh'} · {html_escape(display_duration(iphone.get('ageSeconds')))}</strong></div><div><span class="muted tiny">Override</span><strong>{'Manual' if observability.get('manualOverride') else 'Auto'}</strong></div></div></section>
   <section class="summary-grid"><div class="summary-card"><span class="muted tiny">Would hold now</span><strong>{would_hold_count} of {len(targets)}</strong></div><div class="summary-card"><span class="muted tiny">Predicted / actual</span><strong>{html_escape(display_duration(predicted_total))} / {html_escape(display_duration(lease_total))}</strong></div><div class="summary-card"><span class="muted tiny">UniFi / controller</span><strong>{'healthy' if unifi.get('ok') is True else 'unavailable'} · {'loaded' if launchd.get('loaded') else 'unloaded'}</strong><span class="muted tiny">poll {html_escape(observability.get('pollSeconds'))}s</span></div></section>
   <div class="notice">{html_escape(shadow_note)}</div>
-  <div class="actions"><button data-action="/action/screens-awake">Screens Awake</button><button class="secondary" data-action="/action/screens-auto">Screens Auto</button><button class="tertiary" id="refresh" type="button">Refresh status</button></div>
+  {controls_markup}
   <div id="result" class="muted tiny"></div>
   <h2>Mac decisions</h2><section class="machine-list">{target_markup}</section>
   <h2>Recent decision changes</h2><ol class="event-list">{event_markup}</ol>
-  <p class="footer">JSON: <a href="/status/displays">/status/displays</a> · <a href="/energy">Energy dashboard</a></p>
+  {footer_markup}
 </main>
 <script>
-document.querySelectorAll('button[data-action]').forEach((button)=>button.addEventListener('click',async()=>{{
-  button.disabled=true;
-  try {{
-    const response=await fetch(button.dataset.action,{{method:'POST'}});
-    const payload=await response.json();
-    document.getElementById('result').textContent=payload.ok ? 'Action accepted. Refresh status to see the next controller decision.' : JSON.stringify(payload);
-  }} catch(error) {{ document.getElementById('result').textContent=String(error); }}
-  finally {{ button.disabled=false; }}
-}}));
+{action_script}
 document.getElementById('refresh').addEventListener('click',()=>location.reload());
 </script>
 </body></html>"""
@@ -1989,6 +2005,32 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(status, payload)
 
 
+class ReadOnlyDisplayHandler(Handler):
+    server_version = "SmartHomeDisplayReadOnly/1.0"
+
+    def log_message(self, format: str, *args: Any) -> None:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with (LOG_DIR / "display-dashboard.access.log").open("a") as log:
+            log.write(f"{datetime.now(timezone.utc).astimezone().isoformat(timespec='seconds')} {self.address_string()} {format % args}\n")
+
+    def do_GET(self) -> None:
+        path = urlparse(self.path).path
+        if path in {"/", "/displays"}:
+            self.send_html(200, render_display_page(read_only=True))
+            return
+        if path == "/health":
+            self.send_json(200, {"ok": True, "readOnly": True})
+            return
+        if path == "/status/displays":
+            payload = display_awake_observability()
+            self.send_json(200 if payload["ok"] else 503, payload)
+            return
+        self.send_json(404, {"ok": False, "error": "read-only dashboard endpoint not found"})
+
+    def do_POST(self) -> None:
+        self.send_json(405, {"ok": False, "error": "read-only dashboard; actions are disabled"})
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the Smart Home action server.")
     parser.add_argument(
@@ -2018,8 +2060,23 @@ def main() -> int:
     port = int(config["port"])
     os.chdir(ROOT)
     server = ThreadingHTTPServer((host, port), Handler)
+    dashboard_server = None
+    if config.get("dashboard_enabled") is True:
+        dashboard_host = str(config.get("dashboard_bind_host") or "0.0.0.0")
+        dashboard_port = int(config.get("dashboard_port") or 18766)
+        dashboard_server = ThreadingHTTPServer((dashboard_host, dashboard_port), ReadOnlyDisplayHandler)
+        threading.Thread(
+            target=dashboard_server.serve_forever,
+            name="read-only-display-dashboard",
+            daemon=True,
+        ).start()
     schedule_garage_light_hold_check()
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        if dashboard_server is not None:
+            dashboard_server.shutdown()
+            dashboard_server.server_close()
     return 0
 
 

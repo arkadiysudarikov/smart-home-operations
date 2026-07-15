@@ -147,6 +147,9 @@
   "actions": {
     "bind_host": "127.0.0.1",
     "port": 18765,
+    "dashboard_enabled": true,
+    "dashboard_bind_host": "0.0.0.0",
+    "dashboard_port": 18766,
     "silence_warning_minutes": 120,
     "alarm_child_bridge_port": 52230,
     "office_tahoma_child_bridge_port": 35854

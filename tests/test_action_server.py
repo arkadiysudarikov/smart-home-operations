@@ -664,6 +664,70 @@ class ActionServerTest(unittest.TestCase):
 
         schedule_check.assert_called_once()
 
+    def test_main_starts_separate_read_only_dashboard_listener(self) -> None:
+        class FakeServer:
+            instances = []
+
+            def __init__(self, address: tuple[str, int], handler: type) -> None:
+                self.address = address
+                self.handler = handler
+                self.shutdown_called = False
+                self.close_called = False
+                self.instances.append(self)
+
+            def serve_forever(self) -> None:
+                return None
+
+            def shutdown(self) -> None:
+                self.shutdown_called = True
+
+            def server_close(self) -> None:
+                self.close_called = True
+
+        class FakeThread:
+            instances = []
+
+            def __init__(self, *, target, name: str, daemon: bool) -> None:
+                self.target = target
+                self.name = name
+                self.daemon = daemon
+                self.started = False
+                self.instances.append(self)
+
+            def start(self) -> None:
+                self.started = True
+
+        self.patch_module(ROOT=Path("/repo"), RUNTIME_ROOT=Path("/runtime"))
+        with (
+            mock.patch.object(
+                action_server,
+                "load_config",
+                return_value={
+                    "actions": {
+                        "bind_host": "127.0.0.1",
+                        "port": 18765,
+                        "dashboard_enabled": True,
+                        "dashboard_bind_host": "0.0.0.0",
+                        "dashboard_port": 18766,
+                    }
+                },
+            ),
+            mock.patch.object(action_server, "ThreadingHTTPServer", FakeServer),
+            mock.patch.object(action_server.threading, "Thread", FakeThread),
+            mock.patch.object(action_server, "schedule_garage_light_hold_check"),
+            mock.patch.object(action_server.os, "chdir"),
+            mock.patch.object(sys, "argv", ["action_server.py", "--force-outside-runtime"]),
+        ):
+            self.assertEqual(action_server.main(), 0)
+
+        self.assertEqual(FakeServer.instances[0].address, ("127.0.0.1", 18765))
+        self.assertIs(FakeServer.instances[0].handler, action_server.Handler)
+        self.assertEqual(FakeServer.instances[1].address, ("0.0.0.0", 18766))
+        self.assertIs(FakeServer.instances[1].handler, action_server.ReadOnlyDisplayHandler)
+        self.assertTrue(FakeThread.instances[0].started)
+        self.assertTrue(FakeServer.instances[1].shutdown_called)
+        self.assertTrue(FakeServer.instances[1].close_called)
+
     def test_screen_override_is_private_and_persistent_until_cancelled(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "display_awake_override.json"
@@ -761,6 +825,7 @@ class ActionServerTest(unittest.TestCase):
             ):
                 result = action_server.display_awake_observability()
                 page = action_server.render_display_page().decode()
+                read_only_page = action_server.render_display_page(read_only=True).decode()
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "shadow")
@@ -777,6 +842,36 @@ class ActionServerTest(unittest.TestCase):
         self.assertNotIn("Screens Awake 1h", page)
         self.assertNotIn("setInterval", page)
         self.assertIn("office", page)
+        self.assertIn("Read-only phone view", read_only_page)
+        self.assertNotIn("data-action", read_only_page)
+        self.assertNotIn("/energy", read_only_page)
+
+    def test_read_only_display_handler_rejects_actions_and_other_routes(self) -> None:
+        class FakeHandler:
+            path = "/action/screens-awake"
+
+            def send_json(self, status: int, payload: dict) -> None:
+                self.status = status
+                self.payload = payload
+
+            def send_html(self, status: int, body: bytes) -> None:
+                self.status = status
+                self.body = body
+
+        handler = FakeHandler()
+        action_server.ReadOnlyDisplayHandler.do_GET(handler)
+        self.assertEqual(handler.status, 404)
+
+        action_server.ReadOnlyDisplayHandler.do_POST(handler)
+        self.assertEqual(handler.status, 405)
+        self.assertIn("actions are disabled", handler.payload["error"])
+
+        handler.path = "/displays"
+        with mock.patch.object(action_server, "render_display_page", return_value=b"read only") as render:
+            action_server.ReadOnlyDisplayHandler.do_GET(handler)
+        self.assertEqual(handler.status, 200)
+        self.assertEqual(handler.body, b"read only")
+        render.assert_called_once_with(read_only=True)
 
     def test_display_duration_uses_compact_human_units(self) -> None:
         self.assertEqual(action_server.display_duration(None), "—")
