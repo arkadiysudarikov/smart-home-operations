@@ -419,20 +419,28 @@ def build_overlap_pairs(intervals: list[SceInterval], samples: dict[str, list[di
     envoy_total = build_sample_index(samples.get("envoy:Consumption Total", []))
     envoy_net = build_sample_index(samples.get("envoy:Consumption Net", []))
     envoy_production = build_sample_index(samples.get("envoy:Production", []))
+    envoy_storage = build_sample_index(samples.get("envoy:Storage", []))
     sense = build_sample_index(samples.get("sense", []))
     for interval in intervals:
         envoy_total_kwh = estimate_interval_kwh(envoy_total, interval.start, interval.end)
         envoy_net_kwh = estimate_interval_kwh(envoy_net, interval.start, interval.end)
         envoy_production_kwh = estimate_interval_kwh(envoy_production, interval.start, interval.end)
+        envoy_storage_kwh = estimate_interval_kwh(envoy_storage, interval.start, interval.end)
         sense_kwh = estimate_interval_kwh(sense, interval.start, interval.end)
-        if envoy_total_kwh is None and envoy_net_kwh is None and envoy_production_kwh is None and sense_kwh is None:
+        if envoy_total_kwh is None and envoy_net_kwh is None and envoy_production_kwh is None and envoy_storage_kwh is None and sense_kwh is None:
             continue
         invalid_metrics: list[str] = []
         envoy_total_raw = envoy_total_kwh
         envoy_production_raw = envoy_production_kwh
-        if envoy_total_kwh is not None and envoy_total_kwh < 0:
-            invalid_metrics.append("envoyConsumptionTotalKwhEstimate")
-            envoy_total_kwh = None
+        envoy_site_load_kwh = (
+            envoy_total_kwh + envoy_storage_kwh
+            if envoy_total_kwh is not None and envoy_storage_kwh is not None
+            else envoy_total_kwh
+        )
+        envoy_site_load_raw = envoy_site_load_kwh
+        if envoy_site_load_kwh is not None and envoy_site_load_kwh < 0:
+            invalid_metrics.append("envoySiteLoadKwhEstimate")
+            envoy_site_load_kwh = None
         if envoy_production_kwh is not None and envoy_production_kwh < -0.01:
             invalid_metrics.append("envoyProductionKwhEstimate")
             envoy_production_kwh = None
@@ -447,12 +455,14 @@ def build_overlap_pairs(intervals: list[SceInterval], samples: dict[str, list[di
                 "envoyConsumptionTotalKwhEstimate": envoy_total_kwh,
                 "envoyConsumptionNetKwhEstimate": envoy_net_kwh,
                 "envoyProductionKwhEstimate": envoy_production_kwh,
+                "envoyStorageKwhEstimate": envoy_storage_kwh,
+                "envoySiteLoadKwhEstimate": envoy_site_load_kwh,
                 "senseKwhEstimate": sense_kwh,
             }
         if invalid_metrics:
             pair["invalidMetrics"] = invalid_metrics
-        if envoy_total_raw is not None and envoy_total_raw != envoy_total_kwh:
-            pair["envoyConsumptionTotalKwhRawEstimate"] = envoy_total_raw
+        if envoy_site_load_raw is not None and envoy_site_load_raw != envoy_site_load_kwh:
+            pair["envoySiteLoadKwhRawEstimate"] = envoy_site_load_raw
         if envoy_production_raw is not None and envoy_production_raw != envoy_production_kwh:
             pair["envoyProductionKwhRawEstimate"] = envoy_production_raw
         pairs.append(pair)

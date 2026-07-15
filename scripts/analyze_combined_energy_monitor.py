@@ -443,13 +443,17 @@ def build_daily_summary(
             add_sum(item, "sceDeliveredKwh", row.get("sceDeliveredKwh"))
             add_sum(item, "sceReceivedKwh", row.get("sceReceivedKwh"))
             add_sum(item, "sceNetImportKwh", row.get("sceNetImportKwh"))
-        if row.get("envoyConsumptionTotalKwhEstimate") is not None:
+        envoy_site_load = row.get("envoySiteLoadKwhEstimate")
+        if envoy_site_load is None:
+            envoy_site_load = row.get("envoyConsumptionTotalKwhEstimate")
+        if envoy_site_load is not None:
             item["envoyIntervalCount"] = int(item.get("envoyIntervalCount") or 0) + 1
         if row.get("senseKwhEstimate") is not None:
             item["senseIntervalCount"] = int(item.get("senseIntervalCount") or 0) + 1
-        add_sum(item, "envoySiteLoadKwh", row.get("envoyConsumptionTotalKwhEstimate"))
+        add_sum(item, "envoySiteLoadKwh", envoy_site_load)
         add_sum(item, "envoyGridNetKwh", row.get("envoyConsumptionNetKwhEstimate"))
         add_sum(item, "envoySolarProductionKwh", row.get("envoyProductionKwhEstimate"))
+        add_sum(item, "envoyStorageKwh", row.get("envoyStorageKwhEstimate"))
         add_sum(item, "senseKwh", row.get("senseKwhEstimate"))
 
     for row in (chargepoint.get("alarm") or {}).get("daily") or []:
