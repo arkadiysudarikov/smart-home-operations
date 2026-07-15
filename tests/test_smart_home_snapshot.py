@@ -14,6 +14,78 @@ SPEC.loader.exec_module(smart_home_snapshot)
 
 
 class SmartHomeSnapshotTest(unittest.TestCase):
+    def test_homebridge_advertisements_detect_wrong_resolved_ip(self) -> None:
+        config = {
+            "bridge": {"name": "Main", "username": "0E:DE:C1:97:D1:CA", "port": 51179},
+            "mdns": {"interface": "192.168.0.69"},
+            "platforms": [
+                {
+                    "name": "Dummy",
+                    "_bridge": {"name": "Dummy", "username": "0E:F8:15:C2:EC:AC", "port": 42864},
+                }
+            ],
+        }
+
+        result = smart_home_snapshot.collect_homebridge_advertisements(
+            config,
+            active_addresses=["192.168.0.69"],
+            resolver=lambda hostname: ["192.168.0.172"],
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["status"], "mismatch")
+        self.assertEqual(result["mismatchCount"], 2)
+        self.assertEqual(result["bridges"][0]["hostname"], "0E_DE_C1_97_D1_CA.local")
+
+    def test_homebridge_advertisements_detect_inactive_configured_ip(self) -> None:
+        config = {
+            "bridge": {"name": "Main", "username": "0E:DE:C1:97:D1:CA", "port": 51179},
+            "mdns": {"interface": "192.168.0.69"},
+            "platforms": [],
+        }
+
+        result = smart_home_snapshot.collect_homebridge_advertisements(
+            config,
+            active_addresses=["192.168.0.70"],
+            resolver=lambda hostname: ["192.168.0.69"],
+        )
+
+        self.assertEqual(result["status"], "mismatch")
+        self.assertEqual(result["mismatchCount"], 1)
+        self.assertEqual(result["mismatches"][0]["reason"], "configured IP is not active on this Mac")
+
+    def test_homebridge_advertisements_detect_mixed_current_and_stale_ips(self) -> None:
+        config = {
+            "bridge": {"name": "Main", "username": "0E:DE:C1:97:D1:CA", "port": 51179},
+            "mdns": {"interface": "192.168.0.69"},
+            "platforms": [],
+        }
+
+        result = smart_home_snapshot.collect_homebridge_advertisements(
+            config,
+            active_addresses=["192.168.0.69"],
+            resolver=lambda hostname: ["192.168.0.69", "192.168.0.172"],
+        )
+
+        self.assertEqual(result["status"], "mismatch")
+        self.assertEqual(result["mismatchCount"], 1)
+
+    def test_unresolved_homebridge_advertisement_is_not_reported_as_wrong_ip(self) -> None:
+        config = {
+            "bridge": {"name": "Main", "username": "0E:DE:C1:97:D1:CA", "port": 51179},
+            "mdns": {"interface": "192.168.0.69"},
+            "platforms": [],
+        }
+
+        result = smart_home_snapshot.collect_homebridge_advertisements(
+            config,
+            active_addresses=["192.168.0.69"],
+            resolver=lambda hostname: [],
+        )
+
+        self.assertEqual(result["status"], "unresolved")
+        self.assertEqual(result["mismatchCount"], 0)
+
     def test_runtime_drift_checks_cover_synced_runtime_scripts(self) -> None:
         runtime_scripts = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor" / "scripts"
         if not runtime_scripts.exists():

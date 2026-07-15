@@ -23,6 +23,60 @@ SPEC.loader.exec_module(action_server)
 
 
 class ActionServerTest(unittest.TestCase):
+    def test_restart_homebridge_route_writes_structured_audit_record(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audit_path = Path(tmp) / "actions.audit.jsonl"
+            self.patch_module(ACTION_AUDIT_PATH=audit_path)
+            handler = object.__new__(action_server.Handler)
+            handler.path = "/action/restart-homebridge?source=home-tile&reason=manual-recovery"
+            handler.command = "POST"
+            handler.client_address = ("127.0.0.1", 50123)
+            handler.headers = {"User-Agent": "HomeKit-test"}
+
+            with mock.patch.object(
+                action_server,
+                "restart_homebridge",
+                return_value={"ok": True, "scheduled": True, "targetPid": 1234},
+            ):
+                status, payload = action_server.Handler.route(handler)
+
+            audit = json.loads(audit_path.read_text().strip())
+
+        self.assertEqual(status, 202)
+        self.assertTrue(payload["ok"])
+        self.assertEqual(audit["action"], "restart-homebridge")
+        self.assertEqual(audit["remoteAddress"], "127.0.0.1")
+        self.assertEqual(audit["source"], "home-tile")
+        self.assertEqual(audit["reason"], "manual-recovery")
+        self.assertEqual(audit["targetPid"], 1234)
+        self.assertEqual(audit["userAgent"], "HomeKit-test")
+        self.assertTrue(audit["recorded"])
+
+    def test_restart_audit_failure_does_not_block_scheduled_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.patch_module(ACTION_AUDIT_PATH=Path(tmp))
+            handler = object.__new__(action_server.Handler)
+            handler.path = "/action/restart-homebridge"
+            handler.command = "POST"
+            handler.client_address = ("127.0.0.1", 50123)
+            handler.headers = {
+                "X-Smart-Home-Source": "homebridge-smart-home-actions",
+                "X-Smart-Home-Reason": "homekit-switch:hb-restart",
+            }
+
+            with mock.patch.object(
+                action_server,
+                "restart_homebridge",
+                return_value={"ok": True, "scheduled": True, "targetPid": 1234},
+            ):
+                status, payload = action_server.Handler.route(handler)
+
+        self.assertEqual(status, 202)
+        self.assertTrue(payload["ok"])
+        self.assertFalse(payload["audit"]["recorded"])
+        self.assertEqual(payload["audit"]["source"], "homebridge-smart-home-actions")
+        self.assertEqual(payload["audit"]["reason"], "homekit-switch:hb-restart")
+
     def patch_module(self, **replacements: Any) -> None:
         self._restore = getattr(self, "_restore", {})
         for name, replacement in replacements.items():

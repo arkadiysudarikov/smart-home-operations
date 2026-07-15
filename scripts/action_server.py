@@ -36,6 +36,7 @@ DISPLAY_AWAKE_STATUS_PATH = DATA_DIR / "latest_display_awake.json"
 DISPLAY_AWAKE_SUMMARY_PATH = DATA_DIR / "latest_display_awake_summary.json"
 DISPLAY_AWAKE_EVENTS_PATH = DATA_DIR / "display_awake_events.jsonl"
 DISPLAY_AWAKE_OVERRIDE_PATH = DATA_DIR / "display_awake_override.json"
+ACTION_AUDIT_PATH = LOG_DIR / "actions.audit.jsonl"
 ENERGY_REFRESH_STATUS_PATH = DATA_DIR / "latest_energy_refresh.json"
 ENERGY_REFRESH_LOCK_PATH = DATA_DIR / "refresh_energy.lock"
 ACTION_STATUS_PATHS = {
@@ -1861,6 +1862,33 @@ def restart_homebridge() -> dict[str, Any]:
     return {"ok": True, "scheduled": True, "targetPid": pid}
 
 
+def append_action_audit(action: str, result: dict[str, Any], request: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "requestedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "action": action,
+        "ok": bool(result.get("ok")),
+        "scheduled": bool(result.get("scheduled")),
+        "targetPid": result.get("targetPid"),
+        "error": result.get("error"),
+        "method": request.get("method"),
+        "path": request.get("path"),
+        "remoteAddress": request.get("remoteAddress"),
+        "source": request.get("source"),
+        "reason": request.get("reason"),
+        "userAgent": request.get("userAgent"),
+        "recorded": True,
+    }
+    try:
+        ACTION_AUDIT_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with ACTION_AUDIT_PATH.open("a") as handle:
+            handle.write(json.dumps(payload, sort_keys=True) + "\n")
+        os.chmod(ACTION_AUDIT_PATH, 0o600)
+    except Exception as exc:
+        payload["recorded"] = False
+        payload["auditError"] = str(exc)
+    return payload
+
+
 def restart_office_tahoma() -> dict[str, Any]:
     port = int(load_config()["actions"]["office_tahoma_child_bridge_port"])
     pid = listening_pid(port)
@@ -1929,6 +1957,24 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             return
 
+    def action_request_context(self, path: str, query: dict[str, list[str]]) -> dict[str, Any]:
+        def query_value(name: str) -> str | None:
+            value = (query.get(name) or [None])[0]
+            return str(value)[:240] if value is not None else None
+
+        def header_value(name: str) -> str | None:
+            value = self.headers.get(name) if getattr(self, "headers", None) else None
+            return str(value)[:240] if value is not None else None
+
+        return {
+            "method": getattr(self, "command", None),
+            "path": path,
+            "remoteAddress": self.client_address[0] if getattr(self, "client_address", None) else None,
+            "source": query_value("source") or header_value("X-Smart-Home-Source"),
+            "reason": query_value("reason") or header_value("X-Smart-Home-Reason"),
+            "userAgent": header_value("User-Agent"),
+        }
+
     def route(self) -> tuple[int, dict[str, Any]]:
         parsed = urlparse(self.path)
         path = parsed.path
@@ -1981,9 +2027,19 @@ class Handler(BaseHTTPRequestHandler):
             return (202 if payload["ok"] else 500), payload
         if path == "/action/restart-homebridge":
             payload = restart_homebridge()
+            payload["audit"] = append_action_audit(
+                "restart-homebridge",
+                payload,
+                self.action_request_context(path, query),
+            )
             return (202 if payload["ok"] else 500), payload
         if path == "/action/restart-office-tahoma":
             payload = restart_office_tahoma()
+            payload["audit"] = append_action_audit(
+                "restart-office-tahoma",
+                payload,
+                self.action_request_context(path, query),
+            )
             return (202 if payload["ok"] else 500), payload
         if path == "/action/silence-alerts":
             payload = silence_alerts()

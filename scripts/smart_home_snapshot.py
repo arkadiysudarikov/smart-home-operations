@@ -10,6 +10,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -323,6 +324,129 @@ def parse_ports() -> list[dict[str, Any]]:
         match = re.search(r":(\d+)$", address)
         ports.append({"process": name, "pid": int(pid), "address": address, "port": int(match.group(1)) if match else None})
     return ports
+
+
+def homebridge_bridge_records(config: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not isinstance(config, dict):
+        return []
+
+    records: list[dict[str, Any]] = []
+
+    def add_record(name: Any, username: Any, port: Any) -> None:
+        identifier = re.sub(r"[^0-9A-Fa-f]", "", str(username or "")).upper()
+        if len(identifier) != 12:
+            return
+        records.append(
+            {
+                "name": str(name or "Homebridge"),
+                "id": ":".join(identifier[index : index + 2] for index in range(0, 12, 2)),
+                "hostname": "_".join(identifier[index : index + 2] for index in range(0, 12, 2)) + ".local",
+                "port": port,
+            }
+        )
+
+    bridge = config.get("bridge")
+    if isinstance(bridge, dict):
+        add_record(bridge.get("name"), bridge.get("username"), bridge.get("port"))
+    for platform_config in config.get("platforms", []):
+        if not isinstance(platform_config, dict):
+            continue
+        child_bridge = platform_config.get("_bridge")
+        if isinstance(child_bridge, dict):
+            add_record(
+                child_bridge.get("name") or platform_config.get("name") or platform_config.get("platform"),
+                child_bridge.get("username"),
+                child_bridge.get("port"),
+            )
+    return records
+
+
+def active_ipv4_addresses() -> list[str]:
+    result = run(["ifconfig"])
+    addresses = {
+        match.group(1)
+        for line in result["stdout"].splitlines()
+        if (match := re.search(r"\binet (\d+\.\d+\.\d+\.\d+)\b", line))
+        and not match.group(1).startswith("127.")
+    }
+    return sorted(addresses)
+
+
+def resolve_mdns_ipv4(hostname: str) -> list[str]:
+    result = run(["dscacheutil", "-q", "host", "-a", "name", hostname], timeout=4)
+    addresses = {
+        match.group(1)
+        for line in result["stdout"].splitlines()
+        if (match := re.match(r"\s*ip_address:\s*(\d+\.\d+\.\d+\.\d+)\s*$", line))
+    }
+    return sorted(addresses)
+
+
+def collect_homebridge_advertisements(
+    config: dict[str, Any] | None,
+    active_addresses: list[str] | None = None,
+    resolver: Any = None,
+) -> dict[str, Any]:
+    config = config if isinstance(config, dict) else {}
+    configured_ip = (config.get("mdns") or {}).get("interface")
+    active_addresses = active_ipv4_addresses() if active_addresses is None else sorted(set(active_addresses))
+    resolver = resolve_mdns_ipv4 if resolver is None else resolver
+    records: list[dict[str, Any]] = []
+    mismatches: list[dict[str, Any]] = []
+    unresolved: list[str] = []
+
+    bridge_records = homebridge_bridge_records(config)
+
+    def resolve_bridge(bridge: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+        try:
+            resolved = sorted(set(resolver(bridge["hostname"])))
+        except Exception:
+            resolved = []
+        return bridge, resolved
+
+    workers = min(8, len(bridge_records)) or 1
+    with ThreadPoolExecutor(max_workers=workers) as executor:
+        resolved_bridges = list(executor.map(resolve_bridge, bridge_records))
+
+    for bridge, resolved in resolved_bridges:
+        item = {**bridge, "resolvedIPv4": resolved}
+        if not resolved:
+            item["status"] = "unresolved"
+            unresolved.append(bridge["hostname"])
+        elif configured_ip and resolved != [configured_ip]:
+            item["status"] = "mismatch"
+            mismatches.append(item)
+        else:
+            item["status"] = "ok"
+        records.append(item)
+
+    configured_ip_active = configured_ip in active_addresses if configured_ip else None
+    if configured_ip and configured_ip_active is False:
+        mismatches.insert(
+            0,
+            {
+                "name": "Homebridge mDNS configuration",
+                "hostname": None,
+                "resolvedIPv4": [],
+                "status": "mismatch",
+                "reason": "configured IP is not active on this Mac",
+            },
+        )
+
+    status = "mismatch" if mismatches else "unresolved" if unresolved else "ok"
+    return {
+        "ok": status == "ok",
+        "status": status,
+        "configuredIPv4": configured_ip,
+        "configuredIPv4Active": configured_ip_active,
+        "activeIPv4": active_addresses,
+        "bridgeCount": len(records),
+        "mismatchCount": len(mismatches),
+        "unresolvedCount": len(unresolved),
+        "mismatches": mismatches,
+        "unresolved": unresolved,
+        "bridges": records,
+    }
 
 
 def read_tail(path: Path, max_lines: int) -> list[str]:
@@ -735,6 +859,9 @@ def write_report(snapshot: dict[str, Any], snapshot_path: Path) -> None:
         f"- Main bridge port in config: `{hb['config'].get('bridge', {}).get('port')}`",
         f"- Node listening ports observed: `{', '.join(str(p['port']) for p in hb['ports'] if p.get('port'))}`",
         f"- Homebridge storage permissions private: `{permissions.get('ok')}`",
+        f"- Homebridge configured mDNS IPv4: `{hb.get('advertisements', {}).get('configuredIPv4')}`",
+        f"- Homebridge advertisement status: `{hb.get('advertisements', {}).get('status')}`",
+        f"- Homebridge advertisement mismatches: `{hb.get('advertisements', {}).get('mismatchCount', 0)}`",
         "",
         "## Integrations",
         "",
@@ -850,6 +977,7 @@ def main() -> int:
         "homebridge": {
             "launchd": parse_launchd(config["homebridge"]["launchd_service"]),
             "config": sanitize_homebridge_config(hb_config),
+            "advertisements": collect_homebridge_advertisements(hb_config),
             "accessoryCaches": collect_cache_summary(homebridge_dir),
             "ports": parse_ports(),
             "logs": collect_log_signals(current_log_lines),
