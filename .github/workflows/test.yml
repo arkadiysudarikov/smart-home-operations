@@ -18,4 +18,10 @@ jobs:
           node-version: "22"
           cache: npm
       - run: npm ci
+      - name: Provide test Node runtime aliases
+        run: |
+          mkdir -p "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin"
+          mkdir -p "$HOME/.local/node-v24.16.0-darwin-arm64/bin"
+          ln -s "$(command -v node)" "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"
+          ln -s "$(command -v node)" "$HOME/.local/node-v24.16.0-darwin-arm64/bin/node"
       - run: python -m unittest discover -s tests -p 'test_*.py'
