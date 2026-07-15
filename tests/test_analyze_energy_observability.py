@@ -43,7 +43,10 @@ class AnalyzeEnergyObservabilityTest(unittest.TestCase):
                     "sceReceivedKwh": 8.0,
                     "sceNetImportKwh": 44.0,
                     "envoySiteLoadKwh": 46.0,
+                    "envoyStorageKwh": 2.0,
+                    "envoySolarProductionKwh": 4.0,
                     "senseLoadKwh": 35.0,
+                    "senseSolarProductionKwh": 3.8,
                 }
             ]
         }
@@ -55,6 +58,30 @@ class AnalyzeEnergyObservabilityTest(unittest.TestCase):
         self.assertEqual(rows[0]["sceNetImportKwh"], 44.0)
         self.assertEqual(rows[0]["alarmMinusSenseKwh"], 13.0)
         self.assertEqual(rows[0]["availableSourceCount"], 4)
+        self.assertEqual(rows[0]["energyBalanceResidualKwh"], 4.0)
+        self.assertEqual(rows[0]["solarParityPercent"], 5.0)
+
+    def test_live_summary_adds_battery_flow_to_envoy_site_load_and_exposes_alarm_baselines(self) -> None:
+        live = analyzer.live_summary(
+            {"homebridge": {"logs": {"latestMetrics": {
+                "enphase_consumption_total_kw": -2.0,
+                "enphase_storage_kw": 3.0,
+            }}}},
+            {},
+            {"dashboard": {
+                "monthToDateKwh": 504,
+                "samePointLastMonthKwh": 446,
+                "energyClampProjectedKwh": 1391,
+                "energyClampBudgetKwh": 680,
+                "energyClampLastBillingKwh": 1232,
+                "energyClampAverageBillingKwh": 1182,
+            }},
+        )
+
+        self.assertEqual(live["envoyMeterTotalKw"], -2.0)
+        self.assertEqual(live["envoySiteLoadKw"], 1.0)
+        self.assertEqual(live["alarmSamePointLastMonthKwh"], 446.0)
+        self.assertEqual(live["alarmLastBillingKwh"], 1232.0)
 
     def test_daily_comparison_does_not_count_partial_monitor_day_as_complete(self) -> None:
         rows = analyzer.build_daily_comparison(
@@ -84,7 +111,7 @@ class AnalyzeEnergyObservabilityTest(unittest.TestCase):
                     "start": "2026-07-14T22:00:00-07:00",
                     "sceDeliveredKwh": 3.0,
                     "sceReceivedKwh": 0.25,
-                    "envoyConsumptionTotalKwhEstimate": 2.75,
+                    "envoySiteLoadKwhEstimate": 2.75,
                     "senseKwhEstimate": 2.0,
                 }
             ]
@@ -120,7 +147,7 @@ class AnalyzeEnergyObservabilityTest(unittest.TestCase):
     def test_invalid_envoy_counts_degrade_quality(self) -> None:
         quality = analyzer.source_quality(
             {},
-            {"overlapPairCount": 20, "invalidReadingCounts": {"envoyConsumptionTotalKwhEstimate": 3}},
+            {"overlapPairCount": 20, "invalidReadingCounts": {"envoySiteLoadKwhEstimate": 3}},
             [{"availableSourceCount": 3}],
         )
 

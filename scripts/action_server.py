@@ -1044,7 +1044,7 @@ document.getElementById('refresh').addEventListener('click',()=>location.reload(
 def display_energy_value(value: Any, suffix: str = "", digits: int = 1) -> str:
     if not isinstance(value, (int, float)):
         return "n/a"
-    return f"{value:.{digits}f}{suffix}"
+    return f"{value:,.{digits}f}{suffix}"
 
 
 def display_energy_age(item: dict[str, Any]) -> str:
@@ -1179,6 +1179,7 @@ def render_energy_page(history_days: int = 7) -> bytes:
     observability = status.get("observability") or {}
     live = observability.get("live") or {}
     quality = observability.get("quality") or {}
+    selected_quality = observability.get("selectedRangeQuality") or {}
     daily = filter_daily_energy_rows(observability.get("dailyComparison") or [], history_days)
     history = status.get("observationHistory") or []
     sources = observability.get("sourceStatus") or status.get("sourceStatus") or status.get("operationalSourceStatus") or []
@@ -1199,7 +1200,9 @@ def render_energy_page(history_days: int = 7) -> bytes:
         for label, field, complete_field in coverage_fields
     }
     comparable_range_days = sum(int(row.get("availableSourceCount") or 0) >= 3 for row in daily)
-    range_quality_status = "complete" if daily and all(count == len(daily) for count in coverage_counts.values()) else "limited"
+    range_quality_status = selected_quality.get("status") or (
+        "complete" if daily and all(count == len(daily) for count in coverage_counts.values()) else "limited"
+    )
     if daily:
         range_start, range_end = str(daily[0].get("date") or ""), str(daily[-1].get("date") or "")
         peak_events = [
@@ -1214,6 +1217,24 @@ def render_energy_page(history_days: int = 7) -> bytes:
     sce_received_total = sum(float(row.get("sceReceivedKwh") or 0) for row in daily)
     sce_net_total = sum(float(row.get("sceNetImportKwh") or 0) for row in daily)
     sce_net_daily_average = sce_net_total / len(daily) if daily else None
+    balance_rows = [
+        row for row in daily
+        if isinstance(row.get("energyBalanceResidualPercent"), (int, float))
+        and row.get("sceComplete") is not False
+        and row.get("envoyComplete") is not False
+    ]
+    solar_parity_rows = [
+        row for row in daily
+        if isinstance(row.get("solarParityPercent"), (int, float))
+        and row.get("envoyComplete") is not False
+        and row.get("senseComplete") is not False
+    ]
+    max_balance_residual = max(
+        (float(row["energyBalanceResidualPercent"]) for row in balance_rows), default=None
+    )
+    max_solar_variance = max(
+        (float(row["solarParityPercent"]) for row in solar_parity_rows), default=None
+    )
     peak_sce_row = max(
         (row for row in daily if isinstance(row.get("sceDeliveredKwh"), (int, float))),
         key=lambda row: float(row.get("sceDeliveredKwh") or 0),
@@ -1229,6 +1250,16 @@ def render_energy_page(history_days: int = 7) -> bytes:
             display_energy_value((peak_sce_row or {}).get("sceDeliveredKwh"), " kWh"),
             str((peak_sce_row or {}).get("date") or "No SCE data"),
         ),
+        (
+            "Energy balance",
+            f"within {max_balance_residual:.1f}%" if max_balance_residual is not None else "collecting",
+            f"{len(balance_rows)} complete cross-meter {'day' if len(balance_rows) == 1 else 'days'}",
+        ),
+        (
+            "Solar parity",
+            f"within {max_solar_variance:.1f}%" if max_solar_variance is not None else "collecting",
+            f"{len(solar_parity_rows)} complete Envoy/Sense {'day' if len(solar_parity_rows) == 1 else 'days'}",
+        ),
     ]
     range_card_markup = "".join(
         f"<div class='card range-card'><span>{html_escape(label)}</span><strong>{html_escape(value)}</strong><small>{html_escape(note)}</small></div>"
@@ -1237,11 +1268,27 @@ def render_energy_page(history_days: int = 7) -> bytes:
 
     projected = live.get("alarmProjectedKwh")
     budget = live.get("alarmBudgetKwh")
+    alarm_current = live.get("alarmMonthToDateKwh")
+    alarm_same_point = live.get("alarmSamePointLastMonthKwh")
+    alarm_last_bill = live.get("alarmLastBillingKwh")
+    alarm_average_bill = live.get("alarmAverageBillingKwh")
+    alarm_trend = (
+        (alarm_current - alarm_same_point) / alarm_same_point
+        if isinstance(alarm_current, (int, float)) and isinstance(alarm_same_point, (int, float)) and alarm_same_point
+        else None
+    )
     over_budget = projected - budget if isinstance(projected, (int, float)) and isinstance(budget, (int, float)) else None
     budget_note = (
         f"{over_budget:.0f} kWh over · {over_budget / budget:.0%} above budget"
         if isinstance(over_budget, (int, float)) and over_budget > 0 and budget
         else f"Budget {display_energy_value(budget, ' kWh', 0)}"
+    )
+    projection_context = " · ".join(
+        item for item in (
+            f"last bill {display_energy_value(alarm_last_bill, ' kWh', 0)}" if isinstance(alarm_last_bill, (int, float)) else "",
+            f"recent avg {display_energy_value(alarm_average_bill, ' kWh', 0)}" if isinstance(alarm_average_bill, (int, float)) else "",
+            budget_note,
+        ) if item
     )
     cards = [
         ("Solar production", display_energy_value(live.get("envoyProductionKw"), " kW"), "Envoy live"),
@@ -1249,7 +1296,15 @@ def render_energy_page(history_days: int = 7) -> bytes:
         ("Grid net", display_energy_value(live.get("envoyGridNetKw"), " kW", 2), "Positive import; negative export"),
         ("Battery", display_energy_value(live.get("batteryPercent"), "%", 0), "Charging" if live.get("batteryCharging") else "Discharging" if live.get("batteryDischarging") else "Idle"),
         ("Sense house load", display_energy_value(live.get("senseLoadKw"), " kW", 2), "Non-battery load"),
-        ("Alarm projection", display_energy_value(projected, " kWh", 0), budget_note),
+        (
+            "Alarm current billing period",
+            display_energy_value(alarm_current, " kWh", 0),
+            (
+                f"Same point last cycle {display_energy_value(alarm_same_point, ' kWh', 0)} · {alarm_trend:+.0%}"
+                if alarm_trend is not None else "Billing-period usage, not calendar month"
+            ),
+        ),
+        ("Alarm billing-period projection", display_energy_value(projected, " kWh", 0), projection_context),
     ]
     card_markup = "".join(
         f"<div class='card'><span>{html_escape(label)}</span><strong>{html_escape(value)}</strong><small>{html_escape(note)}</small></div>"
@@ -1282,7 +1337,13 @@ def render_energy_page(history_days: int = 7) -> bytes:
         + ", ".join(f"{html_escape(label)} {count}/{len(daily)} days" for label, count in coverage_counts.items())
         + f"; three-or-more-source comparison {comparable_range_days}/{len(daily)} days.</li>"
     )
-    quality_rows = range_quality_row + "".join(
+    reconciliation_rows = (
+        "<li><strong>Selected-range energy balance</strong>: "
+        + (f"worst complete day is {max_balance_residual:.1f}% across {len(balance_rows)} days.</li>" if max_balance_residual is not None else "not enough complete SCE, Envoy, and storage data yet.</li>")
+        + "<li><strong>Selected-range solar parity</strong>: "
+        + (f"worst complete day differs by {max_solar_variance:.1f}% across {len(solar_parity_rows)} days.</li>" if max_solar_variance is not None else "not enough complete Envoy and Sense solar data yet.</li>")
+    )
+    quality_rows = range_quality_row + reconciliation_rows + "".join(
         f"<li><strong>{html_escape(item.get('title'))}</strong>: {html_escape(item.get('detail'))}</li>"
         for item in quality.get("issues") or []
     ) or "<li>Freshness, overlap, and daily reconciliation checks pass.</li>"
@@ -1366,7 +1427,7 @@ main {{ width:min(1180px,100%);margin:auto;padding:28px 20px 52px }} h1 {{ margi
 .top,.actions,.ranges {{ display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap }} .actions {{ justify-content:flex-start;margin:18px 0 }}
 button,.range {{ border:1px solid var(--accent);border-radius:8px;padding:8px 11px;background:var(--accent);color:white;text-decoration:none;cursor:pointer }} button.secondary,.range {{ background:var(--panel);color:var(--accent) }} .range.active {{ background:var(--accent);color:white }}
 .range-overview {{ margin:18px 0 }} .range-heading {{ display:flex;align-items:end;justify-content:space-between;gap:10px;margin-bottom:9px;flex-wrap:wrap }} .range-heading h2 {{ font-size:21px;margin:0 }}
-.range-cards {{ display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:10px }} .range-card {{ border-top:3px solid var(--accent) }}
+.range-cards {{ display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px }} .range-card {{ border-top:3px solid var(--accent) }}
 .cards {{ display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:10px 0 18px }} .card,.panel {{ background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px }} .grid>.panel {{ min-width:0;overflow-x:auto }}
 .card span,.card small {{ display:block }} .card strong {{ display:block;font-size:24px;margin:5px 0 }} .grid {{ display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px }} .wide {{ grid-column:1/-1 }}
 .chart {{ width:100%;height:auto;display:block }} .chart-title {{ font-size:17px;font-weight:700;fill:var(--ink) }} .chart-subtitle,.axis,.legend {{ font-size:10px;fill:var(--muted) }} .gridline {{ stroke:var(--line);stroke-width:1 }} .data-point {{ stroke-width:1.5;opacity:.12 }} .data-point.partial {{ opacity:.8;stroke-width:2.5 }} .data-point:hover,.data-point:focus {{ opacity:1;stroke:var(--ink);stroke-width:2;outline:none }}
@@ -1376,7 +1437,7 @@ table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bott
 @media(max-width:980px) {{ .range-cards {{ grid-template-columns:repeat(2,minmax(0,1fr)) }} }}
 @media(max-width:820px) {{ .cards {{ grid-template-columns:1fr }} .grid {{ grid-template-columns:minmax(0,1fr) }} .wide {{ grid-column:auto }} }} @media(max-width:520px) {{ main {{ padding:20px 12px 40px }} .range-cards {{ grid-template-columns:1fr }} }}
 </style></head><body><main>
-<header class='top'><div><h1>Smart Home Energy</h1><div class='muted'>Updated {html_escape(observability.get('generatedAt') or status.get('generatedAt'))} · source quality {html_escape(quality.get('status') or 'collecting')} · selected range {range_quality_status}</div></div><div class='ranges'>{range_links}</div></header>
+<header class='top'><div><h1>Smart Home Energy</h1><div class='muted'>Updated {html_escape(observability.get('generatedAt') or status.get('generatedAt'))} · selected range {html_escape(range_quality_status)} · retained history {html_escape(quality.get('status') or 'collecting')}</div></div><div class='ranges'>{range_links}</div></header>
 <section class='range-overview' id='selected-range' data-days='{history_days}'><div class='range-heading'><h2>Selected period · {html_escape(range_label)}</h2><span class='muted'>{html_escape(daily[0].get('date') if daily else 'n/a')} → {html_escape(daily[-1].get('date') if daily else 'n/a')}</span></div><div class='range-cards'>{range_card_markup}</div></section>
 <section class='panel primary-chart' id='range-chart'>{grid_chart}</section>
 <h2>Live now</h2>

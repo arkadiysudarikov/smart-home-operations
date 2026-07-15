@@ -18,7 +18,7 @@ SPEC.loader.exec_module(analyze_all_energy_readings)
 
 
 class AnalyzeAllEnergyReadingsTest(unittest.TestCase):
-    def test_negative_envoy_gross_load_is_quarantined(self) -> None:
+    def test_battery_discharge_repairs_negative_envoy_meter_total(self) -> None:
         start = analyze_all_energy_readings.parse_iso("2026-07-15T10:00:00-07:00")
         end = analyze_all_energy_readings.parse_iso("2026-07-15T10:15:00-07:00")
         interval = analyze_all_energy_readings.SceInterval(start=start, end=end, delivered_kwh=1.0)
@@ -29,13 +29,41 @@ class AnalyzeAllEnergyReadingsTest(unittest.TestCase):
                 "envoy:Consumption Total": [
                     {"capturedAt": start, "kw": -2.0},
                     {"capturedAt": end, "kw": -2.0},
-                ]
+                ],
+                "envoy:Storage": [
+                    {"capturedAt": start, "kw": 3.0},
+                    {"capturedAt": end, "kw": 3.0},
+                ],
             },
         )[0]
 
-        self.assertIsNone(pair["envoyConsumptionTotalKwhEstimate"])
-        self.assertEqual(pair["envoyConsumptionTotalKwhRawEstimate"], -0.5)
-        self.assertIn("envoyConsumptionTotalKwhEstimate", pair["invalidMetrics"])
+        self.assertEqual(pair["envoyConsumptionTotalKwhEstimate"], -0.5)
+        self.assertEqual(pair["envoyStorageKwhEstimate"], 0.75)
+        self.assertEqual(pair["envoySiteLoadKwhEstimate"], 0.25)
+        self.assertNotIn("envoySiteLoadKwhEstimate", pair.get("invalidMetrics", []))
+
+    def test_negative_storage_adjusted_site_load_is_quarantined(self) -> None:
+        start = analyze_all_energy_readings.parse_iso("2026-07-15T10:00:00-07:00")
+        end = analyze_all_energy_readings.parse_iso("2026-07-15T10:15:00-07:00")
+        interval = analyze_all_energy_readings.SceInterval(start=start, end=end, delivered_kwh=1.0)
+
+        pair = analyze_all_energy_readings.build_overlap_pairs(
+            [interval],
+            {
+                "envoy:Consumption Total": [
+                    {"capturedAt": start, "kw": -2.0},
+                    {"capturedAt": end, "kw": -2.0},
+                ],
+                "envoy:Storage": [
+                    {"capturedAt": start, "kw": 1.0},
+                    {"capturedAt": end, "kw": 1.0},
+                ],
+            },
+        )[0]
+
+        self.assertIsNone(pair["envoySiteLoadKwhEstimate"])
+        self.assertEqual(pair["envoySiteLoadKwhRawEstimate"], -0.25)
+        self.assertIn("envoySiteLoadKwhEstimate", pair["invalidMetrics"])
 
     def test_tiny_negative_envoy_production_noise_is_clamped_to_zero(self) -> None:
         start = analyze_all_energy_readings.parse_iso("2026-07-15T10:00:00-07:00")

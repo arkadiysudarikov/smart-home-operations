@@ -107,6 +107,7 @@ def build_daily_comparison(
             "envoySiteLoadKwh": rounded(source.get("envoySiteLoadKwh")),
             "senseLoadKwh": rounded(source.get("senseLoadKwh")),
             "envoySolarKwh": rounded(source.get("envoySolarProductionKwh")),
+            "envoyStorageKwh": rounded(source.get("envoyStorageKwh")),
             "senseSolarKwh": rounded(source.get("senseSolarProductionKwh")),
             "sceComplete": source.get("sceComplete", True if sce else None),
             "envoyComplete": source.get("envoyComplete"),
@@ -119,6 +120,27 @@ def build_daily_comparison(
                 "alarmMinusSceDeliveredKwh": subtract(row["alarmClampKwh"], row["sceDeliveredKwh"]),
             }
         )
+        if all(
+            num(row.get(key)) is not None
+            for key in ("sceNetImportKwh", "envoySolarKwh", "envoyStorageKwh", "envoySiteLoadKwh")
+        ):
+            row["energyBalanceResidualKwh"] = rounded(
+                num(row["sceNetImportKwh"])
+                + num(row["envoySolarKwh"])
+                + num(row["envoyStorageKwh"])
+                - num(row["envoySiteLoadKwh"])
+            )
+            row["energyBalanceResidualPercent"] = rounded(
+                abs(num(row["energyBalanceResidualKwh"])) / max(num(row["envoySiteLoadKwh"]), 0.001) * 100,
+                1,
+            )
+        if num(row.get("envoySolarKwh")) is not None and num(row.get("senseSolarKwh")) is not None:
+            row["solarParityPercent"] = rounded(
+                abs(num(row["envoySolarKwh"]) - num(row["senseSolarKwh"]))
+                / max(num(row["envoySolarKwh"]), 0.001)
+                * 100,
+                1,
+            )
         availability = {
             "Alarm.com": row["alarmClampKwh"] is not None,
             "SCE": row["sceDeliveredKwh"] is not None and row.get("sceComplete") is not False,
@@ -140,10 +162,14 @@ def live_summary(latest: dict[str, Any], sense_now: dict[str, Any], alarm: dict[
         None,
     )
     sense_load_watts = num(sense_now.get("watts"))
+    meter_total = rounded(metrics.get("enphase_consumption_total_kw"))
+    storage = rounded(metrics.get("enphase_storage_kw"))
+    site_load = rounded(meter_total + storage) if meter_total is not None and storage is not None else meter_total
     return {
         "capturedAt": sense_now.get("capturedAt") or latest.get("captured_at") or latest.get("generatedAt"),
         "envoyProductionKw": rounded(metrics.get("enphase_production_kw")),
-        "envoySiteLoadKw": rounded(metrics.get("enphase_consumption_total_kw")),
+        "envoyMeterTotalKw": meter_total,
+        "envoySiteLoadKw": site_load,
         "envoyGridNetKw": rounded(metrics.get("enphase_consumption_net_kw")),
         "envoyStorageKw": rounded(metrics.get("enphase_storage_kw")),
         "batteryPercent": rounded(metrics.get("enphase_backup_percent"), 1),
@@ -152,8 +178,11 @@ def live_summary(latest: dict[str, Any], sense_now: dict[str, Any], alarm: dict[
         "senseLoadKw": rounded(sense_load_watts / 1000 if sense_load_watts is not None else None),
         "senseSolarKw": rounded(sense_solar_watts / 1000 if sense_solar_watts is not None else None),
         "alarmMonthToDateKwh": rounded(dashboard.get("monthToDateKwh"), 1),
+        "alarmSamePointLastMonthKwh": rounded(dashboard.get("samePointLastMonthKwh"), 1),
         "alarmProjectedKwh": rounded(dashboard.get("energyClampProjectedKwh"), 1),
         "alarmBudgetKwh": rounded(dashboard.get("energyClampBudgetKwh"), 1),
+        "alarmLastBillingKwh": rounded(dashboard.get("energyClampLastBillingKwh"), 1),
+        "alarmAverageBillingKwh": rounded(dashboard.get("energyClampAverageBillingKwh"), 1),
     }
 
 
@@ -171,7 +200,7 @@ def peak_events(all_energy: dict[str, Any], limit: int | None = None) -> list[di
                 "end": item.get("end"),
                 "sceImportKw": round(delivered * 4, 3),
                 "sceExportKw": rounded(value * 4) if (value := num(item.get("sceReceivedKwh"))) is not None else None,
-                "envoySiteLoadKw": rounded(value * 4) if (value := num(item.get("envoyConsumptionTotalKwhEstimate"))) is not None else None,
+                "envoySiteLoadKw": rounded(value * 4) if (value := num(item.get("envoySiteLoadKwhEstimate"))) is not None else rounded(value * 4) if (value := num(item.get("envoyConsumptionTotalKwhEstimate"))) is not None else None,
                 "senseLoadKw": rounded(value * 4) if (value := num(item.get("senseKwhEstimate"))) is not None else None,
             }
         )
@@ -230,13 +259,13 @@ def source_quality(combined: dict[str, Any], all_energy: dict[str, Any], daily: 
             }
         )
     invalid_counts = all_energy.get("invalidReadingCounts") or {}
-    invalid_envoy = int(invalid_counts.get("envoyConsumptionTotalKwhEstimate") or 0)
+    invalid_envoy = int(invalid_counts.get("envoySiteLoadKwhEstimate") or 0)
     if invalid_envoy:
         issues.append(
             {
                 "severity": "warning",
                 "title": "Invalid Envoy gross-load intervals",
-                "detail": f"{invalid_envoy} negative physical readings were excluded from daily load totals.",
+                "detail": f"{invalid_envoy} storage-adjusted negative physical readings were excluded from daily load totals.",
             }
         )
     return {
@@ -247,7 +276,7 @@ def source_quality(combined: dict[str, Any], all_energy: dict[str, Any], daily: 
         "issues": issues,
         "sourceSemantics": [
             {"source": "SCE", "measurement": "Utility grid import/export", "use": "Billing and net-grid truth"},
-            {"source": "Envoy", "measurement": "Site load, solar, grid, and storage", "use": "System energy flow"},
+            {"source": "Envoy", "measurement": "Storage-adjusted site load, solar, grid, and battery", "use": "System energy flow"},
             {"source": "Sense", "measurement": "Non-battery house load and solar", "use": "Device and load attribution"},
             {"source": "Alarm.com", "measurement": "Broad Energy Clamp consumption", "use": "Budget and gross-load trend"},
             {"source": "ChargePoint", "measurement": "Completed EV sessions", "use": "Historical EV allocation, not live state"},

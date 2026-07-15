@@ -1242,7 +1242,15 @@ class ActionServerTest(unittest.TestCase):
                 "observationHistory": [],
                 "observability": {
                     "generatedAt": "2026-07-15T10:00:00-07:00",
-                    "live": {"envoyProductionKw": 3.2, "alarmProjectedKwh": 1391.0, "alarmBudgetKwh": 680.0},
+                    "live": {
+                        "envoyProductionKw": 3.2,
+                        "alarmMonthToDateKwh": 504.0,
+                        "alarmSamePointLastMonthKwh": 446.0,
+                        "alarmProjectedKwh": 1391.0,
+                        "alarmBudgetKwh": 680.0,
+                        "alarmLastBillingKwh": 1232.0,
+                        "alarmAverageBillingKwh": 1182.0,
+                    },
                     "quality": {
                         "status": "ready",
                         "overlapPairCount": 100,
@@ -1251,11 +1259,17 @@ class ActionServerTest(unittest.TestCase):
                             {"source": "SCE", "measurement": "Utility import/export", "use": "Billing truth"}
                         ],
                     },
+                    "selectedRangeQuality": {"status": "ready", "dayCount": 1, "comparableDayCount": 1},
                     "dailyComparison": [
                         {
                             "date": "2026-07-14",
                             "sceDeliveredKwh": 45.4,
                             "alarmClampKwh": 51.4,
+                            "energyBalanceResidualPercent": 1.2,
+                            "solarParityPercent": 3.4,
+                            "sceComplete": True,
+                            "envoyComplete": True,
+                            "senseComplete": True,
                             "availableSourceCount": 2,
                         }
                     ],
@@ -1273,6 +1287,7 @@ class ActionServerTest(unittest.TestCase):
         self.assertIn("Selected-range source coverage", page)
         self.assertIn("SCE 1/1 days", page)
         self.assertIn("Selected period · 30 days", page)
+        self.assertIn("selected range ready · retained history ready", page)
         self.assertIn("data-days='30'", page)
         self.assertIn("Grid delivered", page)
         self.assertIn("Average net / day", page)
@@ -1285,6 +1300,13 @@ class ActionServerTest(unittest.TestCase):
         self.assertIn("ArrowRight", page)
         self.assertIn("attempt<300", page)
         self.assertIn("105% above budget", page)
+        self.assertIn("Alarm current billing period", page)
+        self.assertIn("Same point last cycle 446 kWh · +13%", page)
+        self.assertIn("last bill 1,232 kWh", page)
+        self.assertIn("Energy balance", page)
+        self.assertIn("within 1.2%", page)
+        self.assertIn("Solar parity", page)
+        self.assertIn("within 3.4%", page)
         self.assertLess(page.index("Daily utility grid exchange — 30 days"), page.index("Live energy flow — collected observation window"))
 
 
