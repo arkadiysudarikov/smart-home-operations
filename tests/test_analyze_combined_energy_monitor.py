@@ -43,7 +43,7 @@ class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
 
         self.assertEqual(len(rows), 12)
 
-    def test_energy_cost_freshness_uses_report_generation_time(self) -> None:
+    def test_energy_cost_freshness_uses_latest_closed_bill_date(self) -> None:
         now = datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
         self.patch_module(live_envoy_source=lambda: {}, live_sense_source=lambda: {})
 
@@ -62,10 +62,11 @@ class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
         )
 
         costs = next(row for row in rows if row["source"] == "Energy costs")
-        self.assertEqual(costs["status"], "fresh")
-        self.assertEqual(costs["detail"], "2026-07-15T11:59:00-07:00")
+        self.assertEqual(costs["status"], "stale")
+        self.assertGreater(costs["ageHours"], 24)
+        self.assertEqual(costs["detail"], "latest closed bill through 2026-05-07")
 
-    def test_energy_cost_freshness_still_flags_an_old_report(self) -> None:
+    def test_energy_cost_freshness_ignores_report_generation_time(self) -> None:
         now = datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
         self.patch_module(live_envoy_source=lambda: {}, live_sense_source=lambda: {})
 
@@ -78,14 +79,26 @@ class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
             {},
             {},
             {
-                "generatedAt": "2026-07-13T11:59:00-07:00",
+                "generatedAt": "2026-07-15T11:59:00-07:00",
                 "model": {"latestClosedBill": {"periodEnd": "2026-07-08"}},
             },
         )
 
         costs = next(row for row in rows if row["source"] == "Energy costs")
         self.assertEqual(costs["status"], "stale")
-        self.assertEqual(costs["detail"], "2026-07-13T11:59:00-07:00")
+        self.assertEqual(costs["detail"], "latest closed bill through 2026-07-08")
+
+    def test_energy_cost_freshness_reports_missing_bill_basis(self) -> None:
+        now = datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        self.patch_module(live_envoy_source=lambda: {}, live_sense_source=lambda: {})
+
+        rows = combined.build_source_status(
+            now, {"source_status_stale_hours": 24}, {}, {}, {}, {}, {}, {"generatedAt": now.isoformat()}
+        )
+
+        costs = next(row for row in rows if row["source"] == "Energy costs")
+        self.assertEqual(costs["status"], "missing")
+        self.assertEqual(costs["detail"], "no closed bill basis")
 
     def patch_module(self, **replacements: object) -> None:
         self._restore = getattr(self, "_restore", {})
