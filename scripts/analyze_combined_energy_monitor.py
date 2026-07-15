@@ -316,6 +316,9 @@ def build_source_status(
     sense_fallback_end = (bill_home.get("sense") or {}).get("end")
     envoy_timestamp = envoy_live.get("timestamp") if envoy_live else envoy_fallback_end
     sense_timestamp = sense_live.get("timestamp") if sense_live else sense_fallback_end
+    latest_cost_bill = (energy_costs.get("model") or {}).get("latestClosedBill") or {}
+    cost_basis_end = latest_cost_bill.get("periodEnd")
+    cost_age = age_hours(now, cost_basis_end)
 
     rows = [
         {
@@ -350,9 +353,9 @@ def build_source_status(
         },
         {
             "source": "Energy costs",
-            "status": status_label(age_hours(now, energy_costs.get("generatedAt")), stale_hours),
-            "ageHours": age_hours(now, energy_costs.get("generatedAt")),
-            "detail": energy_costs.get("generatedAt"),
+            "status": status_label(cost_age, stale_hours),
+            "ageHours": cost_age,
+            "detail": f"latest closed bill through {cost_basis_end}" if cost_basis_end else "no closed bill basis",
         },
     ]
     for row in rows:
@@ -417,6 +420,9 @@ def load_sce_daily_totals() -> dict[str, dict[str, Any]]:
             add_sum(item, "sceDeliveredKwh", row.get("delivered_kwh"))
             add_sum(item, "sceReceivedKwh", row.get("received_kwh"))
             add_sum(item, "sceNetImportKwh", row.get("net_import_kwh"))
+            item["sceIntervalCount"] = int(item.get("sceIntervalCount") or 0) + 1
+    for item in daily.values():
+        item["sceComplete"] = item.get("sceIntervalCount") in {92, 96, 100}
     return daily
 
 
@@ -441,6 +447,10 @@ def build_daily_summary(
             add_sum(item, "sceDeliveredKwh", row.get("sceDeliveredKwh"))
             add_sum(item, "sceReceivedKwh", row.get("sceReceivedKwh"))
             add_sum(item, "sceNetImportKwh", row.get("sceNetImportKwh"))
+        if row.get("envoyConsumptionTotalKwhEstimate") is not None:
+            item["envoyIntervalCount"] = int(item.get("envoyIntervalCount") or 0) + 1
+        if row.get("senseKwhEstimate") is not None:
+            item["senseIntervalCount"] = int(item.get("senseIntervalCount") or 0) + 1
         add_sum(item, "envoySiteLoadKwh", row.get("envoyConsumptionTotalKwhEstimate"))
         add_sum(item, "envoyGridNetKwh", row.get("envoyConsumptionNetKwhEstimate"))
         add_sum(item, "envoySolarProductionKwh", row.get("envoyProductionKwhEstimate"))
@@ -480,6 +490,8 @@ def build_daily_summary(
     out: list[dict[str, Any]] = []
     for day in sorted(days):
         item = days[day]
+        item["envoyComplete"] = item.get("envoyIntervalCount") in {92, 96, 100}
+        item["senseComplete"] = item.get("senseIntervalCount") in {92, 96, 100}
         cp = num(item.get("chargepointKwh"))
         site = num(item.get("envoySiteLoadKwh")) or num(item.get("alarmEnergyClampKwh"))
         item["chargepointShareOfSiteLoad"] = cp / site if cp is not None and site else None
@@ -505,7 +517,7 @@ def build_daily_summary(
             gaps.append("ChargePoint/site-load day alignment")
         item["unresolvedGaps"] = gaps
         out.append(item)
-    return out[-10:]
+    return out
 
 
 def build_payload() -> dict[str, Any]:

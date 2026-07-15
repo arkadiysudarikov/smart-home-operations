@@ -21,6 +21,37 @@ SPEC.loader.exec_module(combined)
 
 
 class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
+    def test_daily_summary_retains_more_than_ten_days(self) -> None:
+        trends = {
+            f"2026-06-{day:02d}": {"consumption": {"total": float(day)}}
+            for day in range(1, 13)
+        }
+
+        rows = combined.build_daily_summary({}, {}, {}, {}, {"trends": trends})
+
+        self.assertEqual(len(rows), 12)
+
+    def test_energy_cost_freshness_uses_latest_closed_bill_date(self) -> None:
+        now = datetime(2026, 7, 15, 12, 0, tzinfo=ZoneInfo("America/Los_Angeles"))
+        self.patch_module(live_envoy_source=lambda: {}, live_sense_source=lambda: {})
+
+        rows = combined.build_source_status(
+            now,
+            {"source_status_stale_hours": 24},
+            {},
+            {},
+            {},
+            {},
+            {},
+            {
+                "generatedAt": "2026-07-15T11:59:00-07:00",
+                "model": {"latestClosedBill": {"periodEnd": "2026-05-07"}},
+            },
+        )
+
+        costs = next(row for row in rows if row["source"] == "Energy costs")
+        self.assertEqual(costs["status"], "stale")
+        self.assertIn("2026-05-07", costs["detail"])
     def patch_module(self, **replacements: object) -> None:
         self._restore = getattr(self, "_restore", {})
         for name, replacement in replacements.items():

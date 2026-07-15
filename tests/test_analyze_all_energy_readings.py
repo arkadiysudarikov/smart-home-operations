@@ -18,6 +18,18 @@ SPEC.loader.exec_module(analyze_all_energy_readings)
 
 
 class AnalyzeAllEnergyReadingsTest(unittest.TestCase):
+    def test_interval_estimate_uses_time_weighted_integration(self) -> None:
+        start = analyze_all_energy_readings.parse_iso("2026-07-15T10:00:00-07:00")
+        end = analyze_all_energy_readings.parse_iso("2026-07-15T10:15:00-07:00")
+        index = analyze_all_energy_readings.build_sample_index(
+            [
+                {"capturedAt": start, "kw": 0.0},
+                {"capturedAt": end, "kw": 4.0},
+            ]
+        )
+
+        self.assertAlmostEqual(analyze_all_energy_readings.estimate_interval_kwh(index, start, end), 0.5)
+
     def test_discover_sce_files_skips_external_roots_by_default(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

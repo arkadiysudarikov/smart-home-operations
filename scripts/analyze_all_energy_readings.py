@@ -367,25 +367,51 @@ def load_monitor_samples() -> dict[str, list[dict[str, Any]]]:
 def build_sample_index(samples: list[dict[str, Any]]) -> dict[str, list[float]]:
     ordered = sorted(samples, key=lambda item: item["capturedAt"])
     timestamps: list[float] = []
-    prefix_kw: list[float] = [0.0]
+    values: list[float] = []
     for item in ordered:
         timestamps.append(item["capturedAt"].timestamp())
-        prefix_kw.append(prefix_kw[-1] + float(item["kw"]))
-    return {"timestamps": timestamps, "prefixKw": prefix_kw}
+        values.append(float(item["kw"]))
+    return {"timestamps": timestamps, "values": values}
 
 
 def estimate_interval_kwh(index: dict[str, list[float]], start: datetime, end: datetime) -> float | None:
     timestamps = index["timestamps"]
     if not timestamps:
         return None
-    left = bisect.bisect_left(timestamps, start.timestamp())
-    right = bisect.bisect_left(timestamps, end.timestamp())
-    count = right - left
-    if count <= 0:
+    values = index["values"]
+    start_ts = start.timestamp()
+    end_ts = end.timestamp()
+    left = bisect.bisect_left(timestamps, start_ts)
+    right = bisect.bisect_right(timestamps, end_ts)
+    if left == right:
         return None
-    prefix_kw = index["prefixKw"]
-    average_kw = (prefix_kw[right] - prefix_kw[left]) / count
-    return average_kw * ((end - start).total_seconds() / 3600.0)
+
+    def boundary_value(timestamp: float, insertion: int) -> float:
+        if insertion <= 0:
+            return values[0]
+        if insertion >= len(timestamps):
+            return values[-1]
+        before_ts, after_ts = timestamps[insertion - 1], timestamps[insertion]
+        before_value, after_value = values[insertion - 1], values[insertion]
+        if after_ts == before_ts:
+            return after_value
+        fraction = (timestamp - before_ts) / (after_ts - before_ts)
+        return before_value + (after_value - before_value) * fraction
+
+    points: list[tuple[float, float]] = [
+        (start_ts, boundary_value(start_ts, bisect.bisect_left(timestamps, start_ts)))
+    ]
+    points.extend(
+        (timestamps[index], values[index])
+        for index in range(left, right)
+        if start_ts < timestamps[index] < end_ts
+    )
+    points.append((end_ts, boundary_value(end_ts, bisect.bisect_left(timestamps, end_ts))))
+    watt_hours = sum(
+        ((first_value + second_value) / 2.0) * ((second_ts - first_ts) / 3600.0)
+        for (first_ts, first_value), (second_ts, second_value) in zip(points, points[1:])
+    )
+    return watt_hours
 
 
 def build_overlap_pairs(intervals: list[SceInterval], samples: dict[str, list[dict[str, Any]]]) -> list[dict[str, Any]]:
@@ -529,7 +555,7 @@ def write_outputs(
         },
         "smartHomeMonitor": monitor_summary,
         "overlapPairCount": len(overlap_pairs),
-        "overlapPairs": overlap_pairs[-200:],
+        "overlapPairs": overlap_pairs,
         "sceBills": bill_rows,
         "realtimeSenseEnvoy": realtime_summary,
     }

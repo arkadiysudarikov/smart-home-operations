@@ -108,6 +108,9 @@ def build_daily_comparison(
             "senseLoadKwh": rounded(source.get("senseLoadKwh")),
             "envoySolarKwh": rounded(source.get("envoySolarProductionKwh")),
             "senseSolarKwh": rounded(source.get("senseSolarProductionKwh")),
+            "sceComplete": source.get("sceComplete", True if sce else None),
+            "envoyComplete": source.get("envoyComplete"),
+            "senseComplete": source.get("senseComplete"),
         }
         row.update(
             {
@@ -116,10 +119,14 @@ def build_daily_comparison(
                 "alarmMinusSceDeliveredKwh": subtract(row["alarmClampKwh"], row["sceDeliveredKwh"]),
             }
         )
-        row["availableSourceCount"] = sum(
-            row[key] is not None
-            for key in ("alarmClampKwh", "sceDeliveredKwh", "envoySiteLoadKwh", "senseLoadKwh")
-        )
+        availability = {
+            "Alarm.com": row["alarmClampKwh"] is not None,
+            "SCE": row["sceDeliveredKwh"] is not None and row.get("sceComplete") is not False,
+            "Envoy": row["envoySiteLoadKwh"] is not None and row.get("envoyComplete") is not False,
+            "Sense": row["senseLoadKwh"] is not None and row.get("senseComplete") is not False,
+        }
+        row["availableSourceCount"] = sum(availability.values())
+        row["partialSources"] = [label for label, available in availability.items() if not available]
         rows.append(row)
     return rows
 
@@ -163,9 +170,9 @@ def peak_events(all_energy: dict[str, Any], limit: int = 12) -> list[dict[str, A
                 "start": item.get("start"),
                 "end": item.get("end"),
                 "sceImportKw": round(delivered * 4, 3),
-                "sceExportKw": rounded((num(item.get("sceReceivedKwh")) or 0) * 4),
-                "envoySiteLoadKw": rounded((num(item.get("envoyConsumptionTotalKwhEstimate")) or 0) * 4),
-                "senseLoadKw": rounded((num(item.get("senseKwhEstimate")) or 0) * 4),
+                "sceExportKw": rounded(value * 4) if (value := num(item.get("sceReceivedKwh"))) is not None else None,
+                "envoySiteLoadKw": rounded(value * 4) if (value := num(item.get("envoyConsumptionTotalKwhEstimate"))) is not None else None,
+                "senseLoadKw": rounded(value * 4) if (value := num(item.get("senseKwhEstimate"))) is not None else None,
             }
         )
     return sorted(rows, key=lambda item: item["sceImportKw"], reverse=True)[:limit]
@@ -196,6 +203,14 @@ def source_quality(combined: dict[str, Any], all_energy: dict[str, Any], daily: 
                 "severity": "warning",
                 "title": "No interval overlap",
                 "detail": "SCE and monitor intervals cannot be reconciled yet.",
+            }
+        )
+    if daily and comparable_days < max(1, round(len(daily) * 0.75)):
+        issues.append(
+            {
+                "severity": "warning",
+                "title": "Historical comparison coverage is limited",
+                "detail": f"{comparable_days} of {len(daily)} retained days have at least three complete sources.",
             }
         )
     source_meta = combined.get("sources") or {}
@@ -272,10 +287,10 @@ def persist_observation(generated_at: str, live: dict[str, Any], combined: dict[
                 json.dumps(combined.get("states") or []),
             ),
         )
-        cutoff = (datetime.now(timezone.utc).astimezone() - timedelta(days=HISTORY_RETENTION_DAYS)).isoformat(
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=HISTORY_RETENTION_DAYS)).isoformat(
             timespec="seconds"
         )
-        db.execute("delete from energy_observations where captured_at < ?", (cutoff,))
+        db.execute("delete from energy_observations where julianday(captured_at) < julianday(?)", (cutoff,))
         db.commit()
 
 

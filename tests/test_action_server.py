@@ -1043,8 +1043,34 @@ class ActionServerTest(unittest.TestCase):
     def test_energy_history_days_are_limited_to_dashboard_ranges(self) -> None:
         self.assertEqual(action_server.normalized_energy_history_days("1"), 1)
         self.assertEqual(action_server.normalized_energy_history_days("90"), 90)
-        self.assertEqual(action_server.normalized_energy_history_days("365"), 7)
-        self.assertEqual(action_server.normalized_energy_history_days("bad"), 7)
+        self.assertIsNone(action_server.normalized_energy_history_days("365"))
+        self.assertIsNone(action_server.normalized_energy_history_days("bad"))
+
+    def test_get_cannot_execute_action_endpoint(self) -> None:
+        class FakeHandler:
+            path = "/action/restart-homebridge"
+            headers: dict[str, str] = {}
+
+        with mock.patch.object(action_server, "restart_homebridge") as restart:
+            status, payload = action_server.Handler.route(FakeHandler())
+
+        self.assertEqual(status, 405)
+        self.assertFalse(payload["ok"])
+        restart.assert_not_called()
+
+    def test_cross_origin_post_cannot_execute_action_endpoint(self) -> None:
+        class FakeHandler:
+            path = "/action/restart-homebridge"
+            headers = {"Origin": "https://attacker.example", "Host": "127.0.0.1:18765"}
+
+            request_origin_allowed = action_server.Handler.request_origin_allowed
+
+        with mock.patch.object(action_server, "restart_homebridge") as restart:
+            status, payload = action_server.Handler.route(FakeHandler(), allow_actions=True)
+
+        self.assertEqual(status, 403)
+        self.assertFalse(payload["ok"])
+        restart.assert_not_called()
 
     def test_daily_energy_rows_follow_selected_range(self) -> None:
         now = datetime.fromisoformat("2026-07-15T12:00:00-07:00")
@@ -1116,6 +1142,45 @@ class ActionServerTest(unittest.TestCase):
             self.assertTrue(rows[0]["batteryCharging"])
             self.assertEqual(rows[0]["states"], ["battery_charging"])
 
+    def test_energy_observation_history_honors_max_points(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "smart_home.sqlite"
+            now = datetime.now(timezone.utc)
+            with action_server.sqlite3.connect(db_path) as db:
+                db.execute(
+                    "create table energy_observations (captured_at text primary key, "
+                    "envoy_production_kw real, envoy_site_load_kw real, envoy_grid_net_kw real, "
+                    "envoy_storage_kw real, battery_percent real, battery_charging integer, "
+                    "battery_discharging integer, sense_load_kw real, sense_solar_kw real, "
+                    "alarm_mtd_kwh real, alarm_projected_kwh real, energy_alert_count integer, "
+                    "active_states_json text not null)"
+                )
+                for index in range(421):
+                    captured = (now - action_server.timedelta(minutes=421 - index)).isoformat()
+                    db.execute(
+                        "insert into energy_observations values (?, 1, 1, 1, 1, 50, 0, 0, 1, 1, 1, 1, 0, '[]')",
+                        (captured,),
+                    )
+            self.patch_module(DB_PATH=db_path)
+
+            rows = action_server.energy_observation_history(7, max_points=420)
+
+            self.assertLessEqual(len(rows), 420)
+
+    def test_stale_action_status_is_recovered_after_worker_exits(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "latest_sce_refresh.json"
+            path.write_text(json.dumps({"ok": None, "status": "running", "workerPid": 999999}) + "\n")
+            self.patch_module(SCE_REFRESH_STATUS_PATH=path)
+
+            status = action_server.read_json_status(path)
+
+            self.assertEqual(status["status"], "interrupted")
+            self.assertTrue(status["staleRunningRecovered"])
+
+    def test_interrupted_action_is_degraded(self) -> None:
+        self.assertTrue(action_server.status_is_action_degraded({"ok": None, "status": "interrupted"}))
+
     def test_energy_dashboard_explains_sources_and_history(self) -> None:
         self.patch_module(
             energy_status=lambda days=7: {
@@ -1160,6 +1225,10 @@ class ActionServerTest(unittest.TestCase):
         self.assertIn("Average net / day", page)
         self.assertIn("Live energy flow — collected observation window", page)
         self.assertIn("id='range-chart'", page)
+        self.assertIn("aria-current='page'", page)
+        self.assertIn("aria-live='polite'", page)
+        self.assertIn("<title id='chart-title-", page)
+        self.assertIn("tabindex='0'", page)
         self.assertLess(page.index("Daily utility grid exchange — 30 days"), page.index("Live energy flow — collected observation window"))
 
 

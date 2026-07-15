@@ -56,6 +56,27 @@ class AnalyzeEnergyObservabilityTest(unittest.TestCase):
         self.assertEqual(rows[0]["alarmMinusSenseKwh"], 13.0)
         self.assertEqual(rows[0]["availableSourceCount"], 4)
 
+    def test_daily_comparison_does_not_count_partial_monitor_day_as_complete(self) -> None:
+        rows = analyzer.build_daily_comparison(
+            {
+                "dailySummary": [
+                    {
+                        "date": "2026-07-14",
+                        "sceDeliveredKwh": 52.0,
+                        "sceComplete": True,
+                        "envoySiteLoadKwh": 12.0,
+                        "envoyComplete": False,
+                        "senseLoadKwh": 10.0,
+                        "senseComplete": True,
+                    }
+                ]
+            },
+            {},
+        )
+
+        self.assertEqual(rows[0]["availableSourceCount"], 2)
+        self.assertIn("Envoy", rows[0]["partialSources"])
+
     def test_peak_events_converts_quarter_hour_energy_to_average_power(self) -> None:
         payload = {
             "overlapPairs": [
@@ -75,6 +96,15 @@ class AnalyzeEnergyObservabilityTest(unittest.TestCase):
         self.assertEqual(event["sceExportKw"], 1.0)
         self.assertEqual(event["envoySiteLoadKw"], 11.0)
         self.assertEqual(event["senseLoadKw"], 8.0)
+
+    def test_peak_events_preserves_missing_monitor_values(self) -> None:
+        event = analyzer.peak_events(
+            {"overlapPairs": [{"start": "2026-07-14T22:00:00-07:00", "sceDeliveredKwh": 3.0}]}
+        )[0]
+
+        self.assertIsNone(event["sceExportKw"])
+        self.assertIsNone(event["envoySiteLoadKw"])
+        self.assertIsNone(event["senseLoadKw"])
 
     def test_persist_observation_creates_queryable_history(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -131,6 +161,14 @@ class AnalyzeEnergyObservabilityTest(unittest.TestCase):
 
         self.assertEqual(quality["status"], "degraded")
         self.assertEqual(quality["issues"][0]["title"], "Monitor history trails utility coverage")
+
+    def test_sparse_historical_coverage_degrades_quality(self) -> None:
+        daily = [{"availableSourceCount": 3}] + [{"availableSourceCount": 1} for _ in range(9)]
+
+        quality = analyzer.source_quality({}, {"overlapPairCount": 20}, daily)
+
+        self.assertEqual(quality["status"], "degraded")
+        self.assertIn("Historical comparison coverage is limited", [item["title"] for item in quality["issues"]])
 
 
 if __name__ == "__main__":
