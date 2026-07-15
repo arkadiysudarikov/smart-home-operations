@@ -41,7 +41,7 @@ def virtual_accessories() -> list[dict[str, Any]]:
             "type": "Switch",
             "defaultState": "off",
             "sensor": {
-                "type": "OccupancySensor",
+                "type": item.get("sensor_type", "OccupancySensor"),
                 "behavior": "MIRROR",
             },
             "enableWebhook": True,

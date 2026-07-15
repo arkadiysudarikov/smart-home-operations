@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import urllib.parse
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+from zoneinfo import ZoneInfo
+
+
+ROOT = Path(__file__).resolve().parents[1]
+CONFIG_PATH = ROOT / "config" / "sources.json"
+DATA_DIR = ROOT / "data"
+REPORT_DIR = ROOT / "reports"
+LATEST_PATH = DATA_DIR / "latest.json"
+STATE_PATH = DATA_DIR / "washer_notifier_state.json"
+STATUS_PATH = DATA_DIR / "latest_washer_notifier.json"
+POWER_LOG_PATH = DATA_DIR / "washer_power_shadow.jsonl"
+SENSE_NOW_PATH = DATA_DIR / "sense_now_latest.json"
+ENVOY_PATH = DATA_DIR / "latest_envoy_direct.json"
+LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+
+
+def load_json(path: Path, default: Any) -> Any:
+    try:
+        return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return default
+
+
+def parse_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=LOCAL_TZ)
+    return parsed.astimezone(LOCAL_TZ)
+
+
+def bool_value(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "on", "yes"}:
+        return True
+    if text in {"0", "false", "off", "no"}:
+        return False
+    return None
+
+
+def find_characteristic(latest: dict[str, Any], accessory: str, service: str, characteristic: str) -> Any:
+    values = latest.get("homeEvents", {}).get("currentCharacteristics", {})
+    if not isinstance(values, dict):
+        return None
+    for item in values.values():
+        if not isinstance(item, dict):
+            continue
+        if (
+            item.get("accessory") == accessory
+            and item.get("service") == service
+            and item.get("characteristic") == characteristic
+        ):
+            return item.get("value")
+    return None
+
+
+def current_washer_state(latest: dict[str, Any], config: dict[str, Any], now: datetime) -> dict[str, Any]:
+    captured_at = parse_time(latest.get("captured_at"))
+    max_age_minutes = int(config.get("max_snapshot_age_minutes", 10))
+    fresh = bool(captured_at and timedelta(0) <= now - captured_at <= timedelta(minutes=max_age_minutes))
+    accessory = str(config.get("accessory", "Washer"))
+    in_use = bool_value(find_characteristic(latest, accessory, "Washer", "InUse"))
+    if in_use is None:
+        in_use = bool_value(find_characteristic(latest, accessory, "Cycle Status", "MotionDetected"))
+    door_open = bool_value(find_characteristic(latest, accessory, "Washer Door", "ContactSensorState"))
+    return {
+        "capturedAt": captured_at.isoformat(timespec="seconds") if captured_at else None,
+        "fresh": fresh,
+        "inUse": in_use,
+        "doorOpen": door_open,
+    }
+
+
+def within_announcement_hours(now: datetime, config: dict[str, Any]) -> bool:
+    start = int(config.get("announcement_start_hour", 8))
+    end = int(config.get("announcement_end_hour", 21))
+    if start <= end:
+        return start <= now.hour < end
+    return now.hour >= start or now.hour < end
+
+
+def evolve_state(
+    prior: dict[str, Any], current: dict[str, Any], now: datetime, config: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    state = dict(prior)
+    actions: list[str] = []
+    now_text = now.isoformat(timespec="seconds")
+    pulse_seconds = int(config.get("pulse_seconds", 120))
+
+    for field, action in (("finishPulseUntil", "finish_off"), ("reminderPulseUntil", "reminder_off")):
+        deadline = parse_time(state.get(field))
+        if deadline and now >= deadline:
+            state[field] = None
+            actions.append(action)
+
+    if not current.get("fresh") or current.get("inUse") is None:
+        state["lastCheckedAt"] = now_text
+        state["sourceFresh"] = False
+        return state, actions
+
+    in_use = bool(current["inUse"])
+    door_open = current.get("doorOpen")
+    previous_in_use = state.get("lastInUse")
+    state["sourceFresh"] = True
+
+    if previous_in_use is None:
+        state["lastInUse"] = in_use
+        state["lastDoorOpen"] = door_open
+        state["lastCheckedAt"] = now_text
+        if in_use:
+            state.update({"armed": True, "cycleStartedAt": now_text, "runningSamples": 1})
+        return state, actions
+
+    if in_use:
+        if not previous_in_use:
+            state.update({
+                "armed": True,
+                "cycleStartedAt": now_text,
+                "runningSamples": 1,
+                "awaitingUnload": False,
+                "finishedAt": None,
+                "reminderSent": False,
+            })
+            actions.extend(["finish_off", "reminder_off"])
+        else:
+            state["runningSamples"] = int(state.get("runningSamples", 0)) + 1
+            state["armed"] = True
+    elif previous_in_use:
+        started_at = parse_time(state.get("cycleStartedAt"))
+        duration_ok = bool(started_at and now - started_at >= timedelta(minutes=int(config.get("minimum_cycle_minutes", 10))))
+        samples_ok = int(state.get("runningSamples", 0)) >= int(config.get("minimum_running_samples", 2))
+        if state.get("armed") and (duration_ok or samples_ok):
+            state.update({
+                "armed": False,
+                "awaitingUnload": not bool(door_open),
+                "finishedAt": now_text,
+                "reminderSent": False,
+                "finishPulseUntil": (now + timedelta(seconds=pulse_seconds)).isoformat(timespec="seconds"),
+                "completedCycles": int(state.get("completedCycles", 0)) + 1,
+            })
+            actions.extend(["finish_on", "notify_finish"])
+            if within_announcement_hours(now, config):
+                actions.append("announce_finish")
+
+    finished_at = parse_time(state.get("finishedAt"))
+    if state.get("awaitingUnload") and door_open:
+        state.update({"awaitingUnload": False, "unloadedAt": now_text})
+        actions.extend(["finish_off", "reminder_off"])
+    elif (
+        state.get("awaitingUnload")
+        and not state.get("reminderSent")
+        and finished_at
+        and now >= finished_at + timedelta(minutes=int(config.get("reminder_minutes", 20)))
+    ):
+        state["reminderSent"] = True
+        state["reminderPulseUntil"] = (now + timedelta(seconds=pulse_seconds)).isoformat(timespec="seconds")
+        actions.extend(["reminder_on", "notify_reminder"])
+
+    state.update({"lastInUse": in_use, "lastDoorOpen": door_open, "lastCheckedAt": now_text})
+    return state, list(dict.fromkeys(actions))
+
+
+def webhook_set(webhook_url: str, accessory_id: str, active: bool) -> dict[str, Any]:
+    base = webhook_url.rstrip("/") + "/"
+    query = urllib.parse.urlencode({"id": accessory_id, "set": "On", "value": str(active).lower()})
+    try:
+        with urllib.request.urlopen(f"{base}?{query}", timeout=5) as response:
+            response.read()
+        read_query = urllib.parse.urlencode({"id": accessory_id, "get": "On"})
+        with urllib.request.urlopen(f"{base}?{read_query}", timeout=5) as response:
+            readback = json.loads(response.read().decode()).get("value")
+        return {"ok": readback == active, "active": active, "readback": readback}
+    except Exception as exc:
+        return {"ok": False, "active": active, "error": str(exc)}
+
+
+def mac_notification(message: str, title: str) -> dict[str, Any]:
+    script = f'display notification {json.dumps(message)} with title {json.dumps(title)}'
+    proc = subprocess.run(["osascript", "-e", script], text=True, capture_output=True, timeout=10, check=False)
+    return {"ok": proc.returncode == 0, "returncode": proc.returncode, "error": proc.stderr.strip() or None}
+
+
+def run_shortcut(name: str, message: str) -> dict[str, Any]:
+    available = subprocess.run(["shortcuts", "list"], text=True, capture_output=True, timeout=15, check=False)
+    names = {line.strip() for line in available.stdout.splitlines()}
+    if name not in names:
+        return {"ok": False, "skipped": True, "error": f"shortcut not found: {name}"}
+    input_path = DATA_DIR / "washer_announcement.txt"
+    input_path.write_text(message + "\n")
+    proc = subprocess.run(
+        ["shortcuts", "run", name, "--input-path", str(input_path)],
+        text=True,
+        capture_output=True,
+        timeout=30,
+        check=False,
+    )
+    return {"ok": proc.returncode == 0, "returncode": proc.returncode, "error": proc.stderr.strip() or None}
+
+
+def power_observation(current: dict[str, Any], now: datetime) -> dict[str, Any]:
+    sense = load_json(SENSE_NOW_PATH, {})
+    envoy = load_json(ENVOY_PATH, {})
+    devices = sense.get("devices", []) if isinstance(sense, dict) else []
+    other = next((item.get("watts") for item in devices if item.get("name") == "Other"), None)
+    consumption = ((envoy.get("probes") or [{}])[0].get("production") or {}).get("consumption", [])
+    total = next((item.get("wNow") for item in consumption if item.get("measurementType") == "total-consumption"), None)
+    return {
+        "capturedAt": now.isoformat(timespec="seconds"),
+        "sourceSnapshotAt": current.get("capturedAt"),
+        "inUse": current.get("inUse"),
+        "doorOpen": current.get("doorOpen"),
+        "senseTotalWatts": sense.get("watts") if isinstance(sense, dict) else None,
+        "senseOtherWatts": other,
+        "envoyTotalConsumptionWatts": total,
+        "mode": "shadow",
+    }
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    temporary.replace(path)
+
+
+def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    webhook_url = str(config.get("webhook_url", "http://127.0.0.1:63743"))
+    finish_id = str(config.get("finish_sensor_id", "smart_home_washer_finished_v1"))
+    reminder_id = str(config.get("reminder_sensor_id", "smart_home_washer_unload_v1"))
+    for action in actions:
+        if dry_run:
+            results.append({"action": action, "ok": True, "dryRun": True})
+        elif action in {"finish_on", "finish_off", "reminder_on", "reminder_off"}:
+            sensor_id = finish_id if action.startswith("finish") else reminder_id
+            result = webhook_set(webhook_url, sensor_id, action.endswith("_on"))
+            results.append({"action": action, **result})
+        elif action == "notify_finish":
+            results.append({"action": action, **mac_notification("The washer has finished.", "Washer Finished")})
+        elif action == "notify_reminder":
+            results.append({"action": action, **mac_notification("The washer finished 20 minutes ago and the door is still closed.", "Unload Washer")})
+        elif action == "announce_finish" and config.get("homepod_enabled", False):
+            results.append({
+                "action": action,
+                **run_shortcut(str(config.get("homepod_shortcut", "Announce Washer Finished")), "The washer has finished."),
+            })
+    return results
+
+
+def write_report(payload: dict[str, Any]) -> None:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    current = payload["current"]
+    state = payload["state"]
+    lines = [
+        "# Washer Notifications",
+        "",
+        f"- Checked: `{payload['generatedAt']}`",
+        f"- SmartHQ snapshot fresh: `{current.get('fresh')}`",
+        f"- Washer running: `{current.get('inUse')}`",
+        f"- Washer door open: `{current.get('doorOpen')}`",
+        f"- Waiting to be unloaded: `{state.get('awaitingUnload', False)}`",
+        f"- Completed cycles observed: `{state.get('completedCycles', 0)}`",
+        f"- Power fallback: `shadow` (collecting labeled samples; not allowed to alert yet)",
+        "",
+        "## Last Actions",
+        "",
+    ]
+    if payload["results"]:
+        lines.extend(f"- `{item['action']}`: `{'ok' if item.get('ok') else 'failed'}`" for item in payload["results"])
+    else:
+        lines.append("- No notification action was needed.")
+    (REPORT_DIR / "washer_notifications.md").write_text("\n".join(lines) + "\n")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Send washer-finished and unload-reminder notifications.")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--now", help="override the current local time for testing")
+    args = parser.parse_args()
+
+    full_config = load_json(CONFIG_PATH, {})
+    config = full_config.get("washer_notifications", {})
+    if not config.get("enabled", False):
+        print("Washer notifications are disabled.")
+        return 0
+    now = parse_time(args.now) if args.now else datetime.now(timezone.utc).astimezone(LOCAL_TZ)
+    assert now is not None
+    latest = load_json(LATEST_PATH, {})
+    current = current_washer_state(latest, config, now)
+    prior = load_json(STATE_PATH, {})
+    state, actions = evolve_state(prior, current, now, config)
+    results = execute_actions(actions, config, args.dry_run)
+    observation = power_observation(current, now)
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    with POWER_LOG_PATH.open("a") as handle:
+        handle.write(json.dumps(observation, sort_keys=True) + "\n")
+    payload = {
+        "generatedAt": now.isoformat(timespec="seconds"),
+        "ok": all(item.get("ok") for item in results),
+        "current": current,
+        "state": state,
+        "actions": actions,
+        "results": results,
+        "powerFallback": {"mode": "shadow", "observation": observation},
+    }
+    if not args.dry_run:
+        write_json(STATE_PATH, state)
+        write_json(STATUS_PATH, payload)
+        write_report(payload)
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0 if payload["ok"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

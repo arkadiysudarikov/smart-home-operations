@@ -154,6 +154,25 @@
     "alarm_child_bridge_port": 52230,
     "office_tahoma_child_bridge_port": 35854
   },
+  "washer_notifications": {
+    "enabled": true,
+    "accessory": "Washer",
+    "max_snapshot_age_minutes": 10,
+    "minimum_cycle_minutes": 10,
+    "minimum_running_samples": 2,
+    "reminder_minutes": 20,
+    "pulse_seconds": 120,
+    "announcement_start_hour": 8,
+    "announcement_end_hour": 21,
+    "homepod_enabled": false,
+    "homepod_shortcut": "Announce Washer Finished",
+    "homepod_setup_status": "requires iPhone or iPad Home automation media selection",
+    "webhook_url": "http://127.0.0.1:63743",
+    "finish_sensor_id": "smart_home_washer_finished_v1",
+    "reminder_sensor_id": "smart_home_washer_unload_v1",
+    "power_fallback_mode": "shadow",
+    "power_fallback_minimum_training_cycles": 3
+  },
   "homekit_virtual_sensors": {
     "enabled": true,
     "webhook_url": "http://127.0.0.1:63743",
@@ -249,6 +268,18 @@
         "id": "smart_home_ev_charging_v2",
         "name": "🔋 Car Charging",
         "state_titles": ["EV charging"]
+      },
+      {
+        "id": "smart_home_washer_finished_v1",
+        "name": "🧺 Washer Done",
+        "sensor_type": "MotionSensor",
+        "externally_managed": true
+      },
+      {
+        "id": "smart_home_washer_unload_v1",
+        "name": "🧺 Unload Washer",
+        "sensor_type": "MotionSensor",
+        "externally_managed": true
       }
     ]
   }

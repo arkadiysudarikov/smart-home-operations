@@ -1587,6 +1587,8 @@ def update_homekit_virtual_sensors(config: dict[str, Any], alerts: list[dict[str
     state_titles = active_state_titles(config, load_latest())
     updates: list[dict[str, Any]] = []
     for accessory in sensor_config.get("accessories", []):
+        if accessory.get("externally_managed"):
+            continue
         accessory_id = accessory["id"]
         should_be_active = (
             any(title in active_titles for title in accessory.get("alert_titles", []))

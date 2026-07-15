@@ -447,6 +447,7 @@ def main() -> int:
         if args.fast:
             plan: list[tuple[str, list[str] | str | None, int, bool, bool, str | None]] = [
                 ("snapshot", [py, "scripts/smart_home_snapshot.py"], 45, True, False, None),
+                ("washer_notifier", [py, "scripts/washer_notifier.py"], 30, True, False, None),
                 (
                     "fetch_sce",
                     None
@@ -504,6 +505,7 @@ def main() -> int:
         else:
             plan = [
                 ("snapshot", [py, "scripts/smart_home_snapshot.py"], 120, True, False, None),
+                ("washer_notifier", [py, "scripts/washer_notifier.py"], 30, True, False, None),
                 ("fetch_sce", [py, "scripts/fetch_sce_green_button_connect.py"], 600, False, False, None),
             ]
             if args.with_bills:

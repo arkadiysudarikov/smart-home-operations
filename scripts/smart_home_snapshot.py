@@ -62,6 +62,7 @@ DRIFT_CHECK_FILES = [
     "scripts/set_alarm_panel.js",
     "scripts/smart_home_snapshot.py",
     "scripts/update_office_tahoma_ip.js",
+    "scripts/washer_notifier.py",
 ]
 DRIFT_CHECK_EXTERNAL_FILES = [
     (
