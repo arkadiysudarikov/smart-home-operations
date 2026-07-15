@@ -47,6 +47,62 @@
     "refresh_snapshot_after_restart": true,
     "post_restart_snapshot_delay_seconds": 8
   },
+  "display_awake": {
+    "enabled": true,
+    "default_mode": "shadow",
+    "poll_seconds": 30,
+    "presence_fresh_seconds": 90,
+    "zone_confirmation_polls": 2,
+    "presence_grace_seconds": 600,
+    "activity_hold_seconds": 1800,
+    "light_activity_hold_seconds": 7200,
+    "lease_seconds": 150,
+    "lease_refresh_seconds": 90,
+    "ssh_connect_timeout_seconds": 5,
+    "access_point_rooms": {},
+    "targets": [
+      {
+        "id": "m2-office-mini",
+        "host": "m2-office-mini.local",
+        "room": "office",
+        "local": true
+      },
+      {
+        "id": "m2-garage-mini",
+        "host": "m2-garage-mini.local",
+        "room": "garage"
+      },
+      {
+        "id": "m4-bar-mini",
+        "host": "m4-bar-mini.local",
+        "room": "bar"
+      },
+      {
+        "id": "m4-office-mini",
+        "host": "m4-office-mini.local",
+        "room": "office"
+      },
+      {
+        "id": "m2-macbook-pro",
+        "host": "m2-macbook-pro.local",
+        "dynamic_room": true,
+        "ac_only": true,
+        "require_lid_open": true
+      }
+    ],
+    "lights": [
+      {
+        "accessory": "Bar Light",
+        "room": "bar",
+        "targets": ["m4-bar-mini"]
+      },
+      {
+        "accessory": "Garage Light",
+        "room": "garage",
+        "targets": ["m2-garage-mini"]
+      }
+    ]
+  },
   "retention": {
     "snapshot_files_days": 2,
     "sce_download_files_days": 2,

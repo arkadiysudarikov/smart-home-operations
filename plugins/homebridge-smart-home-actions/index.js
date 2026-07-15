@@ -12,6 +12,8 @@ const DEFAULT_ACTIONS = [
   { id: "reconcile-energy", name: "⚙️ Refresh Energy", path: "/action/reconcile-energy", timeoutMs: 120000 },
   { id: "alarm-refresh", name: "⚙️ Refresh Alarm", path: "/action/refresh-alarm-cache", timeoutMs: 120000 },
   { id: "garage-activity", name: "⚙️ Garage Timer", path: "/action/garage-activity", timeoutMs: 120000 },
+  { id: "screens-awake", name: "⚙️ Screens Awake", path: "/action/screens-awake", timeoutMs: 5000 },
+  { id: "screens-auto", name: "⚙️ Screens Auto", path: "/action/screens-auto", timeoutMs: 5000 },
   { id: "panel-home", name: "🛡️ Armed", path: "/action/panel-home", timeoutMs: 120000 },
   { id: "panel-stay", name: "🛡️ Armed Stay", path: "/action/panel-stay", timeoutMs: 120000 },
   { id: "panel-off", name: "🛡️ Off", path: "/action/panel-off", timeoutMs: 120000 },
