@@ -78,13 +78,15 @@ def current_appliance_state(latest: dict[str, Any], config: dict[str, Any], now:
     cycle_service = str(config.get("cycle_service", accessory))
     door_service = str(config.get("door_service", f"{accessory} Door"))
     in_use = bool_value(find_characteristic(latest, accessory, cycle_service, "InUse"))
+    cycle_active = bool_value(find_characteristic(latest, accessory, "Cycle Status", "MotionDetected"))
     if in_use is None:
-        in_use = bool_value(find_characteristic(latest, accessory, "Cycle Status", "MotionDetected"))
+        in_use = cycle_active
     door_open = bool_value(find_characteristic(latest, accessory, door_service, "ContactSensorState"))
     return {
         "capturedAt": captured_at.isoformat(timespec="seconds") if captured_at else None,
         "fresh": fresh,
         "inUse": in_use,
+        "cycleActive": cycle_active,
         "doorOpen": door_open,
     }
 
@@ -97,9 +99,117 @@ def within_announcement_hours(now: datetime, config: dict[str, Any]) -> bool:
     return now.hour >= start or now.hour < end
 
 
+def evolve_washer_state(
+    prior: dict[str, Any], current: dict[str, Any], now: datetime, config: dict[str, Any]
+) -> tuple[dict[str, Any], list[str]]:
+    state = dict(prior)
+    actions: list[str] = []
+    now_text = now.isoformat(timespec="seconds")
+    pulse_seconds = int(config.get("pulse_seconds", 120))
+
+    for field, action in (
+        ("finishPulseUntil", "finish_off"),
+        ("reminderPulseUntil", "reminder_off"),
+        ("ventingPulseUntil", "venting_off"),
+    ):
+        deadline = parse_time(state.get(field))
+        if deadline and now >= deadline:
+            state[field] = None
+            actions.append(action)
+
+    if not current.get("fresh") or current.get("inUse") is None or current.get("cycleActive") is None:
+        state["lastCheckedAt"] = now_text
+        state["sourceFresh"] = False
+        return state, actions
+
+    in_use = bool(current["inUse"])
+    cycle_active = bool(current["cycleActive"])
+    door_open = current.get("doorOpen")
+    previous_in_use = state.get("lastInUse")
+    previous_cycle_active = state.get("lastCycleActive")
+    state["sourceFresh"] = True
+
+    if previous_cycle_active is None:
+        previous_in_use = state.get("lastInUse")
+        legacy_armed = bool(state.get("armed"))
+        state["lastCycleActive"] = cycle_active
+        state["lastInUse"] = in_use
+        state["lastDoorOpen"] = door_open
+        state["lastCheckedAt"] = now_text
+        state["primaryArmed"] = bool(cycle_active and legacy_armed)
+        state["ventingArmed"] = bool(in_use and not cycle_active and legacy_armed)
+        return state, actions
+
+    if cycle_active:
+        if not previous_cycle_active:
+            state.update({
+                "primaryArmed": True,
+                "ventingArmed": False,
+                "washStartedAt": now_text,
+                "runningSamples": 1,
+                "awaitingUnload": False,
+                "washFinishedAt": None,
+                "reminderSent": False,
+            })
+            actions.extend(["finish_off", "reminder_off", "venting_off"])
+        else:
+            state["runningSamples"] = int(state.get("runningSamples", 0)) + 1
+            state["primaryArmed"] = True
+    elif previous_cycle_active:
+        started_at = parse_time(state.get("washStartedAt") or state.get("cycleStartedAt"))
+        duration_ok = bool(started_at and now - started_at >= timedelta(minutes=int(config.get("minimum_cycle_minutes", 10))))
+        samples_ok = int(state.get("runningSamples", 0)) >= int(config.get("minimum_running_samples", 2))
+        if state.get("primaryArmed") and (duration_ok or samples_ok):
+            state.update({
+                "primaryArmed": False,
+                "ventingArmed": in_use,
+                "awaitingUnload": not bool(door_open),
+                "washFinishedAt": now_text,
+                "reminderSent": False,
+                "finishPulseUntil": (now + timedelta(seconds=pulse_seconds)).isoformat(timespec="seconds"),
+                "completedCycles": int(state.get("completedCycles", 0)) + 1,
+            })
+            actions.extend(["finish_on", "notify_finish"])
+            if within_announcement_hours(now, config):
+                actions.append("announce_finish")
+
+    if previous_in_use and not in_use and state.get("ventingArmed"):
+        state["ventingArmed"] = False
+        state["ventingFinishedAt"] = now_text
+        state["ventingPulseUntil"] = (now + timedelta(seconds=pulse_seconds)).isoformat(timespec="seconds")
+        actions.extend(["venting_on", "notify_venting"])
+        if within_announcement_hours(now, config):
+            actions.append("announce_venting")
+
+    finished_at = parse_time(state.get("washFinishedAt"))
+    if state.get("awaitingUnload") and door_open:
+        state.update({"awaitingUnload": False, "unloadedAt": now_text})
+        actions.extend(["finish_off", "reminder_off"])
+    elif (
+        state.get("awaitingUnload")
+        and not state.get("reminderSent")
+        and finished_at
+        and now >= finished_at + timedelta(minutes=int(config.get("reminder_minutes", 20)))
+    ):
+        state["reminderSent"] = True
+        state["reminderPulseUntil"] = (now + timedelta(seconds=pulse_seconds)).isoformat(timespec="seconds")
+        actions.extend(["reminder_on", "notify_reminder"])
+
+    state.update({
+        "lastCycleActive": cycle_active,
+        "lastInUse": in_use,
+        "lastDoorOpen": door_open,
+        "lastCheckedAt": now_text,
+    })
+    return state, list(dict.fromkeys(actions))
+
+
 def evolve_state(
     prior: dict[str, Any], current: dict[str, Any], now: datetime, config: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
+    if config.get("finish_signal") == "cycleActive":
+        return evolve_washer_state(prior, current, now, config)
+
     state = dict(prior)
     actions: list[str] = []
     now_text = now.isoformat(timespec="seconds")
@@ -286,15 +396,24 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
     appliance_lower = appliance_name.lower()
     finish_id = str(config["finish_sensor_id"])
     reminder_id = str(config["reminder_sensor_id"])
+    venting_id = str(config.get("venting_sensor_id", ""))
+    finish_message = str(config.get("finish_message", f"The {appliance_lower} has finished."))
+    finish_title = str(config.get("finish_title", f"{appliance_name} Finished"))
+    announcement_message = str(config.get("announcement_message", finish_message))
     for action in actions:
         if dry_run:
             results.append({"action": action, "ok": True, "dryRun": True})
-        elif action in {"finish_on", "finish_off", "reminder_on", "reminder_off"}:
-            sensor_id = finish_id if action.startswith("finish") else reminder_id
+        elif action in {"finish_on", "finish_off", "reminder_on", "reminder_off", "venting_on", "venting_off"}:
+            if action.startswith("finish"):
+                sensor_id = finish_id
+            elif action.startswith("reminder"):
+                sensor_id = reminder_id
+            else:
+                sensor_id = venting_id
             result = webhook_set(webhook_url, sensor_id, action.endswith("_on"))
             results.append({"action": action, **result})
         elif action == "notify_finish":
-            results.append({"action": action, **mac_notification(f"The {appliance_lower} has finished.", f"{appliance_name} Finished")})
+            results.append({"action": action, **mac_notification(finish_message, finish_title)})
         elif action == "notify_reminder":
             minutes = int(config.get("reminder_minutes", 20))
             results.append({
@@ -305,7 +424,14 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
                 ),
             })
         elif action == "announce_finish" and config.get("homepod_enabled", False):
-            results.append({"action": action, **homepod_announcement(f"The {appliance_lower} has finished.", config)})
+            results.append({"action": action, **homepod_announcement(announcement_message, config)})
+        elif action == "notify_venting":
+            message = str(config.get("venting_message", "Washer venting has finished. Turn off the laundry-room fan."))
+            title = str(config.get("venting_title", "Venting Finished"))
+            results.append({"action": action, **mac_notification(message, title)})
+        elif action == "announce_venting" and config.get("homepod_enabled", False):
+            message = str(config.get("venting_announcement", "Washer venting has finished. Turn off the laundry-room fan."))
+            results.append({"action": action, **homepod_announcement(message, config)})
     return results
 
 
@@ -319,8 +445,10 @@ def write_report(payload: dict[str, Any], report_path: Path, appliance_name: str
         f"- Checked: `{payload['generatedAt']}`",
         f"- SmartHQ snapshot fresh: `{current.get('fresh')}`",
         f"- {appliance_name} running: `{current.get('inUse')}`",
+        f"- {appliance_name} primary cycle active: `{current.get('cycleActive')}`",
         f"- {appliance_name} door open: `{current.get('doorOpen')}`",
         f"- Waiting to be unloaded: `{state.get('awaitingUnload', False)}`",
+        f"- Waiting for venting completion: `{state.get('ventingArmed', False)}`",
         f"- Completed cycles observed: `{state.get('completedCycles', 0)}`",
         f"- Power fallback: `shadow` (collecting labeled samples; not allowed to alert yet)",
         "",

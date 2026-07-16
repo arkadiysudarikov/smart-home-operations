@@ -157,6 +157,13 @@
   "washer_notifications": {
     "enabled": true,
     "accessory": "Washer",
+    "finish_signal": "cycleActive",
+    "finish_title": "Wash Finished",
+    "finish_message": "The wash has finished. Clothes are ready.",
+    "announcement_message": "The wash has finished. Clothes are ready.",
+    "venting_title": "Venting Finished",
+    "venting_message": "Washer venting has finished. Turn off the laundry-room fan.",
+    "venting_announcement": "Washer venting has finished. Turn off the laundry-room fan.",
     "max_snapshot_age_minutes": 10,
     "minimum_cycle_minutes": 10,
     "minimum_running_samples": 2,
@@ -171,6 +178,7 @@
     "webhook_url": "http://127.0.0.1:63743",
     "finish_sensor_id": "smart_home_washer_finished_v1",
     "reminder_sensor_id": "smart_home_washer_unload_v1",
+    "venting_sensor_id": "smart_home_washer_venting_v1",
     "power_fallback_mode": "shadow",
     "power_fallback_minimum_training_cycles": 3
   },
@@ -292,13 +300,19 @@
       },
       {
         "id": "smart_home_washer_finished_v1",
-        "name": "🧺 Washer Done",
+        "name": "🧺 Wash Done",
         "sensor_type": "MotionSensor",
         "externally_managed": true
       },
       {
         "id": "smart_home_washer_unload_v1",
         "name": "🧺 Unload Washer",
+        "sensor_type": "MotionSensor",
+        "externally_managed": true
+      },
+      {
+        "id": "smart_home_washer_venting_v1",
+        "name": "🌀 Venting Done",
         "sensor_type": "MotionSensor",
         "externally_managed": true
       },

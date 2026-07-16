@@ -117,6 +117,7 @@ class WasherNotifierTest(unittest.TestCase):
             "homeEvents": {
                 "currentCharacteristics": {
                     "in-use": {"accessory": "Washer", "service": "Washer", "characteristic": "InUse", "value": 1},
+                    "cycle": {"accessory": "Washer", "service": "Cycle Status", "characteristic": "MotionDetected", "value": 0},
                     "door": {"accessory": "Washer", "service": "Washer Door", "characteristic": "ContactSensorState", "value": 0},
                 }
             },
@@ -124,7 +125,64 @@ class WasherNotifierTest(unittest.TestCase):
         current = washer_notifier.current_appliance_state(latest, {**config(), "accessory": "Washer"}, now)
         self.assertTrue(current["fresh"])
         self.assertTrue(current["inUse"])
+        self.assertFalse(current["cycleActive"])
         self.assertFalse(current["doorOpen"])
+
+    def test_migrates_running_washer_venting_without_false_wash_alert(self) -> None:
+        now = datetime(2026, 7, 15, 17, 30, tzinfo=TZ)
+        legacy = {
+            "armed": True,
+            "lastInUse": True,
+            "cycleStartedAt": (now - timedelta(hours=5)).isoformat(),
+            "runningSamples": 42,
+        }
+        evolved, actions = washer_notifier.evolve_state(
+            legacy,
+            {"fresh": True, "inUse": True, "cycleActive": False, "doorOpen": False},
+            now,
+            {**config(), "finish_signal": "cycleActive"},
+        )
+        self.assertEqual(actions, [])
+        self.assertFalse(evolved["primaryArmed"])
+        self.assertTrue(evolved["ventingArmed"])
+
+    def test_wash_completion_alerts_while_venting_stays_active(self) -> None:
+        now = datetime(2026, 7, 15, 12, 37, tzinfo=TZ)
+        state = {
+            "lastCycleActive": True,
+            "lastInUse": True,
+            "primaryArmed": True,
+            "washStartedAt": (now - timedelta(hours=1)).isoformat(),
+            "runningSamples": 8,
+        }
+        evolved, actions = washer_notifier.evolve_state(
+            state,
+            {"fresh": True, "inUse": True, "cycleActive": False, "doorOpen": False},
+            now,
+            {**config(), "finish_signal": "cycleActive"},
+        )
+        self.assertEqual(actions, ["finish_on", "notify_finish", "announce_finish"])
+        self.assertTrue(evolved["ventingArmed"])
+        self.assertTrue(evolved["awaitingUnload"])
+
+    def test_venting_completion_sends_fan_reminder(self) -> None:
+        now = datetime(2026, 7, 15, 18, 0, tzinfo=TZ)
+        state = {
+            "lastCycleActive": False,
+            "lastInUse": True,
+            "primaryArmed": False,
+            "ventingArmed": True,
+            "washFinishedAt": (now - timedelta(hours=5)).isoformat(),
+            "reminderSent": True,
+        }
+        evolved, actions = washer_notifier.evolve_state(
+            state,
+            {"fresh": True, "inUse": False, "cycleActive": False, "doorOpen": False},
+            now,
+            {**config(), "finish_signal": "cycleActive"},
+        )
+        self.assertEqual(actions, ["venting_on", "notify_venting", "announce_venting"])
+        self.assertFalse(evolved["ventingArmed"])
 
     def test_reads_dryer_characteristics_from_snapshot(self) -> None:
         now = datetime(2026, 7, 15, 12, 0, tzinfo=TZ)
@@ -167,6 +225,40 @@ class WasherNotifierTest(unittest.TestCase):
         self.assertTrue(all(item["ok"] for item in results))
         self.assertEqual(calls[0], ("The dryer has finished.", "Dryer Finished"))
         self.assertEqual(calls[1], ("The dryer finished 20 minutes ago and the door is still closed.", "Unload Dryer"))
+
+    def test_washer_venting_action_uses_fan_message_and_sensor(self) -> None:
+        notifications: list[tuple[str, str]] = []
+        webhook_calls: list[tuple[str, bool]] = []
+
+        def notification(message: str, title: str) -> dict:
+            notifications.append((message, title))
+            return {"ok": True}
+
+        def webhook(_url: str, sensor_id: str, active: bool) -> dict:
+            webhook_calls.append((sensor_id, active))
+            return {"ok": True}
+
+        with (
+            mock.patch.object(washer_notifier, "mac_notification", side_effect=notification),
+            mock.patch.object(washer_notifier, "webhook_set", side_effect=webhook),
+        ):
+            results = washer_notifier.execute_actions(
+                ["venting_on", "notify_venting"],
+                {
+                    "accessory": "Washer",
+                    "display_name": "Washer",
+                    "finish_sensor_id": "wash-finished",
+                    "reminder_sensor_id": "washer-unload",
+                    "venting_sensor_id": "washer-venting",
+                },
+                False,
+            )
+        self.assertTrue(all(item["ok"] for item in results))
+        self.assertEqual(webhook_calls, [("washer-venting", True)])
+        self.assertEqual(
+            notifications,
+            [("Washer venting has finished. Turn off the laundry-room fan.", "Venting Finished")],
+        )
 
     def test_homepod_announcement_uses_configured_target_and_restores_output(self) -> None:
         completed = SimpleNamespace(returncode=0, stderr="", stdout="")
