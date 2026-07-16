@@ -43,6 +43,7 @@ DRIFT_CHECK_FILES = [
     "scripts/capture_envoy_direct.py",
     "scripts/capture_sense_now.js",
     "scripts/capture_sense_trends.js",
+    "scripts/check_install_source.sh",
     "scripts/extract_sce_bills.py",
     "scripts/fetch_chargepoint_sessions.py",
     "scripts/fetch_sce_green_button_connect.py",

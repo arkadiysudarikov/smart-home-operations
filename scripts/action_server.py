@@ -1310,15 +1310,25 @@ def render_energy_page(history_days: int = 7) -> bytes:
         f"<div class='card'><span>{html_escape(label)}</span><strong>{html_escape(value)}</strong><small>{html_escape(note)}</small></div>"
         for label, value, note in cards
     )
-    source_rows = "".join(
-        "<tr>"
-        f"<td>{html_escape(item.get('source'))}</td>"
-        f"<td><span class='pill {html_escape(item.get('status'))}'>{html_escape(item.get('status'))}</span></td>"
-        f"<td>{html_escape(item.get('detail'))}</td>"
-        f"<td>{html_escape(display_energy_age(item))}</td>"
-        "</tr>"
-        for item in sources
-    )
+    source_rows = ""
+    for item in sources:
+        billing_basis = "—"
+        if item.get("billingBasisStatus"):
+            billing_basis = (
+                f"<span class='pill {html_escape(item.get('billingBasisStatus'))}'>"
+                f"{html_escape(item.get('billingBasisStatus'))}</span><br>"
+                f"<small>{html_escape(item.get('billingBasisDetail'))} · "
+                f"{html_escape(display_energy_age({'ageHours': item.get('billingBasisAgeHours')}))}</small>"
+            )
+        source_rows += (
+            "<tr>"
+            f"<td>{html_escape(item.get('source'))}</td>"
+            f"<td><span class='pill {html_escape(item.get('status'))}'>{html_escape(item.get('status'))}</span></td>"
+            f"<td>{html_escape(item.get('detail'))}</td>"
+            f"<td>{html_escape(display_energy_age(item))}</td>"
+            f"<td>{billing_basis}</td>"
+            "</tr>"
+        )
     semantics_rows = "".join(
         f"<tr><td>{html_escape(item.get('source'))}</td><td>{html_escape(item.get('measurement'))}</td><td>{html_escape(item.get('use'))}</td></tr>"
         for item in semantics
@@ -1432,7 +1442,7 @@ button,.range {{ border:1px solid var(--accent);border-radius:8px;padding:8px 11
 .card span,.card small {{ display:block }} .card strong {{ display:block;font-size:24px;margin:5px 0 }} .grid {{ display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px }} .wide {{ grid-column:1/-1 }}
 .chart {{ width:100%;height:auto;display:block }} .chart-title {{ font-size:17px;font-weight:700;fill:var(--ink) }} .chart-subtitle,.axis,.legend {{ font-size:10px;fill:var(--muted) }} .gridline {{ stroke:var(--line);stroke-width:1 }} .data-point {{ stroke-width:1.5;opacity:.12 }} .data-point.partial {{ opacity:.8;stroke-width:2.5 }} .data-point:hover,.data-point:focus {{ opacity:1;stroke:var(--ink);stroke-width:2;outline:none }}
 table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top }} th {{ font-size:11px;text-transform:uppercase;color:var(--muted) }}
-.pill {{ border-radius:999px;padding:3px 7px;background:#e2e8f0 }} .pill.fresh,.pill.complete {{ background:#dcfce7;color:#166534 }} .pill.stale,.pill.failed,.pill.missing {{ background:#fee2e2;color:#991b1b }}
+.pill {{ border-radius:999px;padding:3px 7px;background:#e2e8f0 }} .pill.fresh,.pill.complete,.pill.current {{ background:#dcfce7;color:#166534 }} .pill.stale,.pill.failed,.pill.missing {{ background:#fee2e2;color:#991b1b }} .pill.outdated {{ background:#ffedd5;color:#9a3412 }}
 .empty {{ min-height:180px;display:grid;place-content:center;text-align:center;color:var(--muted) }} code {{ background:#eef2f7;padding:2px 4px;border-radius:4px }}
 @media(max-width:980px) {{ .range-cards {{ grid-template-columns:repeat(2,minmax(0,1fr)) }} }}
 @media(max-width:820px) {{ .cards {{ grid-template-columns:1fr }} .grid {{ grid-template-columns:minmax(0,1fr) }} .wide {{ grid-column:auto }} }} @media(max-width:520px) {{ main {{ padding:20px 12px 40px }} .range-cards {{ grid-template-columns:1fr }} }}
@@ -1448,7 +1458,7 @@ table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bott
 <section class='grid'><div class='panel'><h2>Source definitions</h2><table><thead><tr><th>Source</th><th>Measures</th><th>Use</th></tr></thead><tbody>{semantics_rows}</tbody></table></div>
 <div class='panel'><h2>Data quality</h2><ul>{quality_rows}</ul><p class='muted'>{html_escape(quality.get('overlapPairCount'))} paired SCE/monitor intervals · {html_escape(quality.get('comparableDayCount'))} comparable days in the {html_escape(quality.get('historyWindowDays') or 90)}-day quality window.</p></div>
 <div class='panel'><h2>Peak 15-minute events</h2><table><thead><tr><th>Start</th><th>SCE import</th><th>Envoy site</th><th>Sense</th></tr></thead><tbody>{peak_rows}</tbody></table></div>
-<div class='panel'><h2>Source freshness</h2><table><thead><tr><th>Source</th><th>Status</th><th>Detail</th><th>Age</th></tr></thead><tbody>{source_rows}</tbody></table></div></section>
+<div class='panel'><h2>Source freshness</h2><table><thead><tr><th>Source</th><th>Report status</th><th>Report detail</th><th>Report age</th><th>Billing basis</th></tr></thead><tbody>{source_rows}</tbody></table></div></section>
 <p class='muted'>Refresh <span class='pill {html_escape(refresh.get('status'))}'>{html_escape(refresh.get('status') or 'unknown')}</span> · JSON <code>/status/energy?days={history_days}</code> · 90-day local observation retention.</p>
 <script>
 const result=document.getElementById('result');

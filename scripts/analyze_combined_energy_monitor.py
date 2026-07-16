@@ -319,6 +319,15 @@ def build_source_status(
     latest_cost_bill = (energy_costs.get("model") or {}).get("latestClosedBill") or {}
     cost_basis_end = latest_cost_bill.get("periodEnd")
     cost_age = age_hours(now, cost_basis_end)
+    cost_report_generated_at = energy_costs.get("generatedAt")
+    cost_report_age = age_hours(now, cost_report_generated_at)
+    cost_basis_stale_hours = float(thresholds.get("energy_cost_basis_stale_days", 45)) * 24
+    if cost_age is None:
+        cost_basis_status = "missing"
+    elif cost_age >= cost_basis_stale_hours:
+        cost_basis_status = "outdated"
+    else:
+        cost_basis_status = "current"
     rows = [
         {
             "source": "Envoy",
@@ -352,9 +361,12 @@ def build_source_status(
         },
         {
             "source": "Energy costs",
-            "status": status_label(cost_age, stale_hours),
-            "ageHours": cost_age,
-            "detail": f"latest closed bill through {cost_basis_end}" if cost_basis_end else "no closed bill basis",
+            "status": status_label(cost_report_age, stale_hours),
+            "ageHours": cost_report_age,
+            "detail": f"report generated {cost_report_generated_at}" if cost_report_generated_at else "no generated cost report",
+            "billingBasisStatus": cost_basis_status,
+            "billingBasisAgeHours": cost_age,
+            "billingBasisDetail": f"closed bill through {cost_basis_end}" if cost_basis_end else "no closed bill basis",
         },
     ]
     for row in rows:
