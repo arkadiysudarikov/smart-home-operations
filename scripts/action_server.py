@@ -591,11 +591,16 @@ def energy_observation_history(days: int = 7, max_points: int = 420) -> list[dic
     try:
         with sqlite3.connect(DB_PATH) as db:
             db.row_factory = sqlite3.Row
+            columns = {row[1] for row in db.execute("pragma table_info(energy_observations)")}
+            budget_column = "alarm_budget_kwh" if "alarm_budget_kwh" in columns else "null"
+            level_column = "projection_alert_level" if "projection_alert_level" in columns else "null"
             rows = db.execute(
-                """
+                f"""
                 select captured_at, envoy_production_kw, envoy_site_load_kw, envoy_grid_net_kw,
                        envoy_storage_kw, battery_percent, battery_charging, battery_discharging,
                        sense_load_kw, sense_solar_kw, alarm_mtd_kwh, alarm_projected_kwh,
+                       {budget_column} as alarm_budget_kwh,
+                       {level_column} as projection_alert_level,
                        energy_alert_count, active_states_json
                   from energy_observations
                  where julianday(captured_at) >= julianday(?)
@@ -641,11 +646,97 @@ def energy_observation_history(days: int = 7, max_points: int = 420) -> list[dic
                 "senseSolarKw": row["sense_solar_kw"],
                 "alarmMonthToDateKwh": row["alarm_mtd_kwh"],
                 "alarmProjectedKwh": row["alarm_projected_kwh"],
+                "alarmBudgetKwh": row["alarm_budget_kwh"],
+                "projectionAlertLevel": row["projection_alert_level"],
                 "energyAlertCount": row["energy_alert_count"],
                 "states": states if isinstance(states, list) else [],
             }
         )
     return result
+
+
+def projection_alert_level(
+    projected: Any, goal: Any, warning: Any, critical: Any
+) -> str | None:
+    if not isinstance(projected, (int, float)):
+        return None
+    if isinstance(critical, (int, float)) and projected >= critical:
+        return "critical"
+    if isinstance(warning, (int, float)) and projected >= warning:
+        return "warning"
+    if isinstance(goal, (int, float)) and projected > goal:
+        return "goal"
+    return "clear"
+
+
+def energy_projection_history(days: int = 7) -> list[dict[str, Any]]:
+    if not DB_PATH.exists():
+        return []
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat(timespec="seconds")
+    try:
+        with sqlite3.connect(DB_PATH) as db:
+            db.row_factory = sqlite3.Row
+            columns = {row[1] for row in db.execute("pragma table_info(energy_observations)")}
+            budget_column = "alarm_budget_kwh" if "alarm_budget_kwh" in columns else "null"
+            level_column = "projection_alert_level" if "projection_alert_level" in columns else "null"
+            rows = db.execute(
+                f"""
+                select captured_at, alarm_projected_kwh,
+                       {budget_column} as alarm_budget_kwh,
+                       {level_column} as projection_alert_level
+                  from energy_observations
+                 where julianday(captured_at) >= julianday(?)
+                   and alarm_projected_kwh is not null
+                 order by julianday(captured_at) asc
+                """,
+                (cutoff,),
+            ).fetchall()
+    except (sqlite3.Error, OSError):
+        return []
+    return [
+        {
+            "capturedAt": row["captured_at"],
+            "alarmProjectedKwh": row["alarm_projected_kwh"],
+            "alarmBudgetKwh": row["alarm_budget_kwh"],
+            "projectionAlertLevel": row["projection_alert_level"],
+        }
+        for row in rows
+    ]
+
+
+def projection_alert_transitions(
+    history: list[dict[str, Any]], goal: Any, warning: Any, critical: Any
+) -> list[dict[str, Any]]:
+    transitions: list[dict[str, Any]] = []
+    previous: str | None = None
+    for row in history:
+        level = row.get("projectionAlertLevel") or projection_alert_level(
+            row.get("alarmProjectedKwh"), row.get("alarmBudgetKwh") or goal, warning, critical
+        )
+        if level is None or level == previous:
+            continue
+        if previous is None:
+            event = "first observed"
+            if level == "clear":
+                previous = level
+                continue
+        elif level == "clear":
+            event = "cleared"
+        elif previous == "clear":
+            event = "appeared"
+        else:
+            event = "severity changed"
+        transitions.append(
+            {
+                "capturedAt": row.get("capturedAt"),
+                "event": event,
+                "from": previous,
+                "to": level,
+                "projectedKwh": row.get("alarmProjectedKwh"),
+            }
+        )
+        previous = str(level)
+    return transitions
 
 
 def energy_status(history_days: int = 7) -> dict[str, Any]:
@@ -661,6 +752,15 @@ def energy_status(history_days: int = 7) -> dict[str, Any]:
     automation = read_json_status(DATA_DIR / "latest_energy_automation_opportunities.json")
     observability = read_json_status(DATA_DIR / "latest_energy_observability.json")
     observability_payload = load_json_file(DATA_DIR / "latest_energy_observability.json")
+    alert_thresholds = (load_config().get("alerts") or {})
+    projection_goal = ((observability_payload.get("live") or {}).get("alarmBudgetKwh"))
+    observation_history = energy_observation_history(history_days)
+    projection_transitions = projection_alert_transitions(
+        energy_projection_history(history_days),
+        projection_goal,
+        alert_thresholds.get("energy_projection_warning_kwh", 1200),
+        alert_thresholds.get("energy_projection_critical_kwh", 1300),
+    )
     if isinstance(observability, dict):
         observability = dict(observability)
         observability["dailyComparison"] = filter_daily_energy_rows(
@@ -703,7 +803,8 @@ def energy_status(history_days: int = 7) -> dict[str, Any]:
         "combined": combined,
         "operationalSourceStatus": operational_source_status(),
         "historyDays": history_days,
-        "observationHistory": energy_observation_history(history_days),
+        "observationHistory": observation_history,
+        "projectionAlertTransitions": projection_transitions,
     }
     combined_payload = load_json_file(DATA_DIR / "latest_combined_energy_monitor.json")
     if combined_payload:
@@ -1090,6 +1191,7 @@ def energy_line_chart(
     series: list[tuple[str, str, str, str | None]],
     unit: str,
     allow_negative: bool = True,
+    reference_lines: list[tuple[str, float, str]] | None = None,
 ) -> str:
     width, height = 920, 300
     left, right, top, bottom = 58, 20, 58, 46
@@ -1099,6 +1201,7 @@ def energy_line_chart(
         for key, _label, _color, _complete_key in series
         if isinstance(row.get(key), (int, float))
     ]
+    values.extend(float(value) for _label, value, _color in (reference_lines or []))
     if not values or not rows:
         return f"<div class='empty'><strong>{html_escape(title)}</strong><br>No observations yet.</div>"
     low = min(0.0, min(values)) if allow_negative else 0.0
@@ -1129,6 +1232,16 @@ def energy_line_chart(
         y = y_pos(value)
         parts.append(f"<line x1='{left}' y1='{y:.1f}' x2='{width-right}' y2='{y:.1f}' class='gridline'/>")
         parts.append(f"<text x='{left-7}' y='{y+4:.1f}' text-anchor='end' class='axis'>{value:.1f}{html_escape(unit)}</text>")
+    for label, value, color in reference_lines or []:
+        y = y_pos(float(value))
+        parts.append(
+            f"<line x1='{left}' y1='{y:.1f}' x2='{width-right}' y2='{y:.1f}' "
+            f"stroke='{color}' stroke-width='1.5' stroke-dasharray='7 5' class='threshold-line'/>"
+        )
+        parts.append(
+            f"<text x='{width-right-4}' y='{y-5:.1f}' text-anchor='end' class='threshold-label' "
+            f"fill='{color}'>{html_escape(label)} {float(value):.0f}{html_escape(unit)}</text>"
+        )
     point_tab_assigned = False
     for series_index, (key, label, color, complete_key) in enumerate(series):
         numeric_points = [
@@ -1182,6 +1295,7 @@ def render_energy_page(history_days: int = 7) -> bytes:
     selected_quality = observability.get("selectedRangeQuality") or {}
     daily = filter_daily_energy_rows(observability.get("dailyComparison") or [], history_days)
     history = status.get("observationHistory") or []
+    projection_transitions = status.get("projectionAlertTransitions") or []
     sources = observability.get("sourceStatus") or status.get("sourceStatus") or status.get("operationalSourceStatus") or []
     alerts = list(observability.get("alerts") or [])
     alert_titles = {str(item.get("title") or "") for item in alerts}
@@ -1333,6 +1447,36 @@ def render_energy_page(history_days: int = 7) -> bytes:
         f"<span class='pill'>{html_escape(item.get('severity') or 'warning')}</span></div>"
         for item in alerts
     ) or "<p class='muted'>No active local energy alerts.</p>"
+    alert_thresholds = (load_config().get("alerts") or {})
+    warning_threshold = float(alert_thresholds.get("energy_projection_warning_kwh", 1200))
+    critical_threshold = float(alert_thresholds.get("energy_projection_critical_kwh", 1300))
+    projection_references = [
+        ("Goal", float(budget), "#0f766e")
+        for _ in [0]
+        if isinstance(budget, (int, float))
+    ] + [
+        ("Warning", warning_threshold, "#c2410c"),
+        ("Critical", critical_threshold, "#b91c1c"),
+    ]
+    projection_chart = energy_line_chart(
+        f"Billing-period projection history — {history_days} day{'s' if history_days != 1 else ''}",
+        f"{len(history)} retained five-minute samples. Thresholds are configuration-driven.",
+        history,
+        "capturedAt",
+        [("alarmProjectedKwh", "Projection", "#7c3aed", None)],
+        " kWh",
+        allow_negative=False,
+        reference_lines=projection_references,
+    )
+    transition_markup = "".join(
+        "<li>"
+        f"<time>{html_escape(str(item.get('capturedAt') or '').replace('T', ' ')[:16])}</time> "
+        f"<strong>{html_escape(item.get('event'))}</strong>: "
+        f"{html_escape(item.get('from') or 'unknown')} → {html_escape(item.get('to') or 'unknown')} "
+        f"at {html_escape(display_energy_value(item.get('projectedKwh'), ' kWh', 0))}"
+        "</li>"
+        for item in projection_transitions[-8:]
+    ) or "<li>No projection alert transitions in this selected period.</li>"
     source_rows = ""
     for item in sources:
         billing_basis = "—"
@@ -1463,10 +1607,11 @@ button,.range {{ border:1px solid var(--accent);border-radius:8px;padding:8px 11
 .range-cards {{ display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px }} .range-card {{ border-top:3px solid var(--accent) }}
 .cards {{ display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:10px 0 18px }} .card,.panel {{ background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px }} .grid>.panel {{ min-width:0;overflow-x:auto }}
 .card span,.card small {{ display:block }} .card strong {{ display:block;font-size:24px;margin:5px 0 }} .grid {{ display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px }} .wide {{ grid-column:1/-1 }}
-.chart {{ width:100%;height:auto;display:block }} .chart-title {{ font-size:17px;font-weight:700;fill:var(--ink) }} .chart-subtitle,.axis,.legend {{ font-size:10px;fill:var(--muted) }} .gridline {{ stroke:var(--line);stroke-width:1 }} .data-point {{ stroke-width:1.5;opacity:.12 }} .data-point.partial {{ opacity:.8;stroke-width:2.5 }} .data-point:hover,.data-point:focus {{ opacity:1;stroke:var(--ink);stroke-width:2;outline:none }}
+.chart {{ width:100%;height:auto;display:block }} .chart-title {{ font-size:17px;font-weight:700;fill:var(--ink) }} .chart-subtitle,.axis,.legend {{ font-size:10px;fill:var(--muted) }} .gridline {{ stroke:var(--line);stroke-width:1 }} .threshold-label {{ font-size:10px;font-weight:700 }} .data-point {{ stroke-width:1.5;opacity:.12 }} .data-point.partial {{ opacity:.8;stroke-width:2.5 }} .data-point:hover,.data-point:focus {{ opacity:1;stroke:var(--ink);stroke-width:2;outline:none }}
 table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top }} th {{ font-size:11px;text-transform:uppercase;color:var(--muted) }}
 .pill {{ border-radius:999px;padding:3px 7px;background:#e2e8f0 }} .pill.fresh,.pill.complete,.pill.current {{ background:#dcfce7;color:#166534 }} .pill.stale,.pill.failed,.pill.missing {{ background:#fee2e2;color:#991b1b }} .pill.outdated {{ background:#ffedd5;color:#9a3412 }}
 .alert-panel {{ margin:14px 0 }} .alert-row {{ display:flex;justify-content:space-between;gap:16px;padding:11px 0;border-bottom:1px solid var(--line) }} .alert-row:last-child {{ border-bottom:0 }} .alert-row p {{ margin:3px 0 0;color:var(--muted) }} .alert-row.warning strong {{ color:#9a3412 }} .alert-row.critical strong {{ color:#991b1b }}
+.projection-grid {{ align-items:start }} .transition-list {{ margin:8px 0 0;padding-left:20px }} .transition-list li {{ margin:8px 0 }} .transition-list time {{ color:var(--muted);font-variant-numeric:tabular-nums }}
 .empty {{ min-height:180px;display:grid;place-content:center;text-align:center;color:var(--muted) }} code {{ background:#eef2f7;padding:2px 4px;border-radius:4px }}
 @media(max-width:980px) {{ .range-cards {{ grid-template-columns:repeat(2,minmax(0,1fr)) }} }}
 @media(max-width:820px) {{ .cards {{ grid-template-columns:1fr }} .grid {{ grid-template-columns:minmax(0,1fr) }} .wide {{ grid-column:auto }} }} @media(max-width:520px) {{ main {{ padding:20px 12px 40px }} .range-cards {{ grid-template-columns:1fr }} }}
@@ -1477,6 +1622,7 @@ table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bott
 <h2>Live now</h2>
 <section class='cards'>{card_markup}</section>
 <section class='panel alert-panel'><h2>Active energy alerts</h2>{alert_markup}</section>
+<section class='grid projection-grid'><div class='panel'>{projection_chart}</div><div class='panel'><h2>Projection alert history</h2><p class='muted'>First appearance, severity changes, and clears within the selected range.</p><ul class='transition-list'>{transition_markup}</ul></div></section>
 <div class='actions'><button data-action='/action/reconcile-energy' data-status-key='reconcileEnergy'>Refresh all</button><button class='secondary' data-action='/action/refresh-sce' data-status-key='refreshSce'>Refresh SCE</button><button class='secondary' data-action='/action/refresh-alarm-cache' data-status-key='alarmRefresh'>Refresh Alarm.com</button><span id='result' class='muted' role='status' aria-live='polite'></span></div>
 <p class='muted'>{html_escape(range_summary)}</p>
 <section class='grid'><div class='panel'>{load_chart}</div><div class='panel'>{live_chart}</div></section>

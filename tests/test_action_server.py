@@ -1159,10 +1159,14 @@ class ActionServerTest(unittest.TestCase):
             self.patch_module(DB_PATH=db_path)
 
             rows = action_server.energy_observation_history(7)
+            projection_rows = action_server.energy_projection_history(7)
 
             self.assertEqual(len(rows), 1)
             self.assertTrue(rows[0]["batteryCharging"])
             self.assertEqual(rows[0]["states"], ["battery_charging"])
+            self.assertEqual(projection_rows[0]["alarmProjectedKwh"], 1393.0)
+            self.assertIsNone(projection_rows[0]["alarmBudgetKwh"])
+            self.assertIsNone(projection_rows[0]["projectionAlertLevel"])
 
     def test_energy_observation_history_honors_max_points(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1204,6 +1208,34 @@ class ActionServerTest(unittest.TestCase):
         self.assertIn("class='data-point partial'", chart)
         self.assertNotIn(">-", chart)
 
+    def test_energy_chart_renders_projection_threshold_lines(self) -> None:
+        chart = action_server.energy_line_chart(
+            "Projection", "Billing projection", [{"at": "2026-07-15", "value": 1390}],
+            "at", [("value", "Projection", "#7c3aed", None)], " kWh",
+            allow_negative=False,
+            reference_lines=[("Goal", 1100, "#0f766e"), ("Critical", 1300, "#b91c1c")],
+        )
+
+        self.assertEqual(chart.count("class='threshold-line'"), 2)
+        self.assertIn("Goal 1100 kWh", chart)
+        self.assertIn("Critical 1300 kWh", chart)
+
+    def test_projection_alert_transitions_capture_appear_change_and_clear(self) -> None:
+        transitions = action_server.projection_alert_transitions(
+            [
+                {"capturedAt": "2026-07-15T10:00:00-07:00", "alarmProjectedKwh": 1000},
+                {"capturedAt": "2026-07-15T11:00:00-07:00", "alarmProjectedKwh": 1150},
+                {"capturedAt": "2026-07-15T12:00:00-07:00", "alarmProjectedKwh": 1250},
+                {"capturedAt": "2026-07-15T13:00:00-07:00", "alarmProjectedKwh": 1050},
+            ],
+            1100, 1200, 1300,
+        )
+
+        self.assertEqual(
+            [(item["event"], item["to"]) for item in transitions],
+            [("appeared", "goal"), ("severity changed", "warning"), ("cleared", "clear")],
+        )
+
     def test_energy_age_formatter_includes_units(self) -> None:
         self.assertEqual(action_server.display_energy_age({"ageHours": 0.5}), "30 min")
         self.assertEqual(action_server.display_energy_age({"ageHours": 12}), "12.0 h")
@@ -1239,7 +1271,19 @@ class ActionServerTest(unittest.TestCase):
             energy_status=lambda days=7: {
                 "generatedAt": "2026-07-15T10:00:00-07:00",
                 "refresh": {"status": "complete"},
-                "observationHistory": [],
+                "observationHistory": [
+                    {"capturedAt": "2026-07-15T09:00:00-07:00", "alarmProjectedKwh": 1250.0},
+                    {"capturedAt": "2026-07-15T10:00:00-07:00", "alarmProjectedKwh": 1391.0},
+                ],
+                "projectionAlertTransitions": [
+                    {
+                        "capturedAt": "2026-07-15T10:00:00-07:00",
+                        "event": "severity changed",
+                        "from": "warning",
+                        "to": "critical",
+                        "projectedKwh": 1391.0,
+                    }
+                ],
                 "observability": {
                     "generatedAt": "2026-07-15T10:00:00-07:00",
                     "live": {
@@ -1330,6 +1374,13 @@ class ActionServerTest(unittest.TestCase):
         self.assertIn("Active energy alerts", page)
         self.assertIn("Energy projection is critical", page)
         self.assertIn("critical begins at 1300 kWh", page)
+        self.assertIn("Billing-period projection history — 30 days", page)
+        self.assertIn("Goal 680 kWh", page)
+        self.assertIn("Warning 1200 kWh", page)
+        self.assertIn("Critical 1300 kWh", page)
+        self.assertIn("Projection alert history", page)
+        self.assertIn("severity changed", page)
+        self.assertIn("warning → critical", page)
         self.assertIn("Report status", page)
         self.assertIn("Billing basis", page)
         self.assertIn("closed bill through 2026-07-08 · 8.0 d", page)
