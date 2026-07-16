@@ -1260,6 +1260,17 @@ class ActionServerTest(unittest.TestCase):
                             {"source": "SCE", "measurement": "Utility import/export", "use": "Billing truth"}
                         ],
                     },
+                    "sourceStatus": [
+                        {
+                            "source": "Energy costs",
+                            "status": "fresh",
+                            "ageHours": 0.1,
+                            "detail": "report generated 2026-07-15T09:54:00-07:00",
+                            "billingBasisStatus": "current",
+                            "billingBasisAgeHours": 191.0,
+                            "billingBasisDetail": "closed bill through 2026-07-08",
+                        }
+                    ],
                     "selectedRangeQuality": {"status": "ready", "dayCount": 1, "comparableDayCount": 1},
                     "dailyComparison": [
                         {
@@ -1309,6 +1320,9 @@ class ActionServerTest(unittest.TestCase):
         self.assertIn("within 1.2%", page)
         self.assertIn("Solar parity", page)
         self.assertIn("within 3.4%", page)
+        self.assertIn("Report status", page)
+        self.assertIn("Billing basis", page)
+        self.assertIn("closed bill through 2026-07-08 · 8.0 d", page)
         self.assertLess(page.index("Daily utility grid exchange — 30 days"), page.index("Live energy flow — collected observation window"))
 
 
