@@ -21,6 +21,7 @@ DB_PATH = DATA_DIR / "smart_home.sqlite"
 REPORT_DIR = ROOT / "reports"
 SILENCE_PATH = DATA_DIR / "alerts_silenced_until.json"
 COMBINED_ENERGY_PATH = DATA_DIR / "latest_combined_energy_monitor.json"
+ENERGY_OBSERVABILITY_PATH = DATA_DIR / "latest_energy_observability.json"
 SCE_API_STATUS_PATH = DATA_DIR / "latest_sce_api.json"
 ALARM_COM_PATH = DATA_DIR / "latest_alarm_com.json"
 LATEST_CHARACTERISTICS_PATH = DATA_DIR / "latest_characteristics.json"
@@ -53,6 +54,11 @@ def load_combined_energy() -> dict[str, Any]:
         return json.loads(COMBINED_ENERGY_PATH.read_text())
     except json.JSONDecodeError:
         return {}
+
+
+def load_energy_observability() -> dict[str, Any]:
+    data = load_json_file(ENERGY_OBSERVABILITY_PATH)
+    return data if isinstance(data, dict) else {}
 
 
 def load_sce_api_status() -> dict[str, Any]:
@@ -684,6 +690,10 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         return "Open SmartHQ/GE Appliances once to clear any account, terms, or MFA prompt, then restart only the SmartHQ child bridge and rerun the monitor."
     if title in {"Battery failed to recharge before peak", "Battery reserve is low before peak", "Battery backup is critically low", "Battery backup is low"}:
         return "Check Enphase battery status and operating mode, then verify solar production can recharge before peak pricing."
+    if title in {"Energy projection exceeds goal", "Energy projection is high", "Energy projection is critical"}:
+        return "Reduce discretionary load or shift it to solar hours, then watch the billing-period projection after the next Alarm.com refresh."
+    if title in {"Energy balance mismatch is high", "Solar sources disagree"}:
+        return "Check the latest complete-day Envoy, Sense, and SCE readings before treating the affected comparison as decision-grade."
     if "source gap" in detail.lower() or "missing" in detail.lower():
         return "Refresh the named source, then rerun energy reconciliation so unresolved source gaps clear from the daily summary."
     return None
@@ -1485,6 +1495,19 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
             if title == "SCE interval data is stale" and sce_api_status.get("status") == "utilityapi_payment_required":
                 detail = f"{detail} UtilityAPI historical collection status: `utilityapi_payment_required`."
             alerts.append({"severity": severity, "title": title, "detail": detail})
+    for item in load_energy_observability().get("alerts") or []:
+        title = item.get("title")
+        detail = item.get("detail")
+        if title and detail and title not in active_titles:
+            alerts.append(
+                {
+                    "category": "energy",
+                    "severity": item.get("severity", "warning"),
+                    "title": title,
+                    "detail": detail,
+                }
+            )
+            active_titles.add(title)
 
     if not alerts:
         alerts.append(

@@ -1183,6 +1183,23 @@ def render_energy_page(history_days: int = 7) -> bytes:
     daily = filter_daily_energy_rows(observability.get("dailyComparison") or [], history_days)
     history = status.get("observationHistory") or []
     sources = observability.get("sourceStatus") or status.get("sourceStatus") or status.get("operationalSourceStatus") or []
+    alerts = list(observability.get("alerts") or [])
+    alert_titles = {str(item.get("title") or "") for item in alerts}
+    for item in sources:
+        source_status = str(item.get("status") or "").lower()
+        if source_status not in {"stale", "missing", "fallback", "failed", "offline"}:
+            continue
+        title = f"{item.get('source')} data is {source_status}"
+        if title in alert_titles:
+            continue
+        alerts.append(
+            {
+                "severity": "warning",
+                "title": title,
+                "detail": f"{item.get('detail') or 'No current source detail is available'}; age {display_energy_age(item)}.",
+            }
+        )
+        alert_titles.add(title)
     refresh = status.get("refresh") or {}
     peak_events = observability.get("peakEvents") or []
     semantics = quality.get("sourceSemantics") or []
@@ -1310,6 +1327,12 @@ def render_energy_page(history_days: int = 7) -> bytes:
         f"<div class='card'><span>{html_escape(label)}</span><strong>{html_escape(value)}</strong><small>{html_escape(note)}</small></div>"
         for label, value, note in cards
     )
+    alert_markup = "".join(
+        f"<div class='alert-row {html_escape(item.get('severity') or 'warning')}'>"
+        f"<div><strong>{html_escape(item.get('title'))}</strong><p>{html_escape(item.get('detail'))}</p></div>"
+        f"<span class='pill'>{html_escape(item.get('severity') or 'warning')}</span></div>"
+        for item in alerts
+    ) or "<p class='muted'>No active local energy alerts.</p>"
     source_rows = ""
     for item in sources:
         billing_basis = "—"
@@ -1443,6 +1466,7 @@ button,.range {{ border:1px solid var(--accent);border-radius:8px;padding:8px 11
 .chart {{ width:100%;height:auto;display:block }} .chart-title {{ font-size:17px;font-weight:700;fill:var(--ink) }} .chart-subtitle,.axis,.legend {{ font-size:10px;fill:var(--muted) }} .gridline {{ stroke:var(--line);stroke-width:1 }} .data-point {{ stroke-width:1.5;opacity:.12 }} .data-point.partial {{ opacity:.8;stroke-width:2.5 }} .data-point:hover,.data-point:focus {{ opacity:1;stroke:var(--ink);stroke-width:2;outline:none }}
 table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top }} th {{ font-size:11px;text-transform:uppercase;color:var(--muted) }}
 .pill {{ border-radius:999px;padding:3px 7px;background:#e2e8f0 }} .pill.fresh,.pill.complete,.pill.current {{ background:#dcfce7;color:#166534 }} .pill.stale,.pill.failed,.pill.missing {{ background:#fee2e2;color:#991b1b }} .pill.outdated {{ background:#ffedd5;color:#9a3412 }}
+.alert-panel {{ margin:14px 0 }} .alert-row {{ display:flex;justify-content:space-between;gap:16px;padding:11px 0;border-bottom:1px solid var(--line) }} .alert-row:last-child {{ border-bottom:0 }} .alert-row p {{ margin:3px 0 0;color:var(--muted) }} .alert-row.warning strong {{ color:#9a3412 }} .alert-row.critical strong {{ color:#991b1b }}
 .empty {{ min-height:180px;display:grid;place-content:center;text-align:center;color:var(--muted) }} code {{ background:#eef2f7;padding:2px 4px;border-radius:4px }}
 @media(max-width:980px) {{ .range-cards {{ grid-template-columns:repeat(2,minmax(0,1fr)) }} }}
 @media(max-width:820px) {{ .cards {{ grid-template-columns:1fr }} .grid {{ grid-template-columns:minmax(0,1fr) }} .wide {{ grid-column:auto }} }} @media(max-width:520px) {{ main {{ padding:20px 12px 40px }} .range-cards {{ grid-template-columns:1fr }} }}
@@ -1452,6 +1476,7 @@ table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bott
 <section class='panel primary-chart' id='range-chart'>{grid_chart}</section>
 <h2>Live now</h2>
 <section class='cards'>{card_markup}</section>
+<section class='panel alert-panel'><h2>Active energy alerts</h2>{alert_markup}</section>
 <div class='actions'><button data-action='/action/reconcile-energy' data-status-key='reconcileEnergy'>Refresh all</button><button class='secondary' data-action='/action/refresh-sce' data-status-key='refreshSce'>Refresh SCE</button><button class='secondary' data-action='/action/refresh-alarm-cache' data-status-key='alarmRefresh'>Refresh Alarm.com</button><span id='result' class='muted' role='status' aria-live='polite'></span></div>
 <p class='muted'>{html_escape(range_summary)}</p>
 <section class='grid'><div class='panel'>{load_chart}</div><div class='panel'>{live_chart}</div></section>

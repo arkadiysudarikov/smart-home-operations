@@ -16,6 +16,7 @@ DB_PATH = DATA_DIR / "smart_home.sqlite"
 LATEST_PATH = DATA_DIR / "latest_energy_observability.json"
 HISTORY_RETENTION_DAYS = 90
 SCE_INTERVAL_PATH = DATA_DIR / "sce_usage_intervals.csv"
+CONFIG_PATH = ROOT / "config" / "sources.json"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -47,6 +48,89 @@ def subtract(left: Any, right: Any) -> float | None:
     if left_num is None or right_num is None:
         return None
     return round(left_num - right_num, 3)
+
+
+def latest_complete_metric(
+    daily: list[dict[str, Any]], metric: str, required_complete: tuple[str, ...]
+) -> dict[str, Any] | None:
+    return next(
+        (
+            row
+            for row in reversed(daily)
+            if num(row.get(metric)) is not None
+            and all(row.get(key) is True for key in required_complete)
+        ),
+        None,
+    )
+
+
+def energy_alerts(
+    live: dict[str, Any], daily: list[dict[str, Any]], thresholds: dict[str, Any]
+) -> list[dict[str, str]]:
+    alerts: list[dict[str, str]] = []
+    projected = num(live.get("alarmProjectedKwh"))
+    goal = num(live.get("alarmBudgetKwh"))
+    warning = float(thresholds.get("energy_projection_warning_kwh", 1200))
+    critical = float(thresholds.get("energy_projection_critical_kwh", 1300))
+    if projected is not None:
+        if projected >= critical:
+            alerts.append(
+                {
+                    "category": "energy",
+                    "severity": "critical",
+                    "title": "Energy projection is critical",
+                    "detail": f"Projected billing-period usage is {projected:.0f} kWh; critical begins at {critical:.0f} kWh.",
+                }
+            )
+        elif projected >= warning:
+            alerts.append(
+                {
+                    "category": "energy",
+                    "severity": "warning",
+                    "title": "Energy projection is high",
+                    "detail": f"Projected billing-period usage is {projected:.0f} kWh; warning begins at {warning:.0f} kWh.",
+                }
+            )
+        elif goal is not None and projected > goal:
+            alerts.append(
+                {
+                    "category": "energy",
+                    "severity": "warning",
+                    "title": "Energy projection exceeds goal",
+                    "detail": f"Projected billing-period usage is {projected:.0f} kWh, {projected - goal:.0f} kWh above the {goal:.0f} kWh goal.",
+                }
+            )
+
+    balance_threshold = float(thresholds.get("energy_balance_residual_alert_percent", 5))
+    balance = latest_complete_metric(daily, "energyBalanceResidualPercent", ("sceComplete", "envoyComplete"))
+    if balance and float(balance["energyBalanceResidualPercent"]) > balance_threshold:
+        alerts.append(
+            {
+                "category": "energy",
+                "severity": "warning",
+                "title": "Energy balance mismatch is high",
+                "detail": (
+                    f"The latest complete cross-meter day, {balance.get('date')}, has a "
+                    f"{float(balance['energyBalanceResidualPercent']):.1f}% residual; alert threshold is {balance_threshold:.1f}%."
+                ),
+            }
+        )
+
+    solar_threshold = float(thresholds.get("solar_parity_alert_percent", 10))
+    solar = latest_complete_metric(daily, "solarParityPercent", ("envoyComplete", "senseComplete"))
+    if solar and float(solar["solarParityPercent"]) > solar_threshold:
+        alerts.append(
+            {
+                "category": "energy",
+                "severity": "warning",
+                "title": "Solar sources disagree",
+                "detail": (
+                    f"Envoy and Sense differ by {float(solar['solarParityPercent']):.1f}% on the latest complete day, "
+                    f"{solar.get('date')}; alert threshold is {solar_threshold:.1f}%."
+                ),
+            }
+        )
+    return alerts
 
 
 def alarm_daily_rows(alarm: dict[str, Any]) -> dict[str, float]:
@@ -377,22 +461,29 @@ def build_payload() -> dict[str, Any]:
     latest = load_json(DATA_DIR / "latest.json")
     sense_now = load_json(DATA_DIR / "sense_now_latest.json")
     alarm = load_json(ROOT / "config" / "alarm_energy_readings.json")
+    thresholds = (load_json(CONFIG_PATH).get("alerts") or {})
     generated_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     daily = build_daily_comparison(combined, alarm, sce_daily_rows())
     quality_daily = daily_rows_for_quality_window(daily, generated_at, HISTORY_RETENTION_DAYS)
     live = live_summary(latest, sense_now, alarm)
+    alerts = energy_alerts(live, daily, thresholds)
     payload = {
         "ok": bool(combined),
         "generatedAt": generated_at,
         "historyRetentionDays": HISTORY_RETENTION_DAYS,
         "live": live,
+        "alerts": alerts,
         "dailyComparison": daily,
         "peakEvents": peak_events(all_energy),
         "quality": source_quality(combined, all_energy, quality_daily, HISTORY_RETENTION_DAYS),
         "sourceStatus": combined.get("sourceStatus") or [],
         "states": combined.get("states") or [],
     }
-    persist_observation(generated_at, live, combined)
+    persist_observation(
+        generated_at,
+        live,
+        {**combined, "alerts": list(combined.get("alerts") or []) + alerts},
+    )
     return payload
 
 
@@ -416,6 +507,7 @@ def write_report(payload: dict[str, Any]) -> None:
         f"- Live solar / site load / grid: `{fmt(live.get('envoyProductionKw'))}` / `{fmt(live.get('envoySiteLoadKw'))}` / `{fmt(live.get('envoyGridNetKw'))}` kW",
         f"- Battery: `{fmt(live.get('batteryPercent'), 0)}`%; storage `{fmt(live.get('envoyStorageKw'))}` kW",
         f"- Sense non-battery load: `{fmt(live.get('senseLoadKw'))}` kW",
+        f"- Active local energy alerts: `{len(payload.get('alerts') or [])}`",
         "",
         "## Source Semantics",
         "",
