@@ -146,6 +146,7 @@
     "energy_projection_warning_kwh": 1200,
     "energy_projection_critical_kwh": 1300,
     "energy_projection_clear_samples": 3,
+    "energy_projection_local_notifications": true,
     "energy_balance_residual_alert_percent": 5,
     "solar_parity_alert_percent": 10
   },
