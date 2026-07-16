@@ -19,6 +19,50 @@ SPEC.loader.exec_module(analyzer)
 
 
 class AnalyzeEnergyObservabilityTest(unittest.TestCase):
+    def test_energy_projection_alert_uses_highest_matching_severity(self) -> None:
+        alerts = analyzer.energy_alerts(
+            {"alarmProjectedKwh": 1390, "alarmBudgetKwh": 1100},
+            [],
+            {"energy_projection_warning_kwh": 1200, "energy_projection_critical_kwh": 1300},
+        )
+
+        self.assertEqual([(item["severity"], item["title"]) for item in alerts], [("critical", "Energy projection is critical")])
+        self.assertIn("1390 kWh", alerts[0]["detail"])
+
+    def test_energy_projection_alert_distinguishes_goal_warning_and_clear(self) -> None:
+        thresholds = {"energy_projection_warning_kwh": 1200, "energy_projection_critical_kwh": 1300}
+        over_goal = analyzer.energy_alerts({"alarmProjectedKwh": 1150, "alarmBudgetKwh": 1100}, [], thresholds)
+        warning = analyzer.energy_alerts({"alarmProjectedKwh": 1250, "alarmBudgetKwh": 1100}, [], thresholds)
+        clear = analyzer.energy_alerts({"alarmProjectedKwh": 1050, "alarmBudgetKwh": 1100}, [], thresholds)
+
+        self.assertEqual(over_goal[0]["title"], "Energy projection exceeds goal")
+        self.assertEqual(warning[0]["title"], "Energy projection is high")
+        self.assertEqual(clear, [])
+
+    def test_reconciliation_alerts_use_latest_complete_day(self) -> None:
+        alerts = analyzer.energy_alerts(
+            {},
+            [
+                {"date": "2026-07-13", "energyBalanceResidualPercent": 12, "solarParityPercent": 20, "sceComplete": True, "envoyComplete": True, "senseComplete": True},
+                {"date": "2026-07-14", "energyBalanceResidualPercent": 6, "solarParityPercent": 11, "sceComplete": True, "envoyComplete": True, "senseComplete": True},
+            ],
+            {"energy_balance_residual_alert_percent": 5, "solar_parity_alert_percent": 10},
+        )
+
+        self.assertEqual({item["title"] for item in alerts}, {"Energy balance mismatch is high", "Solar sources disagree"})
+        self.assertTrue(all("2026-07-14" in item["detail"] for item in alerts))
+
+    def test_reconciliation_alerts_skip_partial_days(self) -> None:
+        alerts = analyzer.energy_alerts(
+            {},
+            [
+                {"date": "2026-07-13", "energyBalanceResidualPercent": 2, "sceComplete": True, "envoyComplete": True},
+                {"date": "2026-07-14", "energyBalanceResidualPercent": 20, "sceComplete": None, "envoyComplete": True},
+            ],
+            {"energy_balance_residual_alert_percent": 5},
+        )
+
+        self.assertEqual(alerts, [])
     def test_sce_daily_rows_aggregates_retained_intervals(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "sce_usage_intervals.csv"

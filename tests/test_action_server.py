@@ -1251,6 +1251,13 @@ class ActionServerTest(unittest.TestCase):
                         "alarmLastBillingKwh": 1232.0,
                         "alarmAverageBillingKwh": 1182.0,
                     },
+                    "alerts": [
+                        {
+                            "severity": "critical",
+                            "title": "Energy projection is critical",
+                            "detail": "Projected billing-period usage is 1391 kWh; critical begins at 1300 kWh.",
+                        }
+                    ],
                     "quality": {
                         "status": "ready",
                         "overlapPairCount": 100,
@@ -1320,6 +1327,9 @@ class ActionServerTest(unittest.TestCase):
         self.assertIn("within 1.2%", page)
         self.assertIn("Solar parity", page)
         self.assertIn("within 3.4%", page)
+        self.assertIn("Active energy alerts", page)
+        self.assertIn("Energy projection is critical", page)
+        self.assertIn("critical begins at 1300 kWh", page)
         self.assertIn("Report status", page)
         self.assertIn("Billing basis", page)
         self.assertIn("closed bill through 2026-07-08 · 8.0 d", page)

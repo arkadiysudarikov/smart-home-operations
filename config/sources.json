@@ -142,7 +142,11 @@
     "sense_ev_charging_watts": 500,
     "sense_live_stale_minutes": 5,
     "source_status_stale_hours": 24,
-    "sense_envoy_adjusted_gap_kw": 0.75
+    "sense_envoy_adjusted_gap_kw": 0.75,
+    "energy_projection_warning_kwh": 1200,
+    "energy_projection_critical_kwh": 1300,
+    "energy_balance_residual_alert_percent": 5,
+    "solar_parity_alert_percent": 10
   },
   "actions": {
     "bind_host": "127.0.0.1",
@@ -208,6 +212,23 @@
         "alert_titles": ["House load is high"]
       },
       {
+        "id": "smart_home_energy_budget_v2",
+        "name": "⚠️ ENERGY HIGH",
+        "alert_titles": [
+          "Energy projection exceeds goal",
+          "Energy projection is high",
+          "Energy projection is critical"
+        ]
+      },
+      {
+        "id": "smart_home_energy_quality_v2",
+        "name": "⚠️ ENERGY CHECK",
+        "alert_titles": [
+          "Energy balance mismatch is high",
+          "Solar sources disagree"
+        ]
+      },
+      {
         "id": "smart_home_grid_importing_v2",
         "name": "☀️ From Grid",
         "state_titles": ["Grid importing"]
@@ -229,8 +250,18 @@
       },
       {
         "id": "smart_home_energy_data_stale_v2",
-        "name": "⚠️ ENVOY STALE",
-        "state_titles": ["Energy data stale"]
+        "name": "⚠️ ENERGY STALE",
+        "state_titles": ["Energy data stale"],
+        "alert_titles": [
+          "Envoy data is stale",
+          "Envoy data is missing",
+          "Sense data is stale",
+          "Sense data is missing",
+          "ChargePoint data is stale",
+          "ChargePoint data is missing",
+          "Alarm.com data is stale",
+          "Alarm.com data is missing"
+        ]
       },
       {
         "id": "smart_home_sce_data_stale_v2",
