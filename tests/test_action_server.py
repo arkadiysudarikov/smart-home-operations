@@ -1301,6 +1301,17 @@ class ActionServerTest(unittest.TestCase):
                         }
                     ],
                 },
+                "projectionAlertDelivery": {
+                    "lastDecision": "accepted",
+                    "deliveries": [
+                        {
+                            "at": "2026-07-15T09:01:00-07:00",
+                            "status": "accepted",
+                            "title": "Energy projection is critical",
+                            "readReceipt": "unavailable",
+                        }
+                    ],
+                },
                 "observability": {
                     "generatedAt": "2026-07-15T10:00:00-07:00",
                     "live": {
@@ -1404,6 +1415,10 @@ class ActionServerTest(unittest.TestCase):
         self.assertIn("Published state remains critical", page)
         self.assertIn("published immediately", page)
         self.assertIn("waiting for confirmations", page)
+        self.assertIn("Local notification delivery", page)
+        self.assertIn("Notification Center accepted the request", page)
+        self.assertIn("does not expose a human read receipt", page)
+        self.assertIn("Energy projection is critical", page)
         self.assertIn("Report status", page)
         self.assertIn("Billing basis", page)
         self.assertIn("closed bill through 2026-07-08 · 8.0 d", page)

@@ -6,6 +6,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 
@@ -292,6 +293,90 @@ class GenerateAlertsTest(unittest.TestCase):
 
             self.assertEqual(state["effectiveLevel"], "critical")
             self.assertEqual(json.loads(path.read_text())["effectiveLevel"], "critical")
+
+    def test_local_projection_notification_is_delivered_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "energy_alert_delivery.json"
+            self.patch_module(DATA_DIR=Path(tmp), ENERGY_ALERT_DELIVERY_PATH=path)
+            calls: list[list[str]] = []
+
+            def runner(command: list[str], **_kwargs: Any) -> Any:
+                calls.append(command)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            stabilization = {
+                "events": [
+                    {
+                        "at": "2026-07-15T10:00:00-07:00",
+                        "event": "published immediately",
+                        "from": "clear",
+                        "to": "critical",
+                        "sampleAt": "sample-1",
+                    }
+                ]
+            }
+            observability = {"live": {"alarmProjectedKwh": 1386, "alarmBudgetKwh": 1100}}
+
+            first = generate_alerts.deliver_projection_notification(
+                stabilization, observability, runner, "2026-07-15T10:00:01-07:00"
+            )
+            second = generate_alerts.deliver_projection_notification(
+                stabilization, observability, runner, "2026-07-15T10:05:00-07:00"
+            )
+
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(first["lastDecision"], "accepted")
+            self.assertEqual(second["lastProcessedEventKey"], first["lastProcessedEventKey"])
+            self.assertIn("286 kWh over", first["deliveries"][0]["message"])
+            self.assertIn("http://127.0.0.1:18765/energy?days=7", first["deliveries"][0]["message"])
+            self.assertEqual(first["deliveries"][0]["readReceipt"], "unavailable")
+
+    def test_recovery_notifies_but_downgrade_is_silent(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "energy_alert_delivery.json"
+            self.patch_module(DATA_DIR=Path(tmp), ENERGY_ALERT_DELIVERY_PATH=path)
+            calls: list[list[str]] = []
+
+            def runner(command: list[str], **_kwargs: Any) -> Any:
+                calls.append(command)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            downgrade = {
+                "events": [{"at": "t1", "event": "published downgrade", "from": "critical", "to": "warning", "sampleAt": "s1"}]
+            }
+            skipped = generate_alerts.deliver_projection_notification(downgrade, {}, runner, "t1")
+            recovery = {
+                "events": list(downgrade["events"])
+                + [{"at": "t2", "event": "published clear", "from": "warning", "to": "clear", "sampleAt": "s2"}]
+            }
+            accepted = generate_alerts.deliver_projection_notification(recovery, {}, runner, "t2")
+
+            self.assertEqual(skipped["lastDecision"], "skipped")
+            self.assertEqual(accepted["lastDecision"], "accepted")
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(accepted["deliveries"][-1]["title"], "Energy projection recovered")
+
+    def test_failed_notification_is_recorded_without_repeat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "energy_alert_delivery.json"
+            self.patch_module(DATA_DIR=Path(tmp), ENERGY_ALERT_DELIVERY_PATH=path)
+            calls = 0
+
+            def runner(_command: list[str], **_kwargs: Any) -> Any:
+                nonlocal calls
+                calls += 1
+                return SimpleNamespace(returncode=1, stdout="", stderr="notifications denied")
+
+            stabilization = {
+                "events": [{"at": "t1", "event": "published escalation", "from": "warning", "to": "critical", "sampleAt": "s1"}]
+            }
+            first = generate_alerts.deliver_projection_notification(stabilization, {}, runner, "t1")
+            second = generate_alerts.deliver_projection_notification(stabilization, {}, runner, "t2")
+
+            self.assertEqual(calls, 1)
+            self.assertEqual(first["lastDecision"], "failed")
+            self.assertIn("notifications denied", first["deliveries"][-1]["error"])
+            self.assertEqual(second["lastProcessedEventKey"], first["lastProcessedEventKey"])
 
     def test_build_alerts_reports_wrong_homebridge_advertisement_ip(self) -> None:
         latest = latest_snapshot()

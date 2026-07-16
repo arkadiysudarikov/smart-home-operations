@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import re
 import sqlite3
+import subprocess
 import urllib.parse
 import urllib.request
 from collections import Counter
@@ -23,6 +24,7 @@ SILENCE_PATH = DATA_DIR / "alerts_silenced_until.json"
 COMBINED_ENERGY_PATH = DATA_DIR / "latest_combined_energy_monitor.json"
 ENERGY_OBSERVABILITY_PATH = DATA_DIR / "latest_energy_observability.json"
 ENERGY_ALERT_STABILIZATION_PATH = DATA_DIR / "energy_alert_stabilization.json"
+ENERGY_ALERT_DELIVERY_PATH = DATA_DIR / "energy_alert_delivery.json"
 SCE_API_STATUS_PATH = DATA_DIR / "latest_sce_api.json"
 ALARM_COM_PATH = DATA_DIR / "latest_alarm_com.json"
 LATEST_CHARACTERISTICS_PATH = DATA_DIR / "latest_characteristics.json"
@@ -197,6 +199,132 @@ def update_projection_stabilization(
     )
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ENERGY_ALERT_STABILIZATION_PATH.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    return state
+
+
+def projection_notification_content(
+    event: dict[str, Any], observability: dict[str, Any]
+) -> tuple[str, str, str]:
+    level = str(event.get("to") or "clear")
+    live = observability.get("live") or {}
+    projected = live.get("alarmProjectedKwh")
+    budget = live.get("alarmBudgetKwh")
+    dashboard = "http://127.0.0.1:18765/energy?days=7"
+    if level == "clear":
+        return (
+            "Energy projection recovered",
+            "Recovery confirmed",
+            f"Projection is clear after three fresh confirmations. Dashboard: {dashboard}",
+        )
+    label = {"goal": "above goal", "warning": "high", "critical": "critical"}.get(level, level)
+    detail = (
+        f"Projected {float(projected):,.0f} kWh"
+        if isinstance(projected, (int, float))
+        else "Projected usage is elevated"
+    )
+    if isinstance(projected, (int, float)) and isinstance(budget, (int, float)):
+        detail += f"; {float(projected) - float(budget):,.0f} kWh over the {float(budget):,.0f} kWh goal"
+    return (
+        f"Energy projection is {label}",
+        f"Published severity: {level}",
+        f"{detail}. Dashboard: {dashboard}",
+    )
+
+
+def apple_script_string(value: str) -> str:
+    return str(value).replace("\\", "\\\\").replace('"', '\\"').replace("\n", " ")
+
+
+def deliver_projection_notification(
+    stabilization: dict[str, Any],
+    observability: dict[str, Any],
+    runner: Any = None,
+    updated_at: str | None = None,
+) -> dict[str, Any]:
+    state = load_json_file(ENERGY_ALERT_DELIVERY_PATH)
+    state = state if isinstance(state, dict) else {}
+    events = stabilization.get("events") or []
+    if not events:
+        return state
+    event = events[-1]
+    event_key = "|".join(
+        str(event.get(key) or "") for key in ("at", "event", "from", "to", "sampleAt")
+    )
+    if not event_key.strip("|") or event_key == state.get("lastProcessedEventKey"):
+        return state
+    now = updated_at or datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    history = list(state.get("deliveries") or [])[-19:]
+    event_name = str(event.get("event") or "")
+    notifiable = event_name in {"published immediately", "published escalation", "published clear"}
+    if not notifiable:
+        delivery = {
+            "at": now,
+            "eventKey": event_key,
+            "event": event_name,
+            "level": event.get("to"),
+            "status": "skipped",
+            "reason": "downgrades do not notify",
+            "transport": "macOS Notification Center",
+            "readReceipt": "unavailable",
+        }
+        state.update(
+            {
+                "version": 1,
+                "updatedAt": now,
+                "lastProcessedEventKey": event_key,
+                "lastDecision": "skipped",
+                "deliveries": history + [delivery],
+            }
+        )
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        ENERGY_ALERT_DELIVERY_PATH.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+        return state
+
+    title, subtitle, message = projection_notification_content(event, observability)
+    script = (
+        f'display notification "{apple_script_string(message)}" '
+        f'with title "{apple_script_string(title)}" subtitle "{apple_script_string(subtitle)}"'
+    )
+    command_runner = runner or subprocess.run
+    try:
+        result = command_runner(
+            ["/usr/bin/osascript", "-e", script],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        ok = result.returncode == 0
+        error = None if ok else str(result.stderr or result.stdout or f"exit {result.returncode}").strip()
+    except Exception as exc:
+        ok = False
+        error = str(exc)
+    delivery = {
+        "at": now,
+        "eventKey": event_key,
+        "event": event_name,
+        "level": event.get("to"),
+        "status": "accepted" if ok else "failed",
+        "title": title,
+        "message": message,
+        "transport": "macOS Notification Center",
+        "readReceipt": "unavailable",
+    }
+    if error:
+        delivery["error"] = error
+    state.update(
+        {
+            "version": 1,
+            "updatedAt": now,
+            "lastProcessedEventKey": event_key,
+            "lastDecision": delivery["status"],
+            "lastAttemptAt": now,
+            "lastAcceptedAt": now if ok else state.get("lastAcceptedAt"),
+            "deliveries": history + [delivery],
+        }
+    )
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    ENERGY_ALERT_DELIVERY_PATH.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
     return state
 
 
@@ -2030,7 +2158,9 @@ def audit_homekit_surface(updates: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def write_homekit_report(
-    updates: list[dict[str, Any]], projection_stabilization: dict[str, Any] | None = None
+    updates: list[dict[str, Any]],
+    projection_stabilization: dict[str, Any] | None = None,
+    projection_delivery: dict[str, Any] | None = None,
 ) -> None:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     alarm_com = load_alarm_com()
@@ -2052,6 +2182,7 @@ def write_homekit_report(
         "generatedAt": generated_at,
         "freshness": freshness,
         "projectionAlertStabilization": projection_stabilization or {},
+        "projectionAlertDelivery": projection_delivery or {},
         "updates": updates,
         "surfaceAudit": audit_homekit_surface(updates),
     }
@@ -2161,9 +2292,15 @@ def main() -> int:
         observability,
         int(config["alerts"].get("energy_projection_clear_samples", 3)),
     )
+    projection_delivery = (
+        deliver_projection_notification(projection_stabilization, observability)
+        if running_from_runtime_root()
+        and bool(config["alerts"].get("energy_projection_local_notifications", False))
+        else {}
+    )
     write_reports(alerts, latest)
     updates = update_homekit_virtual_sensors(config, alerts, projection_stabilization)
-    write_homekit_report(updates, projection_stabilization)
+    write_homekit_report(updates, projection_stabilization, projection_delivery)
     print(REPORT_DIR / "alerts.md")
     return 0
 
