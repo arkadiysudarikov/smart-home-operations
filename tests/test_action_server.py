@@ -1284,6 +1284,23 @@ class ActionServerTest(unittest.TestCase):
                         "projectedKwh": 1391.0,
                     }
                 ],
+                "projectionAlertStabilization": {
+                    "rawLevel": "clear",
+                    "effectiveLevel": "critical",
+                    "pendingLevel": "clear",
+                    "consecutiveFreshSamples": 2,
+                    "requiredFreshSamples": 3,
+                    "alarmSourceFresh": True,
+                    "reason": "waiting for confirmations",
+                    "events": [
+                        {
+                            "at": "2026-07-15T09:00:00-07:00",
+                            "event": "published immediately",
+                            "from": "clear",
+                            "to": "critical",
+                        }
+                    ],
+                },
                 "observability": {
                     "generatedAt": "2026-07-15T10:00:00-07:00",
                     "live": {
@@ -1381,6 +1398,12 @@ class ActionServerTest(unittest.TestCase):
         self.assertIn("Projection alert history", page)
         self.assertIn("severity changed", page)
         self.assertIn("warning → critical", page)
+        self.assertIn("Raw severity", page)
+        self.assertIn("Published to HomeKit", page)
+        self.assertIn("Pending clear: 2 of 3 fresh confirmations", page)
+        self.assertIn("Published state remains critical", page)
+        self.assertIn("published immediately", page)
+        self.assertIn("waiting for confirmations", page)
         self.assertIn("Report status", page)
         self.assertIn("Billing basis", page)
         self.assertIn("closed bill through 2026-07-08 · 8.0 d", page)

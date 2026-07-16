@@ -22,6 +22,7 @@ REPORT_DIR = ROOT / "reports"
 SILENCE_PATH = DATA_DIR / "alerts_silenced_until.json"
 COMBINED_ENERGY_PATH = DATA_DIR / "latest_combined_energy_monitor.json"
 ENERGY_OBSERVABILITY_PATH = DATA_DIR / "latest_energy_observability.json"
+ENERGY_ALERT_STABILIZATION_PATH = DATA_DIR / "energy_alert_stabilization.json"
 SCE_API_STATUS_PATH = DATA_DIR / "latest_sce_api.json"
 ALARM_COM_PATH = DATA_DIR / "latest_alarm_com.json"
 LATEST_CHARACTERISTICS_PATH = DATA_DIR / "latest_characteristics.json"
@@ -59,6 +60,144 @@ def load_combined_energy() -> dict[str, Any]:
 def load_energy_observability() -> dict[str, Any]:
     data = load_json_file(ENERGY_OBSERVABILITY_PATH)
     return data if isinstance(data, dict) else {}
+
+
+PROJECTION_ALERT_LEVELS = {"clear": 0, "goal": 1, "warning": 2, "critical": 3}
+PROJECTION_ALERT_TITLES = {
+    "Energy projection exceeds goal": "goal",
+    "Energy projection is high": "warning",
+    "Energy projection is critical": "critical",
+}
+
+
+def raw_projection_alert_level(alerts: list[dict[str, Any]]) -> str:
+    levels = [
+        PROJECTION_ALERT_TITLES.get(str(alert.get("title") or ""), "clear")
+        for alert in alerts
+    ]
+    return max(levels, key=lambda item: PROJECTION_ALERT_LEVELS[item], default="clear")
+
+
+def alarm_source_fresh(observability: dict[str, Any]) -> bool:
+    return any(
+        str(item.get("source") or "") == "Alarm.com"
+        and str(item.get("status") or "").lower() in {"fresh", "available"}
+        for item in observability.get("sourceStatus") or []
+        if isinstance(item, dict)
+    )
+
+
+def next_projection_stabilization(
+    previous: dict[str, Any],
+    raw_level: str,
+    sample_at: str,
+    alarm_fresh: bool,
+    required_samples: int = 3,
+    updated_at: str | None = None,
+) -> dict[str, Any]:
+    now = updated_at or datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    raw_level = raw_level if raw_level in PROJECTION_ALERT_LEVELS else "clear"
+    required_samples = max(1, int(required_samples))
+    effective = str(previous.get("effectiveLevel") or raw_level)
+    if effective not in PROJECTION_ALERT_LEVELS:
+        effective = raw_level
+    events = list(previous.get("events") or [])[-19:]
+    state = {
+        "version": 1,
+        "updatedAt": now,
+        "sampleAt": sample_at,
+        "rawLevel": raw_level,
+        "effectiveLevel": effective,
+        "pendingLevel": previous.get("pendingLevel"),
+        "consecutiveFreshSamples": int(previous.get("consecutiveFreshSamples") or 0),
+        "requiredFreshSamples": required_samples,
+        "lastCountedSampleAt": previous.get("lastCountedSampleAt"),
+        "effectiveChangedAt": previous.get("effectiveChangedAt") or now,
+        "alarmSourceFresh": bool(alarm_fresh),
+        "reason": "stable",
+        "events": events,
+    }
+    if not previous:
+        state["pendingLevel"] = None
+        state["consecutiveFreshSamples"] = 0
+        state["reason"] = "initialized"
+        if raw_level != "clear":
+            state["events"] = events + [
+                {"at": now, "event": "published immediately", "from": "clear", "to": raw_level, "sampleAt": sample_at}
+            ]
+        return state
+
+    raw_rank = PROJECTION_ALERT_LEVELS[raw_level]
+    effective_rank = PROJECTION_ALERT_LEVELS[effective]
+    if raw_rank > effective_rank:
+        state.update(
+            {
+                "effectiveLevel": raw_level,
+                "pendingLevel": None,
+                "consecutiveFreshSamples": 0,
+                "effectiveChangedAt": now,
+                "reason": "escalated immediately",
+            }
+        )
+        state["events"] = events + [
+            {"at": now, "event": "published escalation", "from": effective, "to": raw_level, "sampleAt": sample_at}
+        ]
+        return state
+    if raw_level == effective:
+        state.update({"pendingLevel": None, "consecutiveFreshSamples": 0, "reason": "stable"})
+        return state
+
+    state["pendingLevel"] = raw_level
+    if not alarm_fresh:
+        state.update({"consecutiveFreshSamples": 0, "reason": "held for fresh Alarm.com data"})
+        return state
+    if sample_at == previous.get("lastCountedSampleAt"):
+        state["reason"] = "duplicate sample ignored"
+        return state
+    count = (
+        int(previous.get("consecutiveFreshSamples") or 0) + 1
+        if previous.get("pendingLevel") == raw_level
+        else 1
+    )
+    state.update(
+        {
+            "consecutiveFreshSamples": count,
+            "lastCountedSampleAt": sample_at,
+            "reason": "waiting for confirmations",
+        }
+    )
+    if count >= required_samples:
+        event = "published clear" if raw_level == "clear" else "published downgrade"
+        state.update(
+            {
+                "effectiveLevel": raw_level,
+                "pendingLevel": None,
+                "consecutiveFreshSamples": 0,
+                "effectiveChangedAt": now,
+                "reason": "downgrade confirmed",
+            }
+        )
+        state["events"] = events + [
+            {"at": now, "event": event, "from": effective, "to": raw_level, "sampleAt": sample_at}
+        ]
+    return state
+
+
+def update_projection_stabilization(
+    alerts: list[dict[str, Any]], observability: dict[str, Any], required_samples: int
+) -> dict[str, Any]:
+    previous = load_json_file(ENERGY_ALERT_STABILIZATION_PATH)
+    previous = previous if isinstance(previous, dict) else {}
+    state = next_projection_stabilization(
+        previous,
+        raw_projection_alert_level(alerts),
+        str(observability.get("generatedAt") or ""),
+        alarm_source_fresh(observability),
+        required_samples,
+    )
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    ENERGY_ALERT_STABILIZATION_PATH.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    return state
 
 
 def load_sce_api_status() -> dict[str, Any]:
@@ -1620,7 +1759,25 @@ def write_reports(alerts: list[dict[str, str]], latest: dict[str, Any]) -> None:
     (REPORT_DIR / "alerts.md").write_text("\n".join(lines) + "\n")
 
 
-def update_homekit_virtual_sensors(config: dict[str, Any], alerts: list[dict[str, str]]) -> list[dict[str, Any]]:
+def virtual_sensor_should_be_active(
+    accessory: dict[str, Any],
+    active_titles: set[str],
+    state_titles: set[str],
+    projection_stabilization: dict[str, Any] | None = None,
+) -> bool:
+    if accessory.get("id") == "smart_home_energy_budget_v2" and projection_stabilization:
+        return projection_stabilization.get("effectiveLevel") != "clear"
+    return (
+        any(title in active_titles for title in accessory.get("alert_titles", []))
+        or any(title in state_titles for title in accessory.get("state_titles", []))
+    )
+
+
+def update_homekit_virtual_sensors(
+    config: dict[str, Any],
+    alerts: list[dict[str, str]],
+    projection_stabilization: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     sensor_config = config.get("homekit_virtual_sensors", {})
     if not sensor_config.get("enabled", False):
         return []
@@ -1634,9 +1791,8 @@ def update_homekit_virtual_sensors(config: dict[str, Any], alerts: list[dict[str
     updates: list[dict[str, Any]] = []
     for accessory in sensor_config.get("accessories", []):
         accessory_id = accessory["id"]
-        should_be_active = (
-            any(title in active_titles for title in accessory.get("alert_titles", []))
-            or any(title in state_titles for title in accessory.get("state_titles", []))
+        should_be_active = virtual_sensor_should_be_active(
+            accessory, active_titles, state_titles, projection_stabilization
         )
         set_query = urllib.parse.urlencode(
             {
@@ -1873,7 +2029,9 @@ def audit_homekit_surface(updates: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def write_homekit_report(updates: list[dict[str, Any]]) -> None:
+def write_homekit_report(
+    updates: list[dict[str, Any]], projection_stabilization: dict[str, Any] | None = None
+) -> None:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     alarm_com = load_alarm_com()
     comparison = {}
@@ -1893,6 +2051,7 @@ def write_homekit_report(updates: list[dict[str, Any]]) -> None:
     payload = {
         "generatedAt": generated_at,
         "freshness": freshness,
+        "projectionAlertStabilization": projection_stabilization or {},
         "updates": updates,
         "surfaceAudit": audit_homekit_surface(updates),
     }
@@ -1996,9 +2155,15 @@ def main() -> int:
         int(config["alerts"]["warning_recent_window"]),
     )
     alerts = apply_warning_silence(build_alerts(config, latest, recent_rows(window)), active_warning_silence())
+    observability = load_energy_observability()
+    projection_stabilization = update_projection_stabilization(
+        list(observability.get("alerts") or []),
+        observability,
+        int(config["alerts"].get("energy_projection_clear_samples", 3)),
+    )
     write_reports(alerts, latest)
-    updates = update_homekit_virtual_sensors(config, alerts)
-    write_homekit_report(updates)
+    updates = update_homekit_virtual_sensors(config, alerts, projection_stabilization)
+    write_homekit_report(updates, projection_stabilization)
     print(REPORT_DIR / "alerts.md")
     return 0
 

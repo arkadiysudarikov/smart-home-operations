@@ -41,6 +41,7 @@ DISPLAY_AWAKE_OVERRIDE_PATH = DATA_DIR / "display_awake_override.json"
 ACTION_AUDIT_PATH = LOG_DIR / "actions.audit.jsonl"
 ENERGY_REFRESH_STATUS_PATH = DATA_DIR / "latest_energy_refresh.json"
 ENERGY_REFRESH_LOCK_PATH = DATA_DIR / "refresh_energy.lock"
+ENERGY_ALERT_STABILIZATION_PATH = DATA_DIR / "energy_alert_stabilization.json"
 ACTION_STATUS_PATHS = {
     "check": DATA_DIR / "latest.json",
     "refreshEnergy": ENERGY_REFRESH_STATUS_PATH,
@@ -752,6 +753,7 @@ def energy_status(history_days: int = 7) -> dict[str, Any]:
     automation = read_json_status(DATA_DIR / "latest_energy_automation_opportunities.json")
     observability = read_json_status(DATA_DIR / "latest_energy_observability.json")
     observability_payload = load_json_file(DATA_DIR / "latest_energy_observability.json")
+    projection_stabilization = load_json_file(ENERGY_ALERT_STABILIZATION_PATH)
     alert_thresholds = (load_config().get("alerts") or {})
     projection_goal = ((observability_payload.get("live") or {}).get("alarmBudgetKwh"))
     observation_history = energy_observation_history(history_days)
@@ -805,6 +807,7 @@ def energy_status(history_days: int = 7) -> dict[str, Any]:
         "historyDays": history_days,
         "observationHistory": observation_history,
         "projectionAlertTransitions": projection_transitions,
+        "projectionAlertStabilization": projection_stabilization,
     }
     combined_payload = load_json_file(DATA_DIR / "latest_combined_energy_monitor.json")
     if combined_payload:
@@ -1296,6 +1299,7 @@ def render_energy_page(history_days: int = 7) -> bytes:
     daily = filter_daily_energy_rows(observability.get("dailyComparison") or [], history_days)
     history = status.get("observationHistory") or []
     projection_transitions = status.get("projectionAlertTransitions") or []
+    projection_stabilization = status.get("projectionAlertStabilization") or {}
     sources = observability.get("sourceStatus") or status.get("sourceStatus") or status.get("operationalSourceStatus") or []
     alerts = list(observability.get("alerts") or [])
     alert_titles = {str(item.get("title") or "") for item in alerts}
@@ -1477,6 +1481,37 @@ def render_energy_page(history_days: int = 7) -> bytes:
         "</li>"
         for item in projection_transitions[-8:]
     ) or "<li>No projection alert transitions in this selected period.</li>"
+    raw_projection_level = str(projection_stabilization.get("rawLevel") or "collecting")
+    effective_projection_level = str(projection_stabilization.get("effectiveLevel") or "collecting")
+    pending_projection_level = projection_stabilization.get("pendingLevel")
+    confirmation_count = int(projection_stabilization.get("consecutiveFreshSamples") or 0)
+    required_confirmations = int(projection_stabilization.get("requiredFreshSamples") or 3)
+    if pending_projection_level:
+        stabilization_detail = (
+            f"Pending {pending_projection_level}: {confirmation_count} of {required_confirmations} fresh confirmations. "
+            f"Published state remains {effective_projection_level}."
+        )
+    elif projection_stabilization:
+        stabilization_detail = "No downgrade or clear is pending."
+    else:
+        stabilization_detail = "Stabilization state will appear after the next alert run."
+    stabilization_events = "".join(
+        "<li>"
+        f"<time>{html_escape(str(item.get('at') or '').replace('T', ' ')[:16])}</time> "
+        f"<strong>{html_escape(item.get('event'))}</strong>: "
+        f"{html_escape(item.get('from') or 'unknown')} → {html_escape(item.get('to') or 'unknown')}"
+        "</li>"
+        for item in (projection_stabilization.get("events") or [])[-5:]
+    ) or "<li>No published-state changes yet.</li>"
+    stabilization_markup = (
+        "<div class='stabilization-status'>"
+        f"<div><span>Raw severity</span><strong class='pill {html_escape(raw_projection_level)}'>{html_escape(raw_projection_level)}</strong></div>"
+        f"<div><span>Published to HomeKit</span><strong class='pill {html_escape(effective_projection_level)}'>{html_escape(effective_projection_level)}</strong></div>"
+        f"<div><span>Alarm.com source</span><strong class='pill {'fresh' if projection_stabilization.get('alarmSourceFresh') else 'stale'}'>{'fresh' if projection_stabilization.get('alarmSourceFresh') else 'held'}</strong></div>"
+        "</div>"
+        f"<p class='muted'>{html_escape(stabilization_detail)} {html_escape(projection_stabilization.get('reason') or '')}</p>"
+        f"<ul class='transition-list publication-events'>{stabilization_events}</ul>"
+    )
     source_rows = ""
     for item in sources:
         billing_basis = "—"
@@ -1609,12 +1644,13 @@ button,.range {{ border:1px solid var(--accent);border-radius:8px;padding:8px 11
 .card span,.card small {{ display:block }} .card strong {{ display:block;font-size:24px;margin:5px 0 }} .grid {{ display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px }} .wide {{ grid-column:1/-1 }}
 .chart {{ width:100%;height:auto;display:block }} .chart-title {{ font-size:17px;font-weight:700;fill:var(--ink) }} .chart-subtitle,.axis,.legend {{ font-size:10px;fill:var(--muted) }} .gridline {{ stroke:var(--line);stroke-width:1 }} .threshold-label {{ font-size:10px;font-weight:700 }} .data-point {{ stroke-width:1.5;opacity:.12 }} .data-point.partial {{ opacity:.8;stroke-width:2.5 }} .data-point:hover,.data-point:focus {{ opacity:1;stroke:var(--ink);stroke-width:2;outline:none }}
 table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top }} th {{ font-size:11px;text-transform:uppercase;color:var(--muted) }}
-.pill {{ border-radius:999px;padding:3px 7px;background:#e2e8f0 }} .pill.fresh,.pill.complete,.pill.current {{ background:#dcfce7;color:#166534 }} .pill.stale,.pill.failed,.pill.missing {{ background:#fee2e2;color:#991b1b }} .pill.outdated {{ background:#ffedd5;color:#9a3412 }}
+.pill {{ border-radius:999px;padding:3px 7px;background:#e2e8f0 }} .pill.fresh,.pill.complete,.pill.current,.pill.clear {{ background:#dcfce7;color:#166534 }} .pill.stale,.pill.failed,.pill.missing,.pill.critical {{ background:#fee2e2;color:#991b1b }} .pill.outdated,.pill.goal,.pill.warning {{ background:#ffedd5;color:#9a3412 }}
 .alert-panel {{ margin:14px 0 }} .alert-row {{ display:flex;justify-content:space-between;gap:16px;padding:11px 0;border-bottom:1px solid var(--line) }} .alert-row:last-child {{ border-bottom:0 }} .alert-row p {{ margin:3px 0 0;color:var(--muted) }} .alert-row.warning strong {{ color:#9a3412 }} .alert-row.critical strong {{ color:#991b1b }}
 .projection-grid {{ align-items:start }} .transition-list {{ margin:8px 0 0;padding-left:20px }} .transition-list li {{ margin:8px 0 }} .transition-list time {{ color:var(--muted);font-variant-numeric:tabular-nums }}
+.stabilization-status {{ display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0 }} .stabilization-status>div {{ background:var(--bg);border-radius:8px;padding:9px }} .stabilization-status span,.stabilization-status strong {{ display:block }} .stabilization-status strong {{ margin-top:6px;width:max-content }} .publication-events {{ border-bottom:1px solid var(--line);padding-bottom:8px }}
 .empty {{ min-height:180px;display:grid;place-content:center;text-align:center;color:var(--muted) }} code {{ background:#eef2f7;padding:2px 4px;border-radius:4px }}
 @media(max-width:980px) {{ .range-cards {{ grid-template-columns:repeat(2,minmax(0,1fr)) }} }}
-@media(max-width:820px) {{ .cards {{ grid-template-columns:1fr }} .grid {{ grid-template-columns:minmax(0,1fr) }} .wide {{ grid-column:auto }} }} @media(max-width:520px) {{ main {{ padding:20px 12px 40px }} .range-cards {{ grid-template-columns:1fr }} }}
+@media(max-width:820px) {{ .cards {{ grid-template-columns:1fr }} .grid {{ grid-template-columns:minmax(0,1fr) }} .wide {{ grid-column:auto }} }} @media(max-width:520px) {{ main {{ padding:20px 12px 40px }} .range-cards,.stabilization-status {{ grid-template-columns:1fr }} }}
 </style></head><body><main>
 <header class='top'><div><h1>Smart Home Energy</h1><div class='muted'>Updated {html_escape(observability.get('generatedAt') or status.get('generatedAt'))} · selected range {html_escape(range_quality_status)} · retained history {html_escape(quality.get('status') or 'collecting')}</div></div><div class='ranges'>{range_links}</div></header>
 <section class='range-overview' id='selected-range' data-days='{history_days}'><div class='range-heading'><h2>Selected period · {html_escape(range_label)}</h2><span class='muted'>{html_escape(daily[0].get('date') if daily else 'n/a')} → {html_escape(daily[-1].get('date') if daily else 'n/a')}</span></div><div class='range-cards'>{range_card_markup}</div></section>
@@ -1622,7 +1658,7 @@ table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bott
 <h2>Live now</h2>
 <section class='cards'>{card_markup}</section>
 <section class='panel alert-panel'><h2>Active energy alerts</h2>{alert_markup}</section>
-<section class='grid projection-grid'><div class='panel'>{projection_chart}</div><div class='panel'><h2>Projection alert history</h2><p class='muted'>First appearance, severity changes, and clears within the selected range.</p><ul class='transition-list'>{transition_markup}</ul></div></section>
+<section class='grid projection-grid'><div class='panel'>{projection_chart}</div><div class='panel'><h2>Projection alert history</h2><p class='muted'>First appearance, severity changes, and clears within the selected range.</p>{stabilization_markup}<h3>Raw severity history</h3><ul class='transition-list'>{transition_markup}</ul></div></section>
 <div class='actions'><button data-action='/action/reconcile-energy' data-status-key='reconcileEnergy'>Refresh all</button><button class='secondary' data-action='/action/refresh-sce' data-status-key='refreshSce'>Refresh SCE</button><button class='secondary' data-action='/action/refresh-alarm-cache' data-status-key='alarmRefresh'>Refresh Alarm.com</button><span id='result' class='muted' role='status' aria-live='polite'></span></div>
 <p class='muted'>{html_escape(range_summary)}</p>
 <section class='grid'><div class='panel'>{load_chart}</div><div class='panel'>{live_chart}</div></section>

@@ -205,6 +205,94 @@ def smarthq_event(captured_at: str, message: str) -> dict[str, Any]:
 
 
 class GenerateAlertsTest(unittest.TestCase):
+    def test_projection_stabilizer_escalates_immediately(self) -> None:
+        previous = generate_alerts.next_projection_stabilization(
+            {}, "clear", "sample-1", True, updated_at="2026-07-15T10:00:00-07:00"
+        )
+
+        state = generate_alerts.next_projection_stabilization(
+            previous, "critical", "sample-2", True, updated_at="2026-07-15T10:05:00-07:00"
+        )
+
+        self.assertEqual(state["effectiveLevel"], "critical")
+        self.assertEqual(state["reason"], "escalated immediately")
+        self.assertEqual(state["events"][-1]["event"], "published escalation")
+
+    def test_projection_stabilizer_requires_three_distinct_fresh_samples_to_clear(self) -> None:
+        state = generate_alerts.next_projection_stabilization(
+            {}, "critical", "sample-0", True, updated_at="2026-07-15T10:00:00-07:00"
+        )
+        state = generate_alerts.next_projection_stabilization(
+            state, "clear", "sample-1", True, updated_at="2026-07-15T10:05:00-07:00"
+        )
+        self.assertEqual((state["effectiveLevel"], state["consecutiveFreshSamples"]), ("critical", 1))
+        state = generate_alerts.next_projection_stabilization(
+            state, "clear", "sample-2", True, updated_at="2026-07-15T10:10:00-07:00"
+        )
+        self.assertEqual((state["effectiveLevel"], state["consecutiveFreshSamples"]), ("critical", 2))
+        state = generate_alerts.next_projection_stabilization(
+            state, "clear", "sample-3", True, updated_at="2026-07-15T10:15:00-07:00"
+        )
+
+        self.assertEqual(state["effectiveLevel"], "clear")
+        self.assertIsNone(state["pendingLevel"])
+        self.assertEqual(state["events"][-1]["event"], "published clear")
+
+    def test_projection_stabilizer_ignores_duplicate_and_stale_clear_samples(self) -> None:
+        state = generate_alerts.next_projection_stabilization({}, "critical", "sample-0", True)
+        state = generate_alerts.next_projection_stabilization(state, "clear", "sample-1", True)
+        duplicate = generate_alerts.next_projection_stabilization(state, "clear", "sample-1", True)
+        stale = generate_alerts.next_projection_stabilization(duplicate, "clear", "sample-2", False)
+
+        self.assertEqual(duplicate["consecutiveFreshSamples"], 1)
+        self.assertEqual(duplicate["reason"], "duplicate sample ignored")
+        self.assertEqual(stale["effectiveLevel"], "critical")
+        self.assertEqual(stale["consecutiveFreshSamples"], 0)
+        self.assertEqual(stale["reason"], "held for fresh Alarm.com data")
+
+    def test_projection_stabilizer_survives_serialized_restart_state(self) -> None:
+        state = generate_alerts.next_projection_stabilization({}, "critical", "sample-0", True)
+        state = generate_alerts.next_projection_stabilization(state, "clear", "sample-1", True)
+        restored = json.loads(json.dumps(state))
+        restored = generate_alerts.next_projection_stabilization(restored, "clear", "sample-2", True)
+
+        self.assertEqual(restored["effectiveLevel"], "critical")
+        self.assertEqual(restored["consecutiveFreshSamples"], 2)
+
+    def test_energy_budget_virtual_sensor_uses_stabilized_effective_level(self) -> None:
+        accessory = {
+            "id": "smart_home_energy_budget_v2",
+            "alert_titles": ["Energy projection is critical"],
+        }
+
+        self.assertTrue(
+            generate_alerts.virtual_sensor_should_be_active(
+                accessory, set(), set(), {"effectiveLevel": "critical"}
+            )
+        )
+        self.assertFalse(
+            generate_alerts.virtual_sensor_should_be_active(
+                accessory, {"Energy projection is critical"}, set(), {"effectiveLevel": "clear"}
+            )
+        )
+
+    def test_projection_stabilization_is_persisted(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "energy_alert_stabilization.json"
+            self.patch_module(DATA_DIR=Path(tmp), ENERGY_ALERT_STABILIZATION_PATH=path)
+
+            state = generate_alerts.update_projection_stabilization(
+                [{"title": "Energy projection is critical"}],
+                {
+                    "generatedAt": "2026-07-15T10:00:00-07:00",
+                    "sourceStatus": [{"source": "Alarm.com", "status": "fresh"}],
+                },
+                3,
+            )
+
+            self.assertEqual(state["effectiveLevel"], "critical")
+            self.assertEqual(json.loads(path.read_text())["effectiveLevel"], "critical")
+
     def test_build_alerts_reports_wrong_homebridge_advertisement_ip(self) -> None:
         latest = latest_snapshot()
         latest["homebridge"]["advertisements"] = {
