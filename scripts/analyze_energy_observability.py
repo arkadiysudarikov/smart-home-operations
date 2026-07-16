@@ -64,6 +64,24 @@ def latest_complete_metric(
     )
 
 
+def projection_alert_level(
+    projected: Any, goal: Any, thresholds: dict[str, Any]
+) -> str | None:
+    projected_value = num(projected)
+    goal_value = num(goal)
+    if projected_value is None:
+        return None
+    warning = float(thresholds.get("energy_projection_warning_kwh", 1200))
+    critical = float(thresholds.get("energy_projection_critical_kwh", 1300))
+    if projected_value >= critical:
+        return "critical"
+    if projected_value >= warning:
+        return "warning"
+    if goal_value is not None and projected_value > goal_value:
+        return "goal"
+    return "clear"
+
+
 def energy_alerts(
     live: dict[str, Any], daily: list[dict[str, Any]], thresholds: dict[str, Any]
 ) -> list[dict[str, str]]:
@@ -72,8 +90,9 @@ def energy_alerts(
     goal = num(live.get("alarmBudgetKwh"))
     warning = float(thresholds.get("energy_projection_warning_kwh", 1200))
     critical = float(thresholds.get("energy_projection_critical_kwh", 1300))
+    projection_level = projection_alert_level(projected, goal, thresholds)
     if projected is not None:
-        if projected >= critical:
+        if projection_level == "critical":
             alerts.append(
                 {
                     "category": "energy",
@@ -82,7 +101,7 @@ def energy_alerts(
                     "detail": f"Projected billing-period usage is {projected:.0f} kWh; critical begins at {critical:.0f} kWh.",
                 }
             )
-        elif projected >= warning:
+        elif projection_level == "warning":
             alerts.append(
                 {
                     "category": "energy",
@@ -91,7 +110,7 @@ def energy_alerts(
                     "detail": f"Projected billing-period usage is {projected:.0f} kWh; warning begins at {warning:.0f} kWh.",
                 }
             )
-        elif goal is not None and projected > goal:
+        elif projection_level == "goal":
             alerts.append(
                 {
                     "category": "energy",
@@ -422,14 +441,27 @@ def persist_observation(generated_at: str, live: dict[str, Any], combined: dict[
               sense_solar_kw real,
               alarm_mtd_kwh real,
               alarm_projected_kwh real,
+              alarm_budget_kwh real,
+              projection_alert_level text,
               energy_alert_count integer,
               active_states_json text not null
             )
             """
         )
+        columns = {row[1] for row in db.execute("pragma table_info(energy_observations)")}
+        if "alarm_budget_kwh" not in columns:
+            db.execute("alter table energy_observations add column alarm_budget_kwh real")
+        if "projection_alert_level" not in columns:
+            db.execute("alter table energy_observations add column projection_alert_level text")
+        thresholds = (load_json(CONFIG_PATH).get("alerts") or {})
         db.execute(
             """
-            insert or replace into energy_observations values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            insert or replace into energy_observations (
+              captured_at, envoy_production_kw, envoy_site_load_kw, envoy_grid_net_kw,
+              envoy_storage_kw, battery_percent, battery_charging, battery_discharging,
+              sense_load_kw, sense_solar_kw, alarm_mtd_kwh, alarm_projected_kwh,
+              alarm_budget_kwh, projection_alert_level, energy_alert_count, active_states_json
+            ) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 generated_at,
@@ -444,6 +476,10 @@ def persist_observation(generated_at: str, live: dict[str, Any], combined: dict[
                 live.get("senseSolarKw"),
                 live.get("alarmMonthToDateKwh"),
                 live.get("alarmProjectedKwh"),
+                live.get("alarmBudgetKwh"),
+                projection_alert_level(
+                    live.get("alarmProjectedKwh"), live.get("alarmBudgetKwh"), thresholds
+                ),
                 len(combined.get("alerts") or []),
                 json.dumps(combined.get("states") or []),
             ),

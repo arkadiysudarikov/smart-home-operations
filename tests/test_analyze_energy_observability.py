@@ -19,6 +19,15 @@ SPEC.loader.exec_module(analyzer)
 
 
 class AnalyzeEnergyObservabilityTest(unittest.TestCase):
+    def test_projection_alert_level_matches_ladder(self) -> None:
+        thresholds = {"energy_projection_warning_kwh": 1200, "energy_projection_critical_kwh": 1300}
+
+        self.assertEqual(analyzer.projection_alert_level(1390, 1100, thresholds), "critical")
+        self.assertEqual(analyzer.projection_alert_level(1250, 1100, thresholds), "warning")
+        self.assertEqual(analyzer.projection_alert_level(1150, 1100, thresholds), "goal")
+        self.assertEqual(analyzer.projection_alert_level(1050, 1100, thresholds), "clear")
+        self.assertIsNone(analyzer.projection_alert_level(None, 1100, thresholds))
+
     def test_energy_projection_alert_uses_highest_matching_severity(self) -> None:
         alerts = analyzer.energy_alerts(
             {"alarmProjectedKwh": 1390, "alarmBudgetKwh": 1100},
@@ -213,17 +222,54 @@ class AnalyzeEnergyObservabilityTest(unittest.TestCase):
                         "envoySiteLoadKw": 3.1,
                         "batteryCharging": True,
                         "batteryDischarging": False,
+                        "alarmProjectedKwh": 1390.0,
+                        "alarmBudgetKwh": 1100.0,
                     },
                     {"alerts": [{"title": "test"}], "states": ["battery_charging"]},
                 )
 
                 with sqlite3.connect(analyzer.DB_PATH) as db:
                     row = db.execute(
-                        "select envoy_production_kw, battery_charging, energy_alert_count, active_states_json "
+                        "select envoy_production_kw, battery_charging, alarm_budget_kwh, "
+                        "projection_alert_level, energy_alert_count, active_states_json "
                         "from energy_observations"
                     ).fetchone()
-                self.assertEqual(row[:3], (3.2, 1, 1))
-                self.assertEqual(json.loads(row[3]), ["battery_charging"])
+                self.assertEqual(row[:5], (3.2, 1, 1100.0, "critical", 1))
+                self.assertEqual(json.loads(row[5]), ["battery_charging"])
+            finally:
+                analyzer.DATA_DIR = original_data_dir
+                analyzer.DB_PATH = original_db_path
+
+    def test_persist_observation_migrates_existing_history_schema(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            original_data_dir = analyzer.DATA_DIR
+            original_db_path = analyzer.DB_PATH
+            analyzer.DATA_DIR = Path(tmp)
+            analyzer.DB_PATH = Path(tmp) / "smart_home.sqlite"
+            try:
+                with sqlite3.connect(analyzer.DB_PATH) as db:
+                    db.execute(
+                        "create table energy_observations (captured_at text primary key, "
+                        "envoy_production_kw real, envoy_site_load_kw real, envoy_grid_net_kw real, "
+                        "envoy_storage_kw real, battery_percent real, battery_charging integer, "
+                        "battery_discharging integer, sense_load_kw real, sense_solar_kw real, "
+                        "alarm_mtd_kwh real, alarm_projected_kwh real, energy_alert_count integer, "
+                        "active_states_json text not null)"
+                    )
+
+                analyzer.persist_observation(
+                    "2026-07-15T11:00:00-07:00",
+                    {"alarmProjectedKwh": 1250.0, "alarmBudgetKwh": 1100.0},
+                    {"alerts": []},
+                )
+
+                with sqlite3.connect(analyzer.DB_PATH) as db:
+                    columns = {row[1] for row in db.execute("pragma table_info(energy_observations)")}
+                    row = db.execute(
+                        "select alarm_budget_kwh, projection_alert_level from energy_observations"
+                    ).fetchone()
+                self.assertTrue({"alarm_budget_kwh", "projection_alert_level"} <= columns)
+                self.assertEqual(row, (1100.0, "warning"))
             finally:
                 analyzer.DATA_DIR = original_data_dir
                 analyzer.DB_PATH = original_db_path
