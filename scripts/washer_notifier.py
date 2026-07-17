@@ -138,6 +138,9 @@ def evolve_washer_state(
         state["lastCheckedAt"] = now_text
         state["primaryArmed"] = bool(cycle_active and legacy_armed)
         state["ventingArmed"] = bool(in_use and not cycle_active and legacy_armed)
+        if state["ventingArmed"]:
+            state["ventingStartedAt"] = state.get("ventingStartedAt") or state.get("cycleStartedAt") or now_text
+            state["ventingStaleAlertSent"] = bool(state.get("ventingStaleAlertSent", False))
         return state, actions
 
     if cycle_active:
@@ -145,6 +148,9 @@ def evolve_washer_state(
             state.update({
                 "primaryArmed": True,
                 "ventingArmed": False,
+                "ventingStartedAt": None,
+                "ventingStaleAlertSent": False,
+                "ventingStaleAlertedAt": None,
                 "washStartedAt": now_text,
                 "runningSamples": 1,
                 "awaitingUnload": False,
@@ -163,6 +169,9 @@ def evolve_washer_state(
             state.update({
                 "primaryArmed": False,
                 "ventingArmed": in_use,
+                "ventingStartedAt": now_text if in_use else None,
+                "ventingStaleAlertSent": False,
+                "ventingStaleAlertedAt": None,
                 "awaitingUnload": not bool(door_open),
                 "washFinishedAt": now_text,
                 "reminderSent": False,
@@ -180,6 +189,25 @@ def evolve_washer_state(
         actions.extend(["venting_on", "notify_venting"])
         if within_announcement_hours(now, config):
             actions.append("announce_venting")
+
+    if state.get("ventingArmed") and in_use and not cycle_active:
+        venting_started_at = parse_time(
+            state.get("ventingStartedAt") or state.get("washFinishedAt") or state.get("cycleStartedAt")
+        )
+        if not venting_started_at:
+            venting_started_at = now
+            state["ventingStartedAt"] = now_text
+        maximum_venting_hours = int(config.get("maximum_venting_hours", 8))
+        if (
+            maximum_venting_hours > 0
+            and not state.get("ventingStaleAlertSent")
+            and now >= venting_started_at + timedelta(hours=maximum_venting_hours)
+        ):
+            state["ventingStaleAlertSent"] = True
+            state["ventingStaleAlertedAt"] = now_text
+            actions.append("notify_venting_stale")
+            if within_announcement_hours(now, config):
+                actions.append("announce_venting_stale")
 
     finished_at = parse_time(state.get("washFinishedAt"))
     if state.get("awaitingUnload") and door_open:
@@ -432,6 +460,25 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
         elif action == "announce_venting" and config.get("homepod_enabled", False):
             message = str(config.get("venting_announcement", "Washer venting has finished. Turn off the laundry-room fan."))
             results.append({"action": action, **homepod_announcement(message, config)})
+        elif action == "notify_venting_stale":
+            hours = int(config.get("maximum_venting_hours", 8))
+            message = str(
+                config.get(
+                    "venting_stale_message",
+                    f"Washer still reports venting after {hours} hours. Check the washer and turn off the laundry-room fan if appropriate.",
+                )
+            )
+            title = str(config.get("venting_stale_title", "Check Washer Venting"))
+            results.append({"action": action, **mac_notification(message, title)})
+        elif action == "announce_venting_stale" and config.get("homepod_enabled", False):
+            hours = int(config.get("maximum_venting_hours", 8))
+            message = str(
+                config.get(
+                    "venting_stale_announcement",
+                    f"Washer still reports venting after {hours} hours. Check the washer and turn off the laundry-room fan if appropriate.",
+                )
+            )
+            results.append({"action": action, **homepod_announcement(message, config)})
     return results
 
 
@@ -449,6 +496,7 @@ def write_report(payload: dict[str, Any], report_path: Path, appliance_name: str
         f"- {appliance_name} door open: `{current.get('doorOpen')}`",
         f"- Waiting to be unloaded: `{state.get('awaitingUnload', False)}`",
         f"- Waiting for venting completion: `{state.get('ventingArmed', False)}`",
+        f"- Stale venting alert sent: `{state.get('ventingStaleAlertSent', False)}`",
         f"- Completed cycles observed: `{state.get('completedCycles', 0)}`",
         f"- Power fallback: `shadow` (collecting labeled samples; not allowed to alert yet)",
         "",

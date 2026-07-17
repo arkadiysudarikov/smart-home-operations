@@ -24,6 +24,7 @@ def config() -> dict:
         "minimum_cycle_minutes": 10,
         "minimum_running_samples": 2,
         "reminder_minutes": 20,
+        "maximum_venting_hours": 8,
         "pulse_seconds": 120,
         "announcement_start_hour": 8,
         "announcement_end_hour": 21,
@@ -183,6 +184,84 @@ class WasherNotifierTest(unittest.TestCase):
         )
         self.assertEqual(actions, ["venting_on", "notify_venting", "announce_venting"])
         self.assertFalse(evolved["ventingArmed"])
+
+    def test_stale_venting_alerts_once_without_claiming_completion(self) -> None:
+        now = datetime(2026, 7, 16, 8, 0, tzinfo=TZ)
+        state = {
+            "lastCycleActive": False,
+            "lastInUse": True,
+            "primaryArmed": False,
+            "ventingArmed": True,
+            "ventingStartedAt": (now - timedelta(hours=9)).isoformat(),
+            "ventingStaleAlertSent": False,
+        }
+        evolved, actions = washer_notifier.evolve_state(
+            state,
+            {"fresh": True, "inUse": True, "cycleActive": False, "doorOpen": False},
+            now,
+            {**config(), "finish_signal": "cycleActive"},
+        )
+        self.assertEqual(actions, ["notify_venting_stale", "announce_venting_stale"])
+        self.assertTrue(evolved["ventingArmed"])
+        self.assertTrue(evolved["ventingStaleAlertSent"])
+        self.assertNotIn("venting_on", actions)
+
+        _, repeated_actions = washer_notifier.evolve_state(
+            evolved,
+            {"fresh": True, "inUse": True, "cycleActive": False, "doorOpen": False},
+            now + timedelta(minutes=5),
+            {**config(), "finish_signal": "cycleActive"},
+        )
+        self.assertNotIn("notify_venting_stale", repeated_actions)
+
+    def test_stale_venting_alert_does_not_block_later_real_completion(self) -> None:
+        now = datetime(2026, 7, 16, 18, 0, tzinfo=TZ)
+        state = {
+            "lastCycleActive": False,
+            "lastInUse": True,
+            "ventingArmed": True,
+            "ventingStartedAt": (now - timedelta(hours=9)).isoformat(),
+            "ventingStaleAlertSent": True,
+        }
+        evolved, actions = washer_notifier.evolve_state(
+            state,
+            {"fresh": True, "inUse": False, "cycleActive": False, "doorOpen": False},
+            now,
+            {**config(), "finish_signal": "cycleActive"},
+        )
+        self.assertEqual(actions, ["venting_on", "notify_venting", "announce_venting"])
+        self.assertFalse(evolved["ventingArmed"])
+
+    def test_stale_venting_action_uses_check_message(self) -> None:
+        notifications: list[tuple[str, str]] = []
+
+        def notification(message: str, title: str) -> dict:
+            notifications.append((message, title))
+            return {"ok": True}
+
+        with mock.patch.object(washer_notifier, "mac_notification", side_effect=notification):
+            results = washer_notifier.execute_actions(
+                ["notify_venting_stale"],
+                {
+                    "accessory": "Washer",
+                    "finish_sensor_id": "washer-finished",
+                    "reminder_sensor_id": "washer-unload",
+                    "maximum_venting_hours": 8,
+                    "venting_stale_title": "Check Washer Venting",
+                    "venting_stale_message": "Washer still reports venting after 8 hours. Check the washer and turn off the laundry-room fan if appropriate.",
+                },
+                dry_run=False,
+            )
+        self.assertTrue(results[0]["ok"])
+        self.assertEqual(
+            notifications,
+            [
+                (
+                    "Washer still reports venting after 8 hours. Check the washer and turn off the laundry-room fan if appropriate.",
+                    "Check Washer Venting",
+                )
+            ],
+        )
 
     def test_reads_dryer_characteristics_from_snapshot(self) -> None:
         now = datetime(2026, 7, 15, 12, 0, tzinfo=TZ)

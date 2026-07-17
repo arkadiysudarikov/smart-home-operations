@@ -63,7 +63,10 @@ collect labeled power-fallback samples:
 The dryer notifier requires a fresh observed `InUse` cycle before it can alert.
 The washer uses SmartHQ `Cycle Status` turning off for the useful wash-finished
 alert, while the later `InUse` transition to off means after-wash venting has
-finished and triggers the laundry-room fan reminder. Each appliance sends one
+finished and triggers the laundry-room fan reminder. If SmartHQ keeps reporting
+venting beyond the configured eight-hour maximum, the notifier sends one
+separate check-the-washer warning without claiming that venting finished; the
+real completion edge remains armed. Each appliance sends one
 unload reminder after 20 minutes when the door remains closed and suppresses
 spoken announcements outside the configured daytime window. The spoken clip is
 generated locally and played on the configured HomePod through Music's AirPlay
