@@ -52,6 +52,28 @@ Run storage maintenance and alerts:
 ./scripts/generate_alerts.py
 ```
 
+Process SmartHQ washer or dryer state, send the completion/unload pulses, and
+collect labeled power-fallback samples:
+
+```sh
+./scripts/washer_notifier.py
+./scripts/washer_notifier.py --appliance dryer
+```
+
+The dryer notifier requires a fresh observed `InUse` cycle before it can alert.
+The washer uses SmartHQ `Cycle Status` turning off for the useful wash-finished
+alert, while the later `InUse` transition to off means after-wash venting has
+finished and triggers the laundry-room fan reminder. If SmartHQ keeps reporting
+venting beyond the configured eight-hour maximum, the notifier sends one
+separate check-the-washer warning without claiming that venting finished; the
+real completion edge remains armed. Each appliance sends one
+unload reminder after 20 minutes when the door remains closed and suppresses
+spoken announcements outside the configured daytime window. The spoken clip is
+generated locally and played on the configured HomePod through Music's AirPlay
+interface; the previous Music output selection is restored afterward. Sense/Envoy power
+data stays in `shadow` mode until multiple SmartHQ-labeled cycles have been
+reviewed; it cannot generate a fallback alert while shadowed.
+
 Capture a one-shot Sense Now packet and pair it with nearby Envoy readings:
 
 ```sh
@@ -200,6 +222,12 @@ The monitor writes:
 - `data/latest_characteristics.json`
 - `data/latest_display_awake.json`
 - `data/latest_display_awake_summary.json`
+- `data/latest_washer_notifier.json`
+- `data/latest_dryer_notifier.json`
+- `data/washer_notifier_state.json`
+- `data/dryer_notifier_state.json`
+- `data/washer_power_shadow.jsonl`
+- `data/dryer_power_shadow.jsonl`
 - `data/display_awake_events.jsonl`
 - `data/latest_alarm_com.json`
 - `data/alarm_com_automation_rules.json`
@@ -212,6 +240,8 @@ The monitor writes:
 - `data/snapshots/*.json`
 - `data/smart_home.sqlite`
 - `reports/latest.md`
+- `reports/washer_notifications.md`
+- `reports/dryer_notifications.md`
 - `reports/patterns.md`
 - `reports/energy_pairing.md`
 - `reports/chargepoint_pairing.md`

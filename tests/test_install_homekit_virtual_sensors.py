@@ -52,6 +52,11 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
                 "smart_home_sce_data_stale_v2": "⚠️ SCE STALE",
                 "smart_home_alarm_media_missing_v2": "⚠️ CLIPS MISSING",
                 "smart_home_ev_charging_v2": "🔋 Car Charging",
+                "smart_home_washer_finished_v1": "🧺 Wash Done",
+                "smart_home_washer_unload_v1": "🧺 Unload Washer",
+                "smart_home_washer_venting_v1": "🌀 Venting Done",
+                "smart_home_dryer_finished_v1": "🧺 Dryer Done",
+                "smart_home_dryer_unload_v1": "🧺 Unload Dryer",
             },
         )
 
@@ -84,6 +89,11 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             "smart_home_battery_charging_v2",
             "smart_home_battery_discharging_v2",
             "smart_home_ev_charging_v2",
+            "smart_home_washer_finished_v1",
+            "smart_home_washer_unload_v1",
+            "smart_home_washer_venting_v1",
+            "smart_home_dryer_finished_v1",
+            "smart_home_dryer_unload_v1",
         }
         for tile in tiles:
             visible_text = tile["name"].split(" ", 1)[1]
@@ -122,7 +132,7 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             if tile["id"] in charging_ids:
                 self.assertTrue(tile["name"].startswith("🔋 "), tile["name"])
 
-        approved_prefixes = {"⚠️", "☀️", "🔋", "⚙️", "🛡️", "📅", "🐠"}
+        approved_prefixes = {"⚠️", "☀️", "🔋", "🧺", "🌀", "⚙️", "🛡️", "📅", "🐠"}
         grouped_names = tile_names + action_names + [
             install_homekit_virtual_sensors.BUBBLER_NAME,
             f"{install_homekit_virtual_sensors.CALENDAR_PREFIX}Automation",
@@ -194,6 +204,24 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             self.assertEqual(platform["platform"], "HomebridgeDummy")
             self.assertEqual(platform["accessories"][0]["name"], "Test Tile")
             self.assertTrue(any(backup_dir.iterdir()))
+
+    def test_virtual_accessories_support_motion_sensors(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "sources.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "homekit_virtual_sensors": {
+                            "accessories": [
+                                {"id": "smart_home_test", "name": "Test", "sensor_type": "MotionSensor"}
+                            ]
+                        }
+                    }
+                )
+            )
+            with mock.patch.object(install_homekit_virtual_sensors, "CONFIG_PATH", config_path):
+                accessories = install_homekit_virtual_sensors.virtual_accessories()
+            self.assertEqual(accessories[0]["sensor"]["type"], "MotionSensor")
 
     def test_install_removes_retired_managed_tiles_and_preserves_unmanaged_accessories(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

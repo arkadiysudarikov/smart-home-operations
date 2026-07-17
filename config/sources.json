@@ -160,6 +160,58 @@
     "alarm_child_bridge_port": 52230,
     "office_tahoma_child_bridge_port": 35854
   },
+  "washer_notifications": {
+    "enabled": true,
+    "accessory": "Washer",
+    "finish_signal": "cycleActive",
+    "finish_title": "Wash Finished",
+    "finish_message": "The wash has finished. Clothes are ready.",
+    "announcement_message": "The wash has finished. Clothes are ready.",
+    "venting_title": "Venting Finished",
+    "venting_message": "Washer venting has finished. Turn off the laundry-room fan.",
+    "venting_announcement": "Washer venting has finished. Turn off the laundry-room fan.",
+    "maximum_venting_hours": 8,
+    "venting_stale_title": "Check Washer Venting",
+    "venting_stale_message": "Washer still reports venting after 8 hours. Check the washer and turn off the laundry-room fan if appropriate.",
+    "venting_stale_announcement": "Washer still reports venting after 8 hours. Check the washer and turn off the laundry-room fan if appropriate.",
+    "max_snapshot_age_minutes": 10,
+    "minimum_cycle_minutes": 10,
+    "minimum_running_samples": 2,
+    "reminder_minutes": 20,
+    "pulse_seconds": 120,
+    "announcement_start_hour": 8,
+    "announcement_end_hour": 21,
+    "homepod_enabled": true,
+    "homepod_targets": ["Primary HomePod"],
+    "homepod_volume": 45,
+    "homepod_clip_seconds": 5,
+    "webhook_url": "http://127.0.0.1:63743",
+    "finish_sensor_id": "smart_home_washer_finished_v1",
+    "reminder_sensor_id": "smart_home_washer_unload_v1",
+    "venting_sensor_id": "smart_home_washer_venting_v1",
+    "power_fallback_mode": "shadow",
+    "power_fallback_minimum_training_cycles": 3
+  },
+  "dryer_notifications": {
+    "enabled": true,
+    "accessory": "Dryer",
+    "max_snapshot_age_minutes": 10,
+    "minimum_cycle_minutes": 10,
+    "minimum_running_samples": 2,
+    "reminder_minutes": 20,
+    "pulse_seconds": 120,
+    "announcement_start_hour": 8,
+    "announcement_end_hour": 21,
+    "homepod_enabled": true,
+    "homepod_targets": ["Primary HomePod"],
+    "homepod_volume": 45,
+    "homepod_clip_seconds": 5,
+    "webhook_url": "http://127.0.0.1:63743",
+    "finish_sensor_id": "smart_home_dryer_finished_v1",
+    "reminder_sensor_id": "smart_home_dryer_unload_v1",
+    "power_fallback_mode": "shadow",
+    "power_fallback_minimum_training_cycles": 3
+  },
   "homekit_virtual_sensors": {
     "enabled": true,
     "webhook_url": "http://127.0.0.1:63743",
@@ -282,6 +334,36 @@
         "id": "smart_home_ev_charging_v2",
         "name": "🔋 Car Charging",
         "state_titles": ["EV charging"]
+      },
+      {
+        "id": "smart_home_washer_finished_v1",
+        "name": "🧺 Wash Done",
+        "sensor_type": "MotionSensor",
+        "externally_managed": true
+      },
+      {
+        "id": "smart_home_washer_unload_v1",
+        "name": "🧺 Unload Washer",
+        "sensor_type": "MotionSensor",
+        "externally_managed": true
+      },
+      {
+        "id": "smart_home_washer_venting_v1",
+        "name": "🌀 Venting Done",
+        "sensor_type": "MotionSensor",
+        "externally_managed": true
+      },
+      {
+        "id": "smart_home_dryer_finished_v1",
+        "name": "🧺 Dryer Done",
+        "sensor_type": "MotionSensor",
+        "externally_managed": true
+      },
+      {
+        "id": "smart_home_dryer_unload_v1",
+        "name": "🧺 Unload Dryer",
+        "sensor_type": "MotionSensor",
+        "externally_managed": true
       }
     ]
   }
