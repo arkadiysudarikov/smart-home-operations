@@ -28,6 +28,7 @@ REPORT_DIR = ROOT / "reports"
 LOG_DIR = ROOT / "logs"
 SCE_REFRESH_STATUS_PATH = DATA_DIR / "latest_sce_refresh.json"
 SCE_API_STATUS_PATH = DATA_DIR / "latest_sce_api.json"
+SCE_ACCOUNT_URL = "https://www.sce.com/my-account"
 ENERGY_RECONCILE_STATUS_PATH = DATA_DIR / "latest_energy_reconcile.json"
 GATE_TEST_STATUS_PATH = DATA_DIR / "latest_alarm_gate_test.json"
 ALARM_CACHE_REFRESH_STATUS_PATH = DATA_DIR / "latest_alarm_cache_refresh.json"
@@ -1305,6 +1306,8 @@ def render_energy_page(history_days: int = 7) -> bytes:
     projection_stabilization = status.get("projectionAlertStabilization") or {}
     projection_delivery = status.get("projectionAlertDelivery") or {}
     sources = observability.get("sourceStatus") or status.get("sourceStatus") or status.get("operationalSourceStatus") or []
+    sce_api = status.get("sce") or {}
+    sce_source = next((item for item in sources if item.get("source") == "SCE"), {})
     alerts = list(observability.get("alerts") or [])
     alert_titles = {str(item.get("title") or "") for item in alerts}
     for item in sources:
@@ -1323,6 +1326,24 @@ def render_energy_page(history_days: int = 7) -> bytes:
         )
         alert_titles.add(title)
     refresh = status.get("refresh") or {}
+    sce_recovery_markup = ""
+    if str(sce_source.get("status") or "").lower() in {"stale", "missing", "failed"}:
+        required_action = sce_api.get("requiredAction") or (
+            "Download a current SCE Green Button CSV/XML export. Then click Refresh SCE; "
+            "the monitor scans Downloads and imports the new file automatically."
+        )
+        download_page = sce_api.get("downloadPage") or SCE_ACCOUNT_URL
+        sce_recovery_markup = (
+            "<section class='panel sce-recovery'><div>"
+            "<h2>SCE intervals need a browser export</h2>"
+            f"<p>{html_escape(required_action)}</p>"
+            "<p class='muted'>Refresh SCE scans Downloads and imports the new file automatically.</p>"
+            f"<p class='muted'>Automatic API status: {html_escape(sce_api.get('status') or 'unavailable')} · "
+            f"API coverage through {html_escape(sce_api.get('coverageEnd') or 'unknown')}.</p>"
+            "</div>"
+            f"<a class='button-link' href='{html_escape(download_page)}' target='_blank' rel='noopener'>Open SCE account</a>"
+            "</section>"
+        )
     peak_events = observability.get("peakEvents") or []
     semantics = quality.get("sourceSemantics") or []
     coverage_fields = (
@@ -1653,6 +1674,7 @@ def render_energy_page(history_days: int = 7) -> bytes:
 main {{ width:min(1180px,100%);margin:auto;padding:28px 20px 52px }} h1 {{ margin:0;font-size:28px }} h2 {{ margin:0 0 8px;font-size:18px }} .muted,small {{ color:var(--muted) }}
 .top,.actions,.ranges {{ display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap }} .actions {{ justify-content:flex-start;margin:18px 0 }}
 button,.range {{ border:1px solid var(--accent);border-radius:8px;padding:8px 11px;background:var(--accent);color:white;text-decoration:none;cursor:pointer }} button.secondary,.range {{ background:var(--panel);color:var(--accent) }} .range.active {{ background:var(--accent);color:white }}
+.button-link {{ border:1px solid var(--accent);border-radius:8px;padding:8px 11px;background:var(--accent);color:white;text-decoration:none;white-space:nowrap }} .sce-recovery {{ display:flex;align-items:center;justify-content:space-between;gap:18px;margin:14px 0;border-left:4px solid #b45309 }} .sce-recovery p {{ margin:4px 0 0 }}
 .range-overview {{ margin:18px 0 }} .range-heading {{ display:flex;align-items:end;justify-content:space-between;gap:10px;margin-bottom:9px;flex-wrap:wrap }} .range-heading h2 {{ font-size:21px;margin:0 }}
 .range-cards {{ display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px }} .range-card {{ border-top:3px solid var(--accent) }}
 .cards {{ display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:10px 0 18px }} .card,.panel {{ background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px }} .grid>.panel {{ min-width:0;overflow-x:auto }}
@@ -1673,6 +1695,7 @@ table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bott
 <h2>Live now</h2>
 <section class='cards'>{card_markup}</section>
 <section class='panel alert-panel'><h2>Active energy alerts</h2>{alert_markup}</section>
+{sce_recovery_markup}
 <section class='grid projection-grid'><div class='panel'>{projection_chart}</div><div class='panel'><h2>Projection alert history</h2><p class='muted'>First appearance, severity changes, and clears within the selected range.</p>{stabilization_markup}<h3>Raw severity history</h3><ul class='transition-list'>{transition_markup}</ul></div></section>
 <div class='actions'><button data-action='/action/reconcile-energy' data-status-key='reconcileEnergy'>Refresh all</button><button class='secondary' data-action='/action/refresh-sce' data-status-key='refreshSce'>Refresh SCE</button><button class='secondary' data-action='/action/refresh-alarm-cache' data-status-key='alarmRefresh'>Refresh Alarm.com</button><span id='result' class='muted' role='status' aria-live='polite'></span></div>
 <p class='muted'>{html_escape(range_summary)}</p>
@@ -1863,6 +1886,15 @@ def latest_sce_api_status() -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def sce_api_is_usable(payload: dict[str, Any]) -> bool:
+    return payload.get("ok") is True or payload.get("status") in {
+        "utilityapi_payment_required",
+        "utilityapi_no_intervals",
+        "utilityapi_coverage_stale",
+        "registration_required",
+    }
+
+
 def energy_refresh_summary() -> dict[str, Any]:
     latest = latest_energy_refresh_status()
     return {
@@ -1914,14 +1946,16 @@ def run_sce_refresh_background(started_at: str) -> None:
         refresh_summary = energy_refresh_summary()
         ok = bool(
             result["ok"]
-            and sce_api.get("ok")
+            and sce_api_is_usable(sce_api)
             and refresh_summary.get("energyRefreshOk") is not False
             and refresh_summary.get("energyRefreshStatus") != "interrupted"
         )
+        degraded = ok and sce_api.get("ok") is not True
         write_sce_refresh_status(
             {
                 "ok": ok,
-                "status": "complete" if ok else "failed",
+                "status": "degraded" if degraded else "complete" if ok else "failed",
+                "degraded": degraded,
                 "startedAt": started_at,
                 "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
                 "returncode": result["returncode"],
@@ -1938,6 +1972,8 @@ def run_sce_refresh_background(started_at: str) -> None:
                 "sceApiOk": sce_api.get("ok"),
                 "sceApiStatus": sce_api.get("status"),
                 "sceApiFinishedAt": sce_api.get("finishedAt") or sce_api.get("generatedAt"),
+                "requiredAction": sce_api.get("requiredAction"),
+                "downloadPage": sce_api.get("downloadPage"),
                 **refresh_summary,
             }
         )

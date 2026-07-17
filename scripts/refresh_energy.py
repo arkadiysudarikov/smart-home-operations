@@ -238,6 +238,7 @@ def is_fresh_sce_api_status(path: Path, max_status_age_seconds: int = FAST_SCE_M
         return payload.get("status") in {
             "utilityapi_payment_required",
             "utilityapi_no_intervals",
+            "utilityapi_coverage_stale",
             "registration_required",
         }
 

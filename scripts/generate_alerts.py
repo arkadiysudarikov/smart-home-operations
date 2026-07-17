@@ -912,6 +912,8 @@ def recommended_action(alert: dict[str, str]) -> str | None:
     if title == "SCE interval data is stale":
         if "utilityapi_payment_required" in detail:
             return "Skip paid UtilityAPI collection; import a fresh SCE Green Button export, or wait for a no-cost UtilityAPI collection entitlement, then run Refresh SCE again."
+        if "utilityapi_coverage_stale" in detail:
+            return "Open SCE Data Sharing and download a current Green Button CSV/XML export, then run Refresh SCE; the downloaded file will be discovered and imported automatically."
         return "Run Refresh SCE to download already-available UtilityAPI intervals. If the data stays outdated, import a fresh SCE Green Button export; paid UtilityAPI collection should stay off unless explicitly approved."
     if title == "Sense data is stale":
         return "Fix the Sense auth/live websocket issue first, then rerun the Sense trend capture so Sense-vs-Envoy reconciliation uses fresh data."
@@ -1759,8 +1761,11 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
         detail = item.get("detail")
         severity = item.get("severity", "warning")
         if title and detail:
-            if title == "SCE interval data is stale" and sce_api_status.get("status") == "utilityapi_payment_required":
-                detail = f"{detail} UtilityAPI historical collection status: `utilityapi_payment_required`."
+            if title == "SCE interval data is stale" and sce_api_status.get("status") in {
+                "utilityapi_payment_required",
+                "utilityapi_coverage_stale",
+            }:
+                detail = f"{detail} UtilityAPI refresh status: `{sce_api_status.get('status')}`."
             alerts.append({"severity": severity, "title": title, "detail": detail})
     for item in load_energy_observability().get("alerts") or []:
         title = item.get("title")

@@ -685,6 +685,17 @@ class GenerateAlertsTest(unittest.TestCase):
         self.assertIn("Skip paid UtilityAPI collection", action or "")
         self.assertIn("fresh SCE Green Button export", action or "")
 
+    def test_sce_stale_action_reports_browser_export_when_api_coverage_is_old(self) -> None:
+        action = generate_alerts.recommended_action(
+            {
+                "title": "SCE interval data is stale",
+                "detail": "UtilityAPI refresh status: `utilityapi_coverage_stale`.",
+            }
+        )
+
+        self.assertIn("Open SCE Data Sharing", action or "")
+        self.assertIn("discovered and imported automatically", action or "")
+
     def test_source_status_stale_sense_gets_dedicated_alert(self) -> None:
         self.patch_module(
             load_alarm_com=lambda: alarm_com_payload(activity_ok=True),

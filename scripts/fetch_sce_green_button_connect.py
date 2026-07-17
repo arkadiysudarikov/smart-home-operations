@@ -19,6 +19,7 @@ DATA_DIR = ROOT / "data"
 DOWNLOAD_DIR = DATA_DIR / "sce-downloads"
 STATUS_PATH = DATA_DIR / "latest_sce_api.json"
 UTILITYAPI_BASE_URL = "https://utilityapi.com/api/v2"
+SCE_ACCOUNT_URL = "https://www.sce.com/my-account"
 
 
 class NoUtilityApiIntervals(RuntimeError):
@@ -189,6 +190,31 @@ def coverage_age_hours(coverage_end: str | None) -> float | None:
     if parsed is None:
         return None
     return (datetime.now(timezone.utc).astimezone() - parsed.astimezone()).total_seconds() / 3600
+
+
+def utilityapi_download_status(result: dict[str, Any], stale_hours: float) -> dict[str, Any]:
+    age = result.get("coverageAgeHours")
+    stale = isinstance(age, (int, float)) and age >= stale_hours
+    payload: dict[str, Any] = {
+        "ok": None if stale else True,
+        "usable": True,
+        "status": "utilityapi_coverage_stale" if stale else "utilityapi_downloaded",
+    }
+    if stale:
+        payload.update(
+            {
+                "detail": (
+                    "UtilityAPI downloaded successfully, but the newest interval is still "
+                    f"{age:.1f} hours old. A newer SCE browser export is required."
+                ),
+                "requiredAction": (
+                    "Open SCE Data Sharing, download a current Green Button CSV/XML export, "
+                    "then run Refresh SCE. Downloads are discovered and imported automatically."
+                ),
+                "downloadPage": SCE_ACCOUNT_URL,
+            }
+        )
+    return payload
 
 
 def paged_get(url: str, api_token: str, collection_key: str) -> tuple[list[dict[str, Any]], list[str]]:
@@ -540,8 +566,10 @@ def main() -> int:
         path = result["path"]
         write_status(
             {
-                "ok": True,
-                "status": "utilityapi_downloaded",
+                **utilityapi_download_status(
+                    result,
+                    float(utilityapi_config.get("stale_hours") or 36),
+                ),
                 "startedAt": started_at,
                 "finishedAt": now(),
                 "file": str(path),
