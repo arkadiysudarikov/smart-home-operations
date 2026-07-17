@@ -147,6 +147,41 @@ class ActionServerTest(unittest.TestCase):
         self.assertIn("fetch_sce_green_button_connect.py", command[2])
         self.assertIn("refresh_energy.py --fast", command[2])
 
+    def test_stale_utilityapi_coverage_is_usable_but_degraded(self) -> None:
+        payload = {"ok": None, "status": "utilityapi_coverage_stale"}
+
+        self.assertTrue(action_server.sce_api_is_usable(payload))
+
+    def test_energy_page_explains_browser_export_recovery(self) -> None:
+        self.patch_module(
+            energy_status=lambda _days=7: {
+                "observability": {
+                    "generatedAt": "2026-07-17T08:00:00-07:00",
+                    "sourceStatus": [
+                        {
+                            "source": "SCE",
+                            "status": "stale",
+                            "detail": "2026-07-15T00:00:00-07:00",
+                            "ageHours": 56,
+                        }
+                    ],
+                },
+                "sce": {
+                    "status": "utilityapi_coverage_stale",
+                    "coverageEnd": "2026-06-16T00:00:00-07:00",
+                    "requiredAction": "Download a browser export, then run Refresh SCE.",
+                    "downloadPage": "https://www.sce.com/my-account",
+                },
+            }
+        )
+
+        page = action_server.render_energy_page().decode()
+
+        self.assertIn("SCE intervals need a browser export", page)
+        self.assertIn("scans Downloads and imports the new file automatically", page)
+        self.assertIn("https://www.sce.com/my-account", page)
+        self.assertIn("utilityapi_coverage_stale", page)
+
     def test_wait_for_energy_refresh_idle_returns_immediately_without_lock_pid(self) -> None:
         self.patch_module(read_refresh_lock_pid=lambda: None)
 

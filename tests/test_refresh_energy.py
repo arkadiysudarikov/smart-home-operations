@@ -126,6 +126,27 @@ class RefreshEnergyTest(unittest.TestCase):
             finally:
                 refresh_energy.DATA_DIR = original_data_dir
 
+    def test_recent_stale_coverage_status_is_retried_after_status_window(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            original_data_dir = refresh_energy.DATA_DIR
+            refresh_energy.DATA_DIR = Path(tmp)
+            try:
+                path = Path(tmp) / "latest_sce_api.json"
+                path.write_text(
+                    json.dumps(
+                        {
+                            "ok": None,
+                            "status": "utilityapi_coverage_stale",
+                            "finishedAt": datetime.now(timezone.utc).astimezone().isoformat(),
+                        }
+                    )
+                    + "\n"
+                )
+
+                self.assertTrue(refresh_energy.is_fresh_sce_api_status(path))
+            finally:
+                refresh_energy.DATA_DIR = original_data_dir
+
     def test_summarize_steps_counts_optional_failures_without_hiding_them(self) -> None:
         summary = refresh_energy.summarize_steps(
             [

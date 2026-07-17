@@ -206,7 +206,7 @@ class FetchSceGreenButtonConnectTest(unittest.TestCase):
         csv_path.write_text("start,end\n")
         self.patch_module(
             configured_request=lambda: (None, None),
-            configured_utilityapi=lambda: {"api_token": "token"},
+            configured_utilityapi=lambda: {"api_token": "token", "stale_hours": 36},
             fetch_with_auto_historical_collection=lambda _config: {
                 "path": csv_path,
                 "rowCount": 1,
@@ -228,10 +228,20 @@ class FetchSceGreenButtonConnectTest(unittest.TestCase):
         rc = fetch_sce.main()
 
         self.assertEqual(rc, 0)
-        self.assertEqual(statuses[-1]["ok"], True)
-        self.assertEqual(statuses[-1]["status"], "utilityapi_downloaded")
+        self.assertEqual(statuses[-1]["ok"], None)
+        self.assertEqual(statuses[-1]["status"], "utilityapi_coverage_stale")
+        self.assertTrue(statuses[-1]["usable"])
+        self.assertIn("Green Button CSV/XML export", statuses[-1]["requiredAction"])
         self.assertEqual(statuses[-1]["coverageEnd"], "2026-06-16T00:00:00-07:00")
         self.assertEqual(statuses[-1]["autoHistoricalCollection"]["status"], "payment_required")
+
+    def test_current_utilityapi_download_remains_successful(self) -> None:
+        status = fetch_sce.utilityapi_download_status({"coverageAgeHours": 12.0}, stale_hours=36)
+
+        self.assertTrue(status["ok"])
+        self.assertEqual(status["status"], "utilityapi_downloaded")
+        self.assertTrue(status["usable"])
+        self.assertNotIn("requiredAction", status)
 
 
 if __name__ == "__main__":
