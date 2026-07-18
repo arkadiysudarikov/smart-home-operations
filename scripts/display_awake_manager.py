@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import ipaddress
 import json
 import os
 import shlex
@@ -32,6 +33,7 @@ ENROLLMENT_PATH = DATA_DIR / "display_awake_enrollment.json"
 HOME_MAPPING_PATH = DATA_DIR / "display_awake_home_mapping.json"
 MODE_PATH = DATA_DIR / "display_awake_mode.json"
 OVERRIDE_PATH = DATA_DIR / "display_awake_override.json"
+UNIFI_OBSERVATIONS_CACHE_PATH = DATA_DIR / "display_awake_unifi_observations.json"
 
 SENSITIVE_KEYS = {
     "ap_mac",
@@ -52,7 +54,11 @@ idle_ns=$(/usr/sbin/ioreg -r -c IOHIDSystem -l 2>/dev/null | /usr/bin/awk -F'= '
 locked=$(/usr/sbin/ioreg -n Root -d1 2>/dev/null | /usr/bin/awk -F'= ' '/"CGSSessionScreenIsLocked"/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}')
 power=$(/usr/bin/pmset -g batt 2>/dev/null | /usr/bin/head -1)
 lid=$(/usr/sbin/ioreg -r -k AppleClamshellState -d1 2>/dev/null | /usr/bin/awk -F'= ' '/"AppleClamshellState"/ {gsub(/[[:space:]]/, "", $2); print tolower($2); exit}')
-wifi_mac=$(/usr/sbin/networksetup -listallhardwareports 2>/dev/null | /usr/bin/awk '/Hardware Port: (Wi-Fi|AirPort)/ {wifi=1; next} wifi && /Ethernet Address:/ {print tolower($3); exit}')
+wifi_device=$(/usr/sbin/networksetup -listallhardwareports 2>/dev/null | /usr/bin/awk '/Hardware Port: (Wi-Fi|AirPort)/ {wifi=1; next} wifi && /Device:/ {print $2; exit}')
+wifi_mac=$(/sbin/ifconfig "$wifi_device" 2>/dev/null | /usr/bin/awk '/ether / {print tolower($2); exit}')
+if [ -z "$wifi_mac" ]; then
+  wifi_mac=$(/usr/sbin/networksetup -listallhardwareports 2>/dev/null | /usr/bin/awk '/Hardware Port: (Wi-Fi|AirPort)/ {wifi=1; next} wifi && /Ethernet Address:/ {print tolower($3); exit}')
+fi
 native_assertion=$(/usr/bin/pmset -g assertions 2>/dev/null | /usr/bin/awk '/PreventUserIdleDisplaySleep/ {print $2; exit}')
 /usr/bin/printf 'consoleUser=%s\nidleNs=%s\nlocked=%s\npower=%s\nlidClosed=%s\nwifiMac=%s\nnativeDisplayAssertion=%s\n' "$console_user" "$idle_ns" "$locked" "$power" "$lid" "$wifi_mac" "$native_assertion"
 '''.strip()
@@ -421,6 +427,39 @@ def presence_observations(
     return observations
 
 
+def cached_presence_observations(
+    path: Path,
+    *,
+    now: float,
+    max_age_seconds: int,
+    fresh_seconds: int,
+) -> tuple[dict[str, dict[str, Any]], float | None]:
+    payload = read_json(path)
+    captured_at = payload.get("capturedAtEpoch")
+    observations = payload.get("observations")
+    if not isinstance(captured_at, (int, float)) or not isinstance(observations, dict):
+        return {}, None
+    cache_age = max(0.0, now - float(captured_at))
+    if cache_age > max(0, max_age_seconds):
+        return {}, cache_age
+    cached: dict[str, dict[str, Any]] = {}
+    for kind in ("watch", "iphone"):
+        source = observations.get(kind) if isinstance(observations.get(kind), dict) else {}
+        prior_age = source.get("ageSeconds")
+        age = max(0.0, float(prior_age) + cache_age) if isinstance(prior_age, (int, float)) else None
+        cached[kind] = {
+            "enrolled": source.get("enrolled") is True,
+            "online": source.get("online") is True,
+            "fresh": bool(source.get("fresh") and age is not None and age <= fresh_seconds),
+            "ageSeconds": round(age) if age is not None else None,
+            "accessPoint": source.get("accessPoint"),
+            "room": source.get("room"),
+            "cached": True,
+            "cacheAgeSeconds": round(cache_age),
+        }
+    return cached, cache_age
+
+
 class PresenceTracker:
     def __init__(self, *, confirmation_polls: int, grace_seconds: int, state: dict[str, Any] | None = None) -> None:
         self.confirmation_polls = max(1, confirmation_polls)
@@ -430,22 +469,84 @@ class PresenceTracker:
     def update(self, observations: dict[str, dict[str, Any]], now: float) -> dict[str, Any]:
         watch = observations.get("watch") or {}
         iphone = observations.get("iphone") or {}
-        selected_kind = "watch" if watch.get("fresh") else "iphone" if iphone.get("fresh") else None
-        selected = observations.get(selected_kind) if selected_kind else None
-        candidate_room = selected.get("room") if isinstance(selected, dict) else None
+        iphone_fresh = iphone.get("fresh") is True
+        watch_fresh = watch.get("fresh") is True
+        iphone_room = str(iphone.get("room")) if iphone_fresh and iphone.get("room") else None
+        watch_room = str(watch.get("room")) if watch_fresh and watch.get("room") else None
+        prior_rooms = self.state.get("deviceRooms") if isinstance(self.state.get("deviceRooms"), dict) else {}
+        prior_iphone = prior_rooms.get("iphone")
+        prior_watch = prior_rooms.get("watch")
+        iphone_moved = bool(iphone_room and prior_iphone and iphone_room != prior_iphone)
+        watch_moved = bool(watch_room and prior_watch and watch_room != prior_watch)
+        prior_agreement = bool(prior_iphone and prior_iphone == prior_watch)
+        carried_source = self.state.get("carriedSource")
+        if carried_source not in {"iphone", "watch"}:
+            carried_source = None
+
+        # Charging devices are usually stationary. Once the devices have been
+        # observed together, whichever one leaves that shared floor becomes
+        # the carried signal. Agreement resets to the iPhone default.
+        candidate_source: str | None = None
+        candidate_room: str | None = None
+        if iphone_room and watch_room:
+            if iphone_room == watch_room:
+                carried_source = None
+                self.state["lastAgreementRoom"] = iphone_room
+                candidate_source, candidate_room = "iphone", iphone_room
+            else:
+                if iphone_moved != watch_moved:
+                    carried_source = "iphone" if iphone_moved else "watch"
+                elif carried_source not in {"iphone", "watch"}:
+                    carried_source = "iphone"
+                candidate_source = carried_source
+                candidate_room = iphone_room if carried_source == "iphone" else watch_room
+        elif iphone_room:
+            if carried_source == "watch":
+                candidate_source = candidate_room = None
+            else:
+                if prior_agreement and iphone_moved:
+                    carried_source = "iphone"
+                candidate_source, candidate_room = "iphone", iphone_room
+                carried_source = carried_source or "iphone"
+        elif watch_room:
+            if carried_source == "iphone":
+                candidate_source = candidate_room = None
+            elif carried_source == "watch" or (prior_agreement and watch_moved):
+                carried_source = "watch"
+                candidate_source, candidate_room = "watch", watch_room
+
+        selected_kind = candidate_source
+        if selected_kind is None and carried_source is None:
+            selected_kind = "iphone" if iphone_fresh else "watch" if watch_fresh else None
         confirmed = self.state.get("confirmedRoom")
 
         if candidate_room:
             if candidate_room == confirmed:
-                self.state.update({"pendingRoom": None, "pendingCount": 0, "lastConfirmedAt": now})
+                self.state.update(
+                    {
+                        "pendingRoom": None,
+                        "pendingSource": None,
+                        "pendingCount": 0,
+                        "lastConfirmedAt": now,
+                        "confirmedSource": candidate_source,
+                    }
+                )
             else:
-                pending_count = int(self.state.get("pendingCount") or 0) + 1 if self.state.get("pendingRoom") == candidate_room else 1
-                self.state.update({"pendingRoom": candidate_room, "pendingCount": pending_count})
+                same_candidate = (
+                    self.state.get("pendingRoom") == candidate_room
+                    and self.state.get("pendingSource") == candidate_source
+                )
+                pending_count = int(self.state.get("pendingCount") or 0) + 1 if same_candidate else 1
+                self.state.update(
+                    {"pendingRoom": candidate_room, "pendingSource": candidate_source, "pendingCount": pending_count}
+                )
                 if pending_count >= self.confirmation_polls:
                     self.state.update(
                         {
                             "confirmedRoom": candidate_room,
+                            "confirmedSource": candidate_source,
                             "pendingRoom": None,
+                            "pendingSource": None,
                             "pendingCount": 0,
                             "lastConfirmedAt": now,
                         }
@@ -453,22 +554,58 @@ class PresenceTracker:
         else:
             last_confirmed = self.state.get("lastConfirmedAt")
             if not isinstance(last_confirmed, (int, float)) or now - float(last_confirmed) > self.grace_seconds:
-                self.state.update({"confirmedRoom": None, "pendingRoom": None, "pendingCount": 0})
+                self.state.update(
+                    {
+                        "confirmedRoom": None,
+                        "confirmedSource": None,
+                        "pendingRoom": None,
+                        "pendingSource": None,
+                        "pendingCount": 0,
+                    }
+                )
 
+        device_rooms = dict(prior_rooms)
+        if iphone_room:
+            device_rooms["iphone"] = iphone_room
+        if watch_room:
+            device_rooms["watch"] = watch_room
+        self.state["deviceRooms"] = device_rooms
+        self.state["carriedSource"] = carried_source
+
+        last_confirmed = self.state.get("lastConfirmedAt")
+        grace_active = bool(
+            candidate_room is None
+            and self.state.get("confirmedRoom")
+            and isinstance(last_confirmed, (int, float))
+            and now - float(last_confirmed) <= self.grace_seconds
+        )
+        confirmed_source = self.state.get("confirmedSource")
+        if confirmed_source not in {"iphone", "watch"} and self.state.get("confirmedRoom"):
+            confirmed_source = "iphone"
+            self.state["confirmedSource"] = confirmed_source
+        zone_source = (
+            f"{confirmed_source}_grace"
+            if grace_active and confirmed_source
+            else "watch_carried"
+            if confirmed_source == "watch"
+            else "iphone"
+            if confirmed_source == "iphone"
+            else None
+        )
         self.state["source"] = selected_kind
+        self.state["zoneSource"] = zone_source
         self.state["homePresent"] = bool(selected_kind)
         return {
             "homePresent": bool(selected_kind),
             "source": selected_kind,
+            "confirmedSource": confirmed_source,
+            "carriedSource": carried_source,
+            "zoneSource": zone_source,
             "confirmedRoom": self.state.get("confirmedRoom"),
             "pendingRoom": self.state.get("pendingRoom"),
+            "pendingSource": self.state.get("pendingSource"),
             "pendingCount": int(self.state.get("pendingCount") or 0),
-            "graceActive": bool(
-                selected_kind is None
-                and self.state.get("confirmedRoom")
-                and isinstance(self.state.get("lastConfirmedAt"), (int, float))
-                and now - float(self.state["lastConfirmedAt"]) <= self.grace_seconds
-            ),
+            "graceActive": grace_active,
         }
 
 
@@ -500,6 +637,44 @@ def parse_probe_output(output: str) -> dict[str, Any]:
     }
 
 
+def normalized_hostname(value: Any) -> str:
+    hostname = str(value or "").strip().lower().rstrip(".")
+    for suffix in (".localdomain", ".local"):
+        if hostname.endswith(suffix):
+            hostname = hostname[: -len(suffix)]
+            break
+    return hostname
+
+
+def target_with_live_unifi_host(target: dict[str, Any], clients: list[dict[str, Any]]) -> dict[str, Any]:
+    if target.get("host_source") != "unifi" or target.get("local"):
+        return target
+    configured_host = str(target.get("host") or "")
+    wanted = normalized_hostname(configured_host)
+    if not wanted:
+        return target
+    for client in clients:
+        names = {
+            normalized_hostname(client.get(key))
+            for key in ("display_name", "hostname", "name")
+            if client.get(key)
+        }
+        if wanted not in names or str(client.get("status") or "online").lower() != "online":
+            continue
+        address = client.get("ip") or client.get("ip_address")
+        try:
+            ipaddress.ip_address(str(address))
+        except ValueError:
+            continue
+        resolved = dict(target)
+        resolved["host"] = str(address)
+        resolved["host_key_alias"] = str(target.get("host_key_alias") or configured_host)
+        resolved["configured_host"] = configured_host
+        resolved["probe_host_source"] = "unifi"
+        return resolved
+    return target
+
+
 def probe_target(target: dict[str, Any], *, connect_timeout: int = 5) -> dict[str, Any]:
     if target.get("local"):
         command = ["/bin/zsh", "-lc", PROBE_SCRIPT]
@@ -510,11 +685,10 @@ def probe_target(target: dict[str, Any], *, connect_timeout: int = 5) -> dict[st
             "BatchMode=yes",
             "-o",
             f"ConnectTimeout={connect_timeout}",
-            str(target["host"]),
-            "/bin/zsh",
-            "-lc",
-            shlex.quote(PROBE_SCRIPT),
         ]
+        if target.get("host_key_alias"):
+            command.extend(["-o", f"HostKeyAlias={target['host_key_alias']}"])
+        command.extend([str(target["host"]), "/bin/zsh", "-lc", shlex.quote(PROBE_SCRIPT)])
     try:
         proc = subprocess.run(command, text=True, capture_output=True, timeout=connect_timeout + 8, check=False)
     except Exception as exc:
@@ -579,6 +753,23 @@ def dynamic_room_for_probe(
     return room_mapping.get(alias or "")
 
 
+def zone_for_target(
+    target: dict[str, Any],
+    probe: dict[str, Any],
+    clients: list[dict[str, Any]],
+    aliases: dict[str, str],
+    room_mapping: dict[str, str],
+    presence_room: str | None,
+) -> tuple[str | None, str, str | None]:
+    if not target.get("dynamic_room"):
+        configured = str(target.get("zone") or target.get("room") or "") or None
+        return configured, "configured", None
+    unifi_zone = dynamic_room_for_probe(probe, clients, aliases, room_mapping)
+    if target.get("dynamic_zone_source") == "presence" and presence_room:
+        return presence_room, "effective_presence", unifi_zone
+    return unifi_zone, "unifi_client", unifi_zone
+
+
 def light_on_for_target(
     target_id: str,
     lights: list[dict[str, Any]],
@@ -637,11 +828,30 @@ def read_mode(config: dict[str, Any], path: Path = MODE_PATH) -> str:
     return str(mode) if mode in {"shadow", "enforce"} else str(config.get("default_mode") or "shadow")
 
 
-def write_mode(mode: str, path: Path = MODE_PATH) -> dict[str, Any]:
+def read_enforce_targets(path: Path = MODE_PATH) -> set[str] | None:
+    targets = read_json(path).get("enforceTargets")
+    if not isinstance(targets, list):
+        return None
+    return {str(target) for target in targets if target}
+
+
+def enforcement_enabled_for_target(mode: str, target_id: str, enforce_targets: set[str] | None) -> bool:
+    return mode == "enforce" and (enforce_targets is None or target_id in enforce_targets)
+
+
+def write_mode(
+    mode: str,
+    path: Path = MODE_PATH,
+    *,
+    enforce_targets: list[str] | None = None,
+) -> dict[str, Any]:
     if mode not in {"shadow", "enforce"}:
         raise ValueError("mode must be shadow or enforce")
-    write_private_json(path, {"mode": mode, "updatedAt": iso_now()})
-    return {"ok": True, "mode": mode, "path": str(path)}
+    payload: dict[str, Any] = {"mode": mode, "updatedAt": iso_now()}
+    if mode == "enforce" and enforce_targets is not None:
+        payload["enforceTargets"] = sorted(set(enforce_targets))
+    write_private_json(path, payload)
+    return {"ok": True, **payload, "path": str(path)}
 
 
 def read_override(path: Path = OVERRIDE_PATH) -> bool:
@@ -668,7 +878,10 @@ class LeaseManager:
         caffeinate = ["/usr/bin/caffeinate", "-d", "-t", str(self.lease_seconds)]
         if target.get("local"):
             return caffeinate
-        return ["/usr/bin/ssh", "-o", "BatchMode=yes", str(target["host"]), *caffeinate]
+        command = ["/usr/bin/ssh", "-o", "BatchMode=yes"]
+        if target.get("host_key_alias"):
+            command.extend(["-o", f"HostKeyAlias={target['host_key_alias']}"])
+        return [*command, str(target["host"]), *caffeinate]
 
     def _reap(self, target_id: str) -> None:
         self.processes[target_id] = [process for process in self.processes.get(target_id, []) if process.poll() is None]
@@ -716,6 +929,9 @@ def event_state(status: dict[str, Any]) -> dict[str, Any]:
         "presence": {
             "homePresent": presence.get("homePresent"),
             "source": presence.get("source"),
+            "confirmedSource": presence.get("confirmedSource"),
+            "carriedSource": presence.get("carriedSource"),
+            "zoneSource": presence.get("zoneSource"),
             "confirmedRoom": presence.get("confirmedRoom"),
             "pendingRoom": presence.get("pendingRoom"),
             "graceActive": presence.get("graceActive"),
@@ -758,28 +974,58 @@ class DisplayAwakeManager:
     def cycle(self, *, now: float | None = None) -> dict[str, Any]:
         timestamp = time.time() if now is None else now
         mode = read_mode(self.config)
+        enforce_targets = read_enforce_targets() if mode == "enforce" else None
         enrollment = load_enrollment()
         room_mapping = load_room_mapping(self.config)
         clients: list[dict[str, Any]] = []
         aliases: dict[str, str] = {}
         unifi_error: str | None = None
+        unifi_cache_used = False
+        unifi_cache_age: float | None = None
         try:
             clients, aliases = query_unifi_clients()
         except Exception as exc:
             unifi_error = type(exc).__name__
 
-        observations = presence_observations(
-            clients,
-            aliases,
-            enrollment,
-            room_mapping,
-            now=timestamp,
-            fresh_seconds=int(self.config.get("presence_fresh_seconds") or 90),
-        )
+        fresh_seconds = int(self.config.get("presence_fresh_seconds") or 90)
+        if unifi_error:
+            observations, unifi_cache_age = cached_presence_observations(
+                UNIFI_OBSERVATIONS_CACHE_PATH,
+                now=timestamp,
+                max_age_seconds=int(self.config.get("unifi_observation_cache_seconds") or 120),
+                fresh_seconds=fresh_seconds,
+            )
+            unifi_cache_used = bool(observations)
+        else:
+            observations = presence_observations(
+                clients,
+                aliases,
+                enrollment,
+                room_mapping,
+                now=timestamp,
+                fresh_seconds=fresh_seconds,
+            )
+            write_private_json(
+                UNIFI_OBSERVATIONS_CACHE_PATH,
+                {"version": 1, "capturedAtEpoch": timestamp, "observations": observations},
+            )
+        if not observations:
+            observations = presence_observations(
+                [],
+                {},
+                enrollment,
+                room_mapping,
+                now=timestamp,
+                fresh_seconds=fresh_seconds,
+            )
         presence = self.tracker.update(observations, timestamp)
         write_private_json(DATA_DIR / "display_awake_presence_state.json", self.tracker.state)
 
-        targets = [item for item in self.config.get("targets", []) if isinstance(item, dict) and item.get("id")]
+        previous = read_json(STATUS_PATH)
+        configured_targets = [
+            item for item in self.config.get("targets", []) if isinstance(item, dict) and item.get("id")
+        ]
+        targets = [target_with_live_unifi_host(item, clients) for item in configured_targets]
         probes = probe_targets(targets, connect_timeout=int(self.config.get("ssh_connect_timeout_seconds") or 5))
         lights = [item for item in self.config.get("lights", []) if isinstance(item, dict)]
         light_states = read_light_states(lights)
@@ -788,32 +1034,51 @@ class DisplayAwakeManager:
         for target in targets:
             target_id = str(target["id"])
             probe = probes.get(target_id, {"reachable": False, "error": "probe missing"})
-            room = (
-                dynamic_room_for_probe(probe, clients, aliases, room_mapping)
-                if target.get("dynamic_room")
-                else str(target.get("room") or "") or None
+            zone, zone_source, observed_unifi_zone = zone_for_target(
+                target,
+                probe,
+                clients,
+                aliases,
+                room_mapping,
+                presence.get("confirmedRoom"),
             )
+            zone_cached = False
+            if target.get("dynamic_room") and zone is None and unifi_cache_used:
+                prior_target = (previous.get("targets") or {}).get(target_id)
+                if isinstance(prior_target, dict) and prior_target.get("zone"):
+                    zone = str(prior_target["zone"])
+                    zone_source = "cached"
+                    observed_unifi_zone = prior_target.get("observedUniFiZone")
+                    zone_cached = True
             light_on = light_on_for_target(target_id, lights, light_states)
             decision = evaluate_policy(
                 target=target,
                 probe=probe,
-                target_room=room,
+                target_room=zone,
                 presence_room=presence.get("confirmedRoom"),
                 light_on=light_on,
                 manual_override=manual_override,
                 activity_hold_seconds=int(self.config.get("activity_hold_seconds") or 1800),
                 light_activity_hold_seconds=int(self.config.get("light_activity_hold_seconds") or 7200),
             )
-            lease_active = self.leases.tick(target, decision["hold"]) if mode == "enforce" else False
-            if mode != "enforce":
+            enforcement_enabled = enforcement_enabled_for_target(mode, target_id, enforce_targets)
+            lease_active = self.leases.tick(target, decision["hold"]) if enforcement_enabled else False
+            if not enforcement_enabled:
                 self.leases.stop(target_id)
             safe_probe = {key: value for key, value in probe.items() if key != "wifiMac"}
             target_status[target_id] = {
-                "host": target.get("host"),
-                "room": room,
+                "host": target.get("configured_host") or target.get("host"),
+                "probeHostSource": target.get("probe_host_source") or "configured",
+                "room": target.get("room"),
+                "zone": zone,
+                "zoneSource": zone_source,
+                "observedUniFiZone": observed_unifi_zone,
+                "zoneCached": zone_cached,
+                "optional": target.get("optional") is True,
                 "lightOn": light_on,
                 "probe": safe_probe,
                 "wouldHold": decision["hold"],
+                "enforcementEnabled": enforcement_enabled,
                 "leaseActive": lease_active,
                 "leaseExpiresAt": self.leases.expires_at(target_id) if lease_active else None,
                 **decision,
@@ -822,12 +1087,24 @@ class DisplayAwakeManager:
         mapping_configured = bool(room_mapping)
         enrolled = {kind: kind in enrollment for kind in ("watch", "iphone")}
         unreachable_targets = sorted(
-            target_id for target_id, value in target_status.items() if not (value.get("probe") or {}).get("reachable")
+            target_id
+            for target_id, value in target_status.items()
+            if not value.get("optional") and not (value.get("probe") or {}).get("reachable")
+        )
+        optional_unavailable = sorted(
+            target_id
+            for target_id, value in target_status.items()
+            if value.get("optional") and not (value.get("probe") or {}).get("reachable")
         )
         setup_required = [kind for kind, configured in enrolled.items() if not configured]
         if not mapping_configured:
             setup_required.append("home_mapping")
-        degraded = (["unifi"] if unifi_error else []) + [f"unreachable:{target_id}" for target_id in unreachable_targets]
+        degraded = (["unifi"] if unifi_error and not unifi_cache_used else []) + [
+            f"unreachable:{target_id}" for target_id in unreachable_targets
+        ]
+        warnings = (["unifi_cached"] if unifi_cache_used else []) + [
+            f"optional_unavailable:{target_id}" for target_id in optional_unavailable
+        ]
         health_status = "degraded" if degraded else "setup_required" if setup_required else "healthy"
         status = sanitize(
             {
@@ -835,21 +1112,27 @@ class DisplayAwakeManager:
                 "status": "shadow" if mode == "shadow" else "enforcing",
                 "generatedAt": datetime.fromtimestamp(timestamp, timezone.utc).astimezone().isoformat(timespec="seconds"),
                 "mode": mode,
+                "enforceTargets": sorted(enforce_targets) if enforce_targets is not None else None,
                 "mappingConfigured": mapping_configured,
                 "enrollment": enrolled,
                 "health": {
                     "status": health_status,
                     "setupRequired": setup_required,
                     "degradedReasons": degraded,
+                    "warnings": warnings,
                 },
-                "unifi": {"ok": unifi_error is None, "error": unifi_error},
+                "unifi": {
+                    "ok": unifi_error is None,
+                    "error": unifi_error,
+                    "cached": unifi_cache_used,
+                    "cacheAgeSeconds": round(unifi_cache_age) if unifi_cache_age is not None else None,
+                },
                 "presence": {**presence, "devices": observations},
                 "manualOverride": manual_override,
                 "lights": light_states,
                 "targets": target_status,
             }
         )
-        previous = read_json(STATUS_PATH)
         digest_source = event_state(status)
         digest = hashlib.sha256(json.dumps(digest_source, sort_keys=True).encode()).hexdigest()
         status["eventDigest"] = digest
@@ -915,13 +1198,21 @@ def main() -> int:
     parser.add_argument("--enroll-iphone")
     parser.add_argument("--set-room-map", action="append", default=[])
     parser.add_argument("--set-mode", choices=("shadow", "enforce"))
+    parser.add_argument("--enforce-target", action="append", default=[])
     args = parser.parse_args()
     if not args.force_outside_runtime and not running_from_runtime_root():
         print(json.dumps({"ok": False, "error": "refusing to manage displays outside the runtime root"}, sort_keys=True))
         return 1
 
     if args.set_mode:
-        print(json.dumps(write_mode(args.set_mode), sort_keys=True))
+        if args.enforce_target and args.set_mode != "enforce":
+            parser.error("--enforce-target requires --set-mode enforce")
+        print(
+            json.dumps(
+                write_mode(args.set_mode, enforce_targets=args.enforce_target or None),
+                sort_keys=True,
+            )
+        )
         return 0
     if args.set_room_map:
         print(json.dumps(write_room_mapping(args.set_room_map), sort_keys=True))

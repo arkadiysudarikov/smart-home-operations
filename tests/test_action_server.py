@@ -868,10 +868,11 @@ class ActionServerTest(unittest.TestCase):
                         "enrollment": {"watch": True, "iphone": True},
                         "presence": {
                             "confirmedRoom": "office",
-                            "source": "watch",
+                            "source": "iphone",
+                            "zoneSource": "iphone",
                             "devices": {
-                                "watch": {"fresh": True, "ageSeconds": 12},
-                                "iphone": {"fresh": True, "ageSeconds": 25},
+                                "watch": {"fresh": True, "ageSeconds": 12, "accessPoint": "Level 2"},
+                                "iphone": {"fresh": True, "ageSeconds": 25, "accessPoint": "Level 2", "room": "level_2"},
                             },
                         },
                         "targets": {
@@ -879,6 +880,10 @@ class ActionServerTest(unittest.TestCase):
                                 "eligible": True,
                                 "wouldHold": True,
                                 "reasons": ["presence_room"],
+                                "room": "office",
+                                "zone": "level_2",
+                                "zoneSource": "effective_presence",
+                                "observedUniFiZone": "level_3",
                                 "probe": {"reachable": True, "idleSeconds": 42},
                             }
                         },
@@ -914,7 +919,6 @@ class ActionServerTest(unittest.TestCase):
             ):
                 result = action_server.display_awake_observability()
                 page = action_server.render_display_page().decode()
-                read_only_page = action_server.render_display_page(read_only=True).decode()
 
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "shadow")
@@ -923,17 +927,32 @@ class ActionServerTest(unittest.TestCase):
         self.assertEqual(result["launchd"]["pid"], 123)
         self.assertEqual(result["summary"]["eventCount"], 2)
         self.assertEqual(len(result["recentEvents"]), 1)
+        self.assertEqual(result["todayHistory"]["eventCount"], 1)
+        self.assertEqual(result["todayHistory"]["actualLeaseStarts"], 0)
         self.assertIn("Display Awake", page)
         self.assertIn("M2 Office Mini", page)
-        self.assertIn("Presence matches room", page)
+        self.assertIn("Level 2", page)
+        self.assertIn("Presence affects", page)
+        self.assertIn("M2 Office Mini (predicted hold)", page)
+        self.assertIn("Arkadiy presence", page)
+        self.assertIn("Primary default signal", page)
+        self.assertIn("Watch diagnostic only", page)
+        self.assertIn("<strong>Arkadiy&#x27;s iPhone</strong>", page)
+        self.assertNotIn("iPhone Air", page)
+        self.assertIn("Currently driving the effective zone", page)
+        self.assertIn("Held by", page)
+        self.assertIn("follows your presence", page)
+        self.assertIn("UniFi sees Level 3", page)
+        self.assertIn("none (shadow)", page)
         self.assertIn("Shadow mode records these decisions", page)
+        self.assertIn("Today’s event history", page)
+        self.assertIn("Floor transitions", page)
+        self.assertIn("Actual assertions", page)
+        self.assertIn('id="history-filter"', page)
         self.assertIn("Screens Awake", page)
         self.assertNotIn("Screens Awake 1h", page)
         self.assertNotIn("setInterval", page)
         self.assertIn("office", page)
-        self.assertIn("Read-only phone view", read_only_page)
-        self.assertNotIn("data-action", read_only_page)
-        self.assertNotIn("/energy", read_only_page)
 
     def test_read_only_display_handler_rejects_actions_and_other_routes(self) -> None:
         class FakeHandler:
@@ -967,6 +986,103 @@ class ActionServerTest(unittest.TestCase):
         self.assertEqual(action_server.display_duration(42), "42s")
         self.assertEqual(action_server.display_duration(125), "2m 05s")
         self.assertEqual(action_server.display_duration(7320), "2h 02m")
+
+    def test_display_history_describes_zone_hold_blocker_and_assertion_transitions(self) -> None:
+        history = action_server.display_history(
+            [
+                {
+                    "timestamp": "2026-07-15T14:14:34-07:00",
+                    "presence": {"confirmedRoom": "level_2", "source": "iphone"},
+                    "targets": {"m2-garage-mini": {"wouldHold": False, "leaseActive": False}},
+                },
+                {
+                    "timestamp": "2026-07-15T14:15:04-07:00",
+                    "presence": {"confirmedRoom": "level_1", "source": "watch"},
+                    "targets": {
+                        "m2-garage-mini": {"wouldHold": True, "leaseActive": True},
+                        "m2-macbook-pro": {"wouldHold": False, "ineligibleReasons": ["unreachable"]},
+                    },
+                },
+            ]
+        )
+
+        self.assertEqual(history["eventCount"], 2)
+        self.assertEqual(history["zoneTransitions"], 1)
+        self.assertEqual(history["sourceTransitions"], 1)
+        self.assertEqual(history["holdStarts"], 1)
+        self.assertEqual(history["blockerChanges"], 1)
+        self.assertEqual(history["actualLeaseStarts"], 1)
+        self.assertIn("Zone Level 2 → Level 1", history["entries"][1]["changes"])
+        self.assertIn("M2 Garage Mini hold started", history["entries"][1]["changes"])
+
+    def test_display_observability_accepts_cached_unifi_fallback(self) -> None:
+        generated = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+        with tempfile.TemporaryDirectory() as tmp:
+            status_path = Path(tmp) / "latest_display_awake.json"
+            status_path.write_text(
+                json.dumps(
+                    {
+                        "ok": True,
+                        "status": "shadow",
+                        "mode": "shadow",
+                        "generatedAt": generated,
+                        "unifi": {"ok": False, "error": "TimeoutError", "cached": True, "cacheAgeSeconds": 30},
+                        "health": {"status": "healthy", "warnings": ["unifi_cached"]},
+                    }
+                )
+            )
+            self.patch_module(
+                DISPLAY_AWAKE_STATUS_PATH=status_path,
+                DISPLAY_AWAKE_SUMMARY_PATH=Path(tmp) / "summary.json",
+                DISPLAY_AWAKE_EVENTS_PATH=Path(tmp) / "events.jsonl",
+            )
+            with (
+                mock.patch.object(action_server, "load_config", return_value={"display_awake": {"poll_seconds": 30}}),
+                mock.patch.object(action_server, "display_launchd_status", return_value={"loaded": True}),
+            ):
+                result = action_server.display_awake_observability()
+                page = action_server.render_display_page().decode()
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["status"], "shadow")
+        self.assertIn("cached", page)
+        self.assertIn("cache 30s", page)
+
+    def test_display_page_shows_movement_confirmed_watch_as_zone_source(self) -> None:
+        observability = {
+            "ok": True,
+            "status": "shadow",
+            "mode": "shadow",
+            "generatedAt": "2026-07-16T13:00:00-07:00",
+            "ageSeconds": 0,
+            "pollSeconds": 30,
+            "presence": {
+                "confirmedRoom": "level_1",
+                "source": "watch",
+                "confirmedSource": "watch",
+                "carriedSource": "watch",
+                "zoneSource": "watch_carried",
+                "devices": {
+                    "watch": {"fresh": True, "ageSeconds": 5, "accessPoint": "Level 1", "room": "level_1"},
+                    "iphone": {"fresh": True, "ageSeconds": 8, "accessPoint": "Level 2", "room": "level_2"},
+                },
+            },
+            "targets": {},
+            "summary": {},
+            "todayHistory": {},
+            "unifi": {"ok": True},
+            "launchd": {"loaded": True},
+        }
+        with (
+            mock.patch.object(action_server, "display_awake_observability", return_value=observability),
+            mock.patch.object(action_server, "load_config", return_value={"display_awake": {}}),
+        ):
+            page = action_server.render_display_page().decode()
+
+        self.assertIn("Movement-confirmed Watch", page)
+        self.assertIn("Movement-confirmed zone signal", page)
+        self.assertIn("<strong>Watch Ultra 3</strong>", page)
+        self.assertIn("Stationary while the Watch is movement-confirmed", page)
 
     def test_display_observability_marks_stale_status_unhealthy(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
