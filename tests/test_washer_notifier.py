@@ -129,6 +129,51 @@ class WasherNotifierTest(unittest.TestCase):
         self.assertFalse(current["cycleActive"])
         self.assertFalse(current["doorOpen"])
 
+    def test_prefers_fresh_direct_smarthq_state_over_stale_homebridge_cache(self) -> None:
+        now = datetime(2026, 7, 22, 12, 0, tzinfo=TZ)
+        latest = {
+            "captured_at": now.isoformat(),
+            "homeEvents": {"currentCharacteristics": {}},
+        }
+        direct = {
+            "ok": True,
+            "source": "homebridge-hap-live",
+            "capturedAt": (now - timedelta(seconds=5)).isoformat(),
+            "devices": {
+                "washer": {"inUse": True, "cycleActive": True, "doorOpen": None},
+            },
+        }
+        current = washer_notifier.current_appliance_state(
+            latest, {**config(), "id": "washer", "accessory": "Washer"}, now, direct
+        )
+        self.assertTrue(current["inUse"])
+        self.assertTrue(current["cycleActive"])
+        self.assertIsNone(current["doorOpen"])
+        self.assertEqual(current["source"], "homebridge-hap-live")
+
+    def test_stale_direct_state_falls_back_to_homebridge_cache(self) -> None:
+        now = datetime(2026, 7, 22, 12, 0, tzinfo=TZ)
+        latest = {
+            "captured_at": now.isoformat(),
+            "homeEvents": {
+                "currentCharacteristics": {
+                    "in-use": {"accessory": "Washer", "service": "Washer", "characteristic": "InUse", "value": 0},
+                    "cycle": {"accessory": "Washer", "service": "Cycle Status", "characteristic": "MotionDetected", "value": 0},
+                    "door": {"accessory": "Washer", "service": "Washer Door", "characteristic": "ContactSensorState", "value": 0},
+                }
+            },
+        }
+        direct = {
+            "ok": True,
+            "capturedAt": (now - timedelta(hours=1)).isoformat(),
+            "devices": {"washer": {"inUse": True, "cycleActive": True, "doorOpen": None}},
+        }
+        current = washer_notifier.current_appliance_state(
+            latest, {**config(), "id": "washer", "accessory": "Washer"}, now, direct
+        )
+        self.assertFalse(current["inUse"])
+        self.assertEqual(current["source"], "homebridge-cache")
+
     def test_migrates_running_washer_venting_without_false_wash_alert(self) -> None:
         now = datetime(2026, 7, 15, 17, 30, tzinfo=TZ)
         legacy = {

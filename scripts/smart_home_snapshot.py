@@ -41,6 +41,7 @@ DRIFT_CHECK_FILES = [
     "scripts/capture_alarm_com.js",
     "scripts/capture_chargepoint_browser_csv.js",
     "scripts/capture_envoy_direct.py",
+    "scripts/capture_smarthq_laundry_state.js",
     "scripts/capture_sense_now.js",
     "scripts/capture_sense_trends.js",
     "scripts/check_install_source.sh",

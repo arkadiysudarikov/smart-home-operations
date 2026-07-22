@@ -17,6 +17,7 @@ CONFIG_PATH = ROOT / "config" / "sources.json"
 DATA_DIR = ROOT / "data"
 REPORT_DIR = ROOT / "reports"
 LATEST_PATH = DATA_DIR / "latest.json"
+DIRECT_SMARTHQ_PATH = DATA_DIR / "latest_smarthq_laundry_state.json"
 SENSE_NOW_PATH = DATA_DIR / "sense_now_latest.json"
 ENVOY_PATH = DATA_DIR / "latest_envoy_direct.json"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
@@ -70,7 +71,34 @@ def find_characteristic(latest: dict[str, Any], accessory: str, service: str, ch
     return None
 
 
-def current_appliance_state(latest: dict[str, Any], config: dict[str, Any], now: datetime) -> dict[str, Any]:
+def direct_appliance_state(
+    direct_latest: dict[str, Any], config: dict[str, Any], now: datetime
+) -> dict[str, Any] | None:
+    captured_at = parse_time(direct_latest.get("capturedAt"))
+    max_age_minutes = int(config.get("max_snapshot_age_minutes", 10))
+    fresh = bool(captured_at and timedelta(0) <= now - captured_at <= timedelta(minutes=max_age_minutes))
+    appliance_id = str(config.get("id") or config.get("accessory", "Washer")).lower()
+    device = direct_latest.get("devices", {}).get(appliance_id)
+    if direct_latest.get("ok") is not True or not fresh or not isinstance(device, dict):
+        return None
+    if device.get("inUse") is None or device.get("cycleActive") is None:
+        return None
+    return {
+        "capturedAt": captured_at.isoformat(timespec="seconds") if captured_at else None,
+        "fresh": True,
+        "inUse": bool(device["inUse"]),
+        "cycleActive": bool(device["cycleActive"]),
+        "doorOpen": device.get("doorOpen"),
+        "source": direct_latest.get("source", "homebridge-hap-live"),
+    }
+
+
+def current_appliance_state(
+    latest: dict[str, Any], config: dict[str, Any], now: datetime, direct_latest: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    direct = direct_appliance_state(direct_latest or {}, config, now)
+    if direct:
+        return direct
     captured_at = parse_time(latest.get("captured_at"))
     max_age_minutes = int(config.get("max_snapshot_age_minutes", 10))
     fresh = bool(captured_at and timedelta(0) <= now - captured_at <= timedelta(minutes=max_age_minutes))
@@ -88,6 +116,7 @@ def current_appliance_state(latest: dict[str, Any], config: dict[str, Any], now:
         "inUse": in_use,
         "cycleActive": cycle_active,
         "doorOpen": door_open,
+        "source": "homebridge-cache",
     }
 
 
@@ -491,6 +520,7 @@ def write_report(payload: dict[str, Any], report_path: Path, appliance_name: str
         "",
         f"- Checked: `{payload['generatedAt']}`",
         f"- SmartHQ snapshot fresh: `{current.get('fresh')}`",
+        f"- State source: `{current.get('source', 'homebridge-cache')}`",
         f"- {appliance_name} running: `{current.get('inUse')}`",
         f"- {appliance_name} primary cycle active: `{current.get('cycleActive')}`",
         f"- {appliance_name} door open: `{current.get('doorOpen')}`",
@@ -532,7 +562,8 @@ def main() -> int:
     now = parse_time(args.now) if args.now else datetime.now(timezone.utc).astimezone(LOCAL_TZ)
     assert now is not None
     latest = load_json(LATEST_PATH, {})
-    current = current_appliance_state(latest, config, now)
+    direct_latest = load_json(DIRECT_SMARTHQ_PATH, {})
+    current = current_appliance_state(latest, config, now, direct_latest)
     prior = load_json(state_path, {})
     state, actions = evolve_state(prior, current, now, config)
     results = execute_actions(actions, config, args.dry_run)

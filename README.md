@@ -60,6 +60,13 @@ collect labeled power-fallback samples:
 ./scripts/washer_notifier.py --appliance dryer
 ```
 
+The scheduled monitor first runs `capture_smarthq_laundry_state.js` to refresh
+the washer and dryer through Homebridge's local HAP client. The notifier prefers
+that fresh source over Homebridge's persisted accessory cache, which may remain
+unchanged until a HomeKit client explicitly reads a characteristic. This reuses
+the child bridge's authenticated SmartHQ session. Door state is treated as
+unknown because the current washer and dryer do not expose usable door ERDs.
+
 The dryer notifier requires a fresh observed `InUse` cycle before it can alert.
 The washer uses SmartHQ `Cycle Status` turning off for the useful wash-finished
 alert, while the later `InUse` transition to off means after-wash venting has
