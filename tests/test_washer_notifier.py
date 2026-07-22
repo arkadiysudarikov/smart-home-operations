@@ -276,6 +276,34 @@ class WasherNotifierTest(unittest.TestCase):
         )
         self.assertFalse(recovered["sourceStaleAlertSent"])
 
+    def test_physically_confirmed_manual_venting_rearms_fan_off_alert(self) -> None:
+        now = datetime(2026, 7, 22, 15, 44, tzinfo=TZ)
+        prior = {
+            "primaryArmed": False,
+            "ventingArmed": False,
+            "lastInUse": True,
+            "lastCycleActive": False,
+            "ventingStartedAt": (now - timedelta(hours=1)).isoformat(),
+        }
+        confirmed = washer_notifier.confirm_washer_venting(
+            prior,
+            {"fresh": True, "inUse": True, "cycleActive": False},
+            now,
+        )
+
+        self.assertTrue(confirmed["ventingArmed"])
+        self.assertEqual(confirmed["ventingStartedAt"], now.isoformat(timespec="seconds"))
+        self.assertFalse(confirmed["ventingStaleAlertSent"])
+
+    def test_manual_venting_confirmation_rejects_active_wash(self) -> None:
+        now = datetime(2026, 7, 22, 15, 44, tzinfo=TZ)
+        with self.assertRaisesRegex(ValueError, "not reporting active venting"):
+            washer_notifier.confirm_washer_venting(
+                {},
+                {"fresh": True, "inUse": True, "cycleActive": True},
+                now,
+            )
+
     def test_mac_notification_adds_configured_sound(self) -> None:
         completed = SimpleNamespace(returncode=0, stderr="", stdout="")
         with mock.patch.object(washer_notifier.subprocess, "run", return_value=completed) as run:

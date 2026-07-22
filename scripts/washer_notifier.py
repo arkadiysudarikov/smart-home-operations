@@ -137,6 +137,29 @@ def within_announcement_hours(now: datetime, config: dict[str, Any]) -> bool:
     return now.hour >= start or now.hour < end
 
 
+def confirm_washer_venting(
+    prior: dict[str, Any], current: dict[str, Any], now: datetime
+) -> dict[str, Any]:
+    if not current.get("fresh"):
+        raise ValueError("cannot confirm venting while SmartHQ data is stale")
+    if current.get("inUse") is not True or current.get("cycleActive") is not False:
+        raise ValueError("washer is not reporting active venting state")
+    state = dict(prior)
+    state.update(
+        {
+            "primaryArmed": False,
+            "ventingArmed": True,
+            "ventingStartedAt": now.isoformat(timespec="seconds"),
+            "ventingStaleAlertSent": False,
+            "ventingStaleAlertedAt": None,
+            "lastInUse": True,
+            "lastCycleActive": False,
+            "sourceFresh": True,
+        }
+    )
+    return state
+
+
 def evolve_washer_state(
     prior: dict[str, Any], current: dict[str, Any], now: datetime, config: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
@@ -598,6 +621,11 @@ def write_report(payload: dict[str, Any], report_path: Path, appliance_name: str
 def main() -> int:
     parser = argparse.ArgumentParser(description="Send laundry-finished and unload-reminder notifications.")
     parser.add_argument("--appliance", choices=("washer", "dryer", "combo"), default="washer")
+    parser.add_argument(
+        "--confirm-venting-start",
+        action="store_true",
+        help="arm washer venting completion after a physically confirmed manual venting start",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--now", help="override the current local time for testing")
     args = parser.parse_args()
@@ -620,6 +648,13 @@ def main() -> int:
     direct_latest = load_json(DIRECT_SMARTHQ_PATH, {})
     current = current_appliance_state(latest, config, now, direct_latest)
     prior = load_json(state_path, {})
+    if args.confirm_venting_start:
+        if appliance_id != "washer":
+            parser.error("--confirm-venting-start is valid only for the washer")
+        try:
+            prior = confirm_washer_venting(prior, current, now)
+        except ValueError as exc:
+            parser.error(str(exc))
     state, actions = evolve_state(prior, current, now, config)
     results = execute_actions(actions, config, args.dry_run)
     observation = power_observation(current, now, appliance_id)

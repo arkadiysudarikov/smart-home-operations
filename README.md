@@ -75,6 +75,9 @@ preventing a failed API read or frozen HomeKit value from becoming a false finis
 Two consecutive stale scheduled checks trigger a restart of only the SmartHQ
 child bridge. A 20-minute cooldown prevents restart loops, and the watchdog
 recaptures live state before the armed laundry notifiers continue.
+Manually started washer venting can be armed from a physically confirmed state
+with `washer_notifier.py --confirm-venting-start`; the command refuses unless
+fresh SmartHQ data shows the washer active with its wash cycle inactive.
 
 The dryer notifier requires a fresh observed `InUse` cycle before it can alert.
 The washer uses SmartHQ `Cycle Status` turning off for the useful wash-finished
