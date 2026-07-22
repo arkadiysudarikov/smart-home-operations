@@ -57,6 +57,8 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
                 "smart_home_washer_venting_v1": "🌀 Venting Done",
                 "smart_home_dryer_finished_v1": "🧺 Dryer Done",
                 "smart_home_dryer_unload_v1": "🧺 Unload Dryer",
+                "smart_home_combo_finished_v1": "🧺 Combo Done",
+                "smart_home_combo_unload_v1": "🧺 Unload Combo",
             },
         )
 
@@ -94,6 +96,8 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             "smart_home_washer_venting_v1",
             "smart_home_dryer_finished_v1",
             "smart_home_dryer_unload_v1",
+            "smart_home_combo_finished_v1",
+            "smart_home_combo_unload_v1",
         }
         for tile in tiles:
             visible_text = tile["name"].split(" ", 1)[1]

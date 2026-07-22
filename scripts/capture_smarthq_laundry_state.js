@@ -52,7 +52,7 @@ async function discoverLaundryServices(client) {
     await sleep(1500);
     services = await client.getAllServices();
     const names = new Set(services.map((service) => service.accessoryInformation?.Name));
-    if (names.has("Washer") && names.has("Dryer")) return services;
+    if (names.has("Washer") && names.has("Dryer") && names.has("Combination Washer Dryer")) return services;
     client.refreshInstances();
   }
   return services;
@@ -72,10 +72,16 @@ async function main() {
     });
     const services = await discoverLaundryServices(client);
     const devices = {};
-    for (const appliance of ["washer", "dryer"]) {
-      const name = appliance[0].toUpperCase() + appliance.slice(1);
-      const applianceServices = services.filter((service) => service.accessoryInformation?.Name === name);
-      const mainService = applianceServices.find((service) => service.serviceName === name);
+    const laundryDevices = {
+      washer: { accessoryName: "Washer", mainServiceName: "Washer" },
+      dryer: { accessoryName: "Dryer", mainServiceName: "Dryer" },
+      combo: { accessoryName: "Combination Washer Dryer", mainServiceName: "Washer" },
+    };
+    for (const [appliance, device] of Object.entries(laundryDevices)) {
+      const applianceServices = services.filter(
+        (service) => service.accessoryInformation?.Name === device.accessoryName,
+      );
+      const mainService = applianceServices.find((service) => service.serviceName === device.mainServiceName);
       const cycleService = applianceServices.find((service) => service.serviceName === "Cycle Status");
       if (!mainService || !cycleService) continue;
       await Promise.all(

@@ -361,8 +361,10 @@ def webhook_set(webhook_url: str, accessory_id: str, active: bool) -> dict[str, 
         return {"ok": False, "active": active, "error": str(exc)}
 
 
-def mac_notification(message: str, title: str) -> dict[str, Any]:
+def mac_notification(message: str, title: str, sound_name: str | None = None) -> dict[str, Any]:
     script = f'display notification {json.dumps(message)} with title {json.dumps(title)}'
+    if sound_name:
+        script += f' sound name {json.dumps(sound_name)}'
     proc = subprocess.run(["osascript", "-e", script], text=True, capture_output=True, timeout=10, check=False)
     return {"ok": proc.returncode == 0, "returncode": proc.returncode, "error": proc.stderr.strip() or None}
 
@@ -472,7 +474,10 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
             result = webhook_set(webhook_url, sensor_id, action.endswith("_on"))
             results.append({"action": action, **result})
         elif action == "notify_finish":
-            results.append({"action": action, **mac_notification(finish_message, finish_title)})
+            results.append({
+                "action": action,
+                **mac_notification(finish_message, finish_title, str(config.get("mac_sound", "Glass"))),
+            })
         elif action == "notify_reminder":
             minutes = int(config.get("reminder_minutes", 20))
             results.append({
@@ -480,6 +485,7 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
                 **mac_notification(
                     f"The {appliance_lower} finished {minutes} minutes ago and the door is still closed.",
                     f"Unload {appliance_name}",
+                    str(config.get("mac_sound", "Glass")),
                 ),
             })
         elif action == "announce_finish" and config.get("homepod_enabled", False):
@@ -487,7 +493,10 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
         elif action == "notify_venting":
             message = str(config.get("venting_message", "Washer venting has finished. Turn off the laundry-room fan."))
             title = str(config.get("venting_title", "Venting Finished"))
-            results.append({"action": action, **mac_notification(message, title)})
+            results.append({
+                "action": action,
+                **mac_notification(message, title, str(config.get("mac_sound", "Glass"))),
+            })
         elif action == "announce_venting" and config.get("homepod_enabled", False):
             message = str(config.get("venting_announcement", "Washer venting has finished. Turn off the laundry-room fan."))
             results.append({"action": action, **homepod_announcement(message, config)})
@@ -500,7 +509,10 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
                 )
             )
             title = str(config.get("venting_stale_title", "Check Washer Venting"))
-            results.append({"action": action, **mac_notification(message, title)})
+            results.append({
+                "action": action,
+                **mac_notification(message, title, str(config.get("mac_sound", "Glass"))),
+            })
         elif action == "announce_venting_stale" and config.get("homepod_enabled", False):
             hours = int(config.get("maximum_venting_hours", 8))
             message = str(
@@ -544,7 +556,7 @@ def write_report(payload: dict[str, Any], report_path: Path, appliance_name: str
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Send laundry-finished and unload-reminder notifications.")
-    parser.add_argument("--appliance", choices=("washer", "dryer"), default="washer")
+    parser.add_argument("--appliance", choices=("washer", "dryer", "combo"), default="washer")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--now", help="override the current local time for testing")
     args = parser.parse_args()

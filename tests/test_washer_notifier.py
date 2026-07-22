@@ -174,6 +174,30 @@ class WasherNotifierTest(unittest.TestCase):
         self.assertFalse(current["inUse"])
         self.assertEqual(current["source"], "homebridge-cache")
 
+    def test_reads_combo_state_from_live_hap_payload(self) -> None:
+        now = datetime(2026, 7, 22, 13, 43, tzinfo=TZ)
+        direct = {
+            "ok": True,
+            "source": "homebridge-hap-live",
+            "capturedAt": (now - timedelta(seconds=5)).isoformat(),
+            "devices": {
+                "combo": {"inUse": True, "cycleActive": True, "doorOpen": None},
+            },
+        }
+        current = washer_notifier.current_appliance_state(
+            {}, {**config(), "id": "combo", "accessory": "Combination Washer Dryer"}, now, direct
+        )
+        self.assertTrue(current["inUse"])
+        self.assertTrue(current["cycleActive"])
+        self.assertEqual(current["source"], "homebridge-hap-live")
+
+    def test_mac_notification_adds_configured_sound(self) -> None:
+        completed = SimpleNamespace(returncode=0, stderr="", stdout="")
+        with mock.patch.object(washer_notifier.subprocess, "run", return_value=completed) as run:
+            result = washer_notifier.mac_notification("Finished", "Garage Combo Finished", "Glass")
+        self.assertTrue(result["ok"])
+        self.assertIn('sound name "Glass"', run.call_args.args[0][2])
+
     def test_migrates_running_washer_venting_without_false_wash_alert(self) -> None:
         now = datetime(2026, 7, 15, 17, 30, tzinfo=TZ)
         legacy = {
@@ -312,7 +336,7 @@ class WasherNotifierTest(unittest.TestCase):
     def test_stale_venting_action_uses_check_message(self) -> None:
         notifications: list[tuple[str, str]] = []
 
-        def notification(message: str, title: str) -> dict:
+        def notification(message: str, title: str, _sound_name: str | None = None) -> dict:
             notifications.append((message, title))
             return {"ok": True}
 
@@ -359,7 +383,7 @@ class WasherNotifierTest(unittest.TestCase):
     def test_dryer_actions_use_dryer_messages_and_sensors(self) -> None:
         calls: list[tuple[str, str]] = []
 
-        def notification(message: str, title: str) -> dict:
+        def notification(message: str, title: str, _sound_name: str | None = None) -> dict:
             calls.append((message, title))
             return {"ok": True}
 
@@ -386,7 +410,7 @@ class WasherNotifierTest(unittest.TestCase):
         notifications: list[tuple[str, str]] = []
         webhook_calls: list[tuple[str, bool]] = []
 
-        def notification(message: str, title: str) -> dict:
+        def notification(message: str, title: str, _sound_name: str | None = None) -> dict:
             notifications.append((message, title))
             return {"ok": True}
 

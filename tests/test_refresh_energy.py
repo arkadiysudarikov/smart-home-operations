@@ -30,6 +30,7 @@ class RefreshEnergyTest(unittest.TestCase):
 
         self.assertEqual(source.count('"capture_smarthq_laundry"'), 2)
         self.assertLess(source.index('"capture_smarthq_laundry"'), source.index('"washer_notifier"'))
+        self.assertEqual(source.count('"combo_notifier"'), 2)
 
     def test_recent_status_rejects_explicit_non_true_ok(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -66,6 +66,9 @@ that fresh source over Homebridge's persisted accessory cache, which may remain
 unchanged until a HomeKit client explicitly reads a characteristic. This reuses
 the child bridge's authenticated SmartHQ session. Door state is treated as
 unknown because the current washer and dryer do not expose usable door ERDs.
+The SmartHQ combination washer/dryer is mapped to the same live machine-state
+service and monitored separately as the garage combo. Laundry finish alerts use
+an audible Mac sound plus a louder daytime Primary HomePod announcement.
 
 The dryer notifier requires a fresh observed `InUse` cycle before it can alert.
 The washer uses SmartHQ `Cycle Status` turning off for the useful wash-finished

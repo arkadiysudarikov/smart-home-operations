@@ -43,6 +43,7 @@ function main() {
   const washer = path.join(root, "dist/devices/clothesWasher.js");
   const oven = path.join(root, "dist/devices/oven.js");
   const accessToken = path.join(root, "dist/getAccessToken.js");
+  const platform = path.join(root, "dist/platform.js");
   const washerStatus = patchFile(
     washer,
     `            const seconds = Math.round(minutes * 60); // Don't cap, let it show actual time
@@ -107,6 +108,19 @@ function main() {
     "                        url: new URL('/account/active/redirect', LOGIN_URL).toString(),",
     shouldApply
   );
+  const comboStatus = patchFile(
+    platform,
+    `                        case 'Clothes Washer':
+                            await this.createSmartHQClothesWasher(userId, device, details, features);
+                            break;`,
+    `                        case 'Clothes Washer':
+                            await this.createSmartHQClothesWasher(userId, device, details, features);
+                            break;
+                        case 'Combination Washer Dryer':
+                            await this.createSmartHQClothesWasher(userId, device, details, features);
+                            break;`,
+    shouldApply
+  );
   console.log(JSON.stringify({
     root,
     applied: shouldApply,
@@ -114,6 +128,7 @@ function main() {
     oven: ovenStatus,
     auth: authStatus,
     authMfaUrl: authMfaUrlStatus,
+    combo: comboStatus,
   }, null, 2));
 }
 

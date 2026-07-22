@@ -451,6 +451,7 @@ def main() -> int:
                 ("capture_smarthq_laundry", "scripts/capture_smarthq_laundry_state.js", 60, True, True, None),
                 ("washer_notifier", [py, "scripts/washer_notifier.py"], 30, True, False, None),
                 ("dryer_notifier", [py, "scripts/washer_notifier.py", "--appliance", "dryer"], 30, True, False, None),
+                ("combo_notifier", [py, "scripts/washer_notifier.py", "--appliance", "combo"], 30, True, False, None),
                 (
                     "fetch_sce",
                     None
@@ -513,6 +514,7 @@ def main() -> int:
                 ("capture_smarthq_laundry", "scripts/capture_smarthq_laundry_state.js", 60, True, True, None),
                 ("washer_notifier", [py, "scripts/washer_notifier.py"], 30, True, False, None),
                 ("dryer_notifier", [py, "scripts/washer_notifier.py", "--appliance", "dryer"], 30, True, False, None),
+                ("combo_notifier", [py, "scripts/washer_notifier.py", "--appliance", "combo"], 30, True, False, None),
                 ("fetch_sce", [py, "scripts/fetch_sce_green_button_connect.py"], 600, False, False, None),
             ]
             if args.with_bills:
