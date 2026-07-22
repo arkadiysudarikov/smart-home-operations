@@ -247,6 +247,15 @@
     "power_fallback_mode": "shadow",
     "power_fallback_minimum_training_cycles": 3
   },
+  "smarthq_laundry_recovery": {
+    "enabled": true,
+    "heartbeat_stale_minutes": 5,
+    "consecutive_stale_checks": 2,
+    "maximum_check_gap_minutes": 12,
+    "cooldown_minutes": 20,
+    "child_bridge_port": 40893,
+    "mac_sound": "Glass"
+  },
   "homekit_virtual_sensors": {
     "enabled": true,
     "webhook_url": "http://127.0.0.1:63743",

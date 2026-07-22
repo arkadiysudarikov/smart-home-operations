@@ -72,6 +72,9 @@ an audible Mac sound plus a louder daytime Primary HomePod announcement.
 Successful per-appliance SmartHQ API reads also advance a heartbeat. A heartbeat
 older than five minutes pauses finish detection and sends one stale-data warning,
 preventing a failed API read or frozen HomeKit value from becoming a false finish.
+Two consecutive stale scheduled checks trigger a restart of only the SmartHQ
+child bridge. A 20-minute cooldown prevents restart loops, and the watchdog
+recaptures live state before the armed laundry notifiers continue.
 
 The dryer notifier requires a fresh observed `InUse` cycle before it can alert.
 The washer uses SmartHQ `Cycle Status` turning off for the useful wash-finished

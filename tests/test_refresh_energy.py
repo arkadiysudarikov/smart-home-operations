@@ -29,7 +29,10 @@ class RefreshEnergyTest(unittest.TestCase):
         source = (ROOT / "scripts" / "refresh_energy.py").read_text()
 
         self.assertEqual(source.count('"capture_smarthq_laundry"'), 2)
+        self.assertEqual(source.count('"recover_smarthq_laundry"'), 2)
+        self.assertLess(source.index('"capture_smarthq_laundry"'), source.index('"recover_smarthq_laundry"'))
         self.assertLess(source.index('"capture_smarthq_laundry"'), source.index('"washer_notifier"'))
+        self.assertLess(source.index('"recover_smarthq_laundry"'), source.index('"washer_notifier"'))
         self.assertEqual(source.count('"combo_notifier"'), 2)
 
     def test_recent_status_rejects_explicit_non_true_ok(self) -> None:

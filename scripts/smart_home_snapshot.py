@@ -59,6 +59,7 @@ DRIFT_CHECK_FILES = [
     "scripts/patch_smarthq_remaining_duration.js",
     "scripts/probe_alarm_energy_settings_ui.js",
     "scripts/probe_alarm_sensor_saver_ui.js",
+    "scripts/recover_smarthq_laundry.py",
     "scripts/recover_unifi_occupancy.py",
     "scripts/refresh_energy.py",
     "scripts/repair_alarm_homebridge_cache.py",
