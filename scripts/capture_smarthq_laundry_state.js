@@ -6,6 +6,8 @@ const { pathToFileURL } = require("node:url");
 
 const ROOT = path.resolve(__dirname, "..");
 const OUTPUT_PATH = path.join(ROOT, "data", "latest_smarthq_laundry_state.json");
+const HEARTBEAT_PATH = process.env.SMART_HOME_SMARTHQ_HEARTBEAT_PATH
+  || path.join(ROOT, "data", "smarthq_erd_heartbeat.json");
 const HOMEBRIDGE_CONFIG = process.env.HOMEBRIDGE_CONFIG_PATH || path.join(os.homedir(), ".homebridge", "config.json");
 
 function packageCandidates() {
@@ -44,6 +46,17 @@ function characteristic(service, type) {
 function booleanValue(value) {
   if (value === null || value === undefined) return null;
   return Boolean(value);
+}
+
+function heartbeatForAccessory(accessoryName) {
+  try {
+    const payload = JSON.parse(fs.readFileSync(HEARTBEAT_PATH, "utf8"));
+    return Object.values(payload.devices || {})
+      .filter((device) => device?.nickname === accessoryName)
+      .sort((a, b) => String(b.lastSuccessAt).localeCompare(String(a.lastSuccessAt)))[0] || {};
+  } catch {
+    return {};
+  }
 }
 
 async function discoverLaundryServices(client) {
@@ -95,6 +108,8 @@ async function main() {
         doorOpen: null,
         remainingSeconds: characteristic(mainService, "RemainingDuration"),
         model: mainService.accessoryInformation?.Model ?? null,
+        apiLastSuccessAt: heartbeatForAccessory(device.accessoryName).lastSuccessAt ?? null,
+        apiLastChangedAt: heartbeatForAccessory(device.accessoryName).lastChangedAt ?? null,
       };
     }
     if (!devices.washer || !devices.dryer) throw new Error("washer or dryer HAP services were not discovered");

@@ -26,21 +26,40 @@ MFA_URL_ORIGINAL = "                        url: `${LOGIN_URL}/account/active/re
 PLATFORM_ORIGINAL = """                        case 'Clothes Washer':
                             await this.createSmartHQClothesWasher(userId, device, details, features);
                             break;"""
+DEVICE_ORIGINAL = """import axios from 'axios';
+import { ERD_TYPES } from '../settings.js';
+export class deviceBase {
+    async readErd(erd) {
+        const d = { data: { value: '01' } };
+        try {
+            if (typeof d.data.value === 'object') {
+                const jsonValue = JSON.stringify(d.data.value);
+                await this.debugLog(`ERD ${erd} returned object: ${jsonValue}`);
+                return jsonValue;
+            }
+            await this.debugLog(`ERD ${erd} value: ${d.data.value}`);
+            return String(d.data.value);
+        }
+        catch {}
+    }
+}"""
 
 
 class PatchSmartHqRemainingDurationTest(unittest.TestCase):
-    def make_plugin(self, root: Path) -> tuple[Path, Path, Path, Path]:
+    def make_plugin(self, root: Path) -> tuple[Path, Path, Path, Path, Path]:
         washer = root / "dist/devices/clothesWasher.js"
         oven = root / "dist/devices/oven.js"
         auth = root / "dist/getAccessToken.js"
         platform = root / "dist/platform.js"
+        device = root / "dist/devices/device.js"
         washer.parent.mkdir(parents=True)
         oven.write_text(OVEN_ORIGINAL + "\n")
         washer.write_text(WASHER_ORIGINAL + "\n")
         auth.write_text(MFA_URL_ORIGINAL + "\n" + AUTH_ORIGINAL + "\n")
         platform.write_text(PLATFORM_ORIGINAL + "\n")
+        device.write_text(DEVICE_ORIGINAL + "\n")
         (root / "package.json").write_text(json.dumps({"name": "homebridge-smarthq"}) + "\n")
-        return washer, oven, auth, platform
+        return washer, oven, auth, platform, device
 
     def run_script(self, root: Path, *args: str) -> subprocess.CompletedProcess[str]:
         env = {**os.environ, "SMART_HOME_SMARTHQ_PLUGIN_ROOT": str(root)}
@@ -55,7 +74,7 @@ class PatchSmartHqRemainingDurationTest(unittest.TestCase):
 
     def test_dry_run_does_not_modify_plugin_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            washer, oven, auth, platform = self.make_plugin(Path(tmp))
+            washer, oven, auth, platform, device = self.make_plugin(Path(tmp))
 
             result = self.run_script(Path(tmp))
 
@@ -67,14 +86,17 @@ class PatchSmartHqRemainingDurationTest(unittest.TestCase):
             self.assertEqual(payload["auth"], "would patch")
             self.assertEqual(payload["authMfaUrl"], "would patch")
             self.assertEqual(payload["combo"], "would patch")
+            self.assertEqual(payload["heartbeatImports"], "would patch")
+            self.assertEqual(payload["heartbeatRead"], "would patch")
             self.assertEqual(washer.read_text(), WASHER_ORIGINAL + "\n")
             self.assertEqual(oven.read_text(), OVEN_ORIGINAL + "\n")
             self.assertEqual(auth.read_text(), MFA_URL_ORIGINAL + "\n" + AUTH_ORIGINAL + "\n")
             self.assertEqual(platform.read_text(), PLATFORM_ORIGINAL + "\n")
+            self.assertEqual(device.read_text(), DEVICE_ORIGINAL + "\n")
 
     def test_apply_patches_plugin_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            washer, oven, auth, platform = self.make_plugin(Path(tmp))
+            washer, oven, auth, platform, device = self.make_plugin(Path(tmp))
 
             result = self.run_script(Path(tmp), "--apply")
 
@@ -86,11 +108,14 @@ class PatchSmartHqRemainingDurationTest(unittest.TestCase):
             self.assertEqual(payload["auth"], "patched")
             self.assertEqual(payload["authMfaUrl"], "patched")
             self.assertEqual(payload["combo"], "patched")
+            self.assertEqual(payload["heartbeatImports"], "patched")
+            self.assertEqual(payload["heartbeatRead"], "patched")
             self.assertIn("HomeKit Seconds", washer.read_text())
             self.assertIn("HomeKit Seconds", oven.read_text())
             self.assertIn("intermediateResp", auth.read_text())
             self.assertIn("new URL('/account/active/redirect'", auth.read_text())
             self.assertIn("Combination Washer Dryer", platform.read_text())
+            self.assertIn("recordSmartHQHeartbeat", device.read_text())
 
 
 if __name__ == "__main__":

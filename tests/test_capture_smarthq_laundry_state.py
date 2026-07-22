@@ -14,6 +14,8 @@ class CaptureSmartHQLaundryStateTests(unittest.TestCase):
             'combo: { accessoryName: "Combination Washer Dryer", mainServiceName: "Washer" }',
             source,
         )
+        self.assertIn("apiLastSuccessAt", source)
+        self.assertIn("smarthq_erd_heartbeat.json", source)
 
 
 if __name__ == "__main__":

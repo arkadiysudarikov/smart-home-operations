@@ -191,6 +191,91 @@ class WasherNotifierTest(unittest.TestCase):
         self.assertTrue(current["cycleActive"])
         self.assertEqual(current["source"], "homebridge-hap-live")
 
+    def test_required_smarthq_heartbeat_gates_stale_live_state_without_cache_fallback(self) -> None:
+        now = datetime(2026, 7, 22, 14, 0, tzinfo=TZ)
+        direct = {
+            "ok": True,
+            "source": "homebridge-hap-live",
+            "capturedAt": (now - timedelta(seconds=5)).isoformat(),
+            "devices": {
+                "combo": {
+                    "inUse": False,
+                    "cycleActive": False,
+                    "doorOpen": None,
+                    "apiLastSuccessAt": (now - timedelta(minutes=8)).isoformat(),
+                },
+            },
+        }
+        current = washer_notifier.current_appliance_state(
+            {},
+            {
+                **config(),
+                "id": "combo",
+                "accessory": "Combination Washer Dryer",
+                "require_smarthq_heartbeat": True,
+                "smarthq_heartbeat_stale_minutes": 5,
+            },
+            now,
+            direct,
+        )
+        self.assertFalse(current["fresh"])
+        self.assertFalse(current["heartbeatFresh"])
+        self.assertEqual(current["source"], "homebridge-hap-live")
+
+    def test_fresh_smarthq_heartbeat_allows_live_state(self) -> None:
+        now = datetime(2026, 7, 22, 14, 0, tzinfo=TZ)
+        direct = {
+            "ok": True,
+            "source": "homebridge-hap-live",
+            "capturedAt": (now - timedelta(seconds=5)).isoformat(),
+            "devices": {
+                "dryer": {
+                    "inUse": True,
+                    "cycleActive": True,
+                    "doorOpen": None,
+                    "apiLastSuccessAt": (now - timedelta(seconds=10)).isoformat(),
+                },
+            },
+        }
+        current = washer_notifier.current_appliance_state(
+            {},
+            {
+                **config(),
+                "id": "dryer",
+                "accessory": "Dryer",
+                "require_smarthq_heartbeat": True,
+                "smarthq_heartbeat_stale_minutes": 5,
+            },
+            now,
+            direct,
+        )
+        self.assertTrue(current["fresh"])
+        self.assertTrue(current["heartbeatFresh"])
+
+    def test_stale_heartbeat_pauses_finish_and_warns_once(self) -> None:
+        now = datetime(2026, 7, 22, 14, 0, tzinfo=TZ)
+        prior = {"lastInUse": True, "armed": True, "runningSamples": 8}
+        stale = {"fresh": False, "inUse": False, "doorOpen": None}
+
+        stale_config = {**config(), "source_stale_alert_enabled": True}
+        state, actions = washer_notifier.evolve_state(prior, stale, now, stale_config)
+        self.assertEqual(actions, ["notify_source_stale"])
+        self.assertTrue(state["armed"])
+        self.assertTrue(state["lastInUse"])
+        self.assertTrue(state["sourceStaleAlertSent"])
+
+        repeated, repeated_actions = washer_notifier.evolve_state(
+            state, stale, now + timedelta(minutes=5), stale_config
+        )
+        self.assertEqual(repeated_actions, [])
+        recovered, _ = washer_notifier.evolve_state(
+            repeated,
+            {"fresh": True, "inUse": True, "doorOpen": None},
+            now + timedelta(minutes=6),
+            stale_config,
+        )
+        self.assertFalse(recovered["sourceStaleAlertSent"])
+
     def test_mac_notification_adds_configured_sound(self) -> None:
         completed = SimpleNamespace(returncode=0, stderr="", stdout="")
         with mock.patch.object(washer_notifier.subprocess, "run", return_value=completed) as run:

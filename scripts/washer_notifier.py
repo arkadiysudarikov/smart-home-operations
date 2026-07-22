@@ -76,19 +76,28 @@ def direct_appliance_state(
 ) -> dict[str, Any] | None:
     captured_at = parse_time(direct_latest.get("capturedAt"))
     max_age_minutes = int(config.get("max_snapshot_age_minutes", 10))
-    fresh = bool(captured_at and timedelta(0) <= now - captured_at <= timedelta(minutes=max_age_minutes))
+    capture_fresh = bool(captured_at and timedelta(0) <= now - captured_at <= timedelta(minutes=max_age_minutes))
     appliance_id = str(config.get("id") or config.get("accessory", "Washer")).lower()
     device = direct_latest.get("devices", {}).get(appliance_id)
-    if direct_latest.get("ok") is not True or not fresh or not isinstance(device, dict):
+    if direct_latest.get("ok") is not True or not capture_fresh or not isinstance(device, dict):
         return None
     if device.get("inUse") is None or device.get("cycleActive") is None:
         return None
+    heartbeat_at = parse_time(device.get("apiLastSuccessAt"))
+    heartbeat_minutes = int(config.get("smarthq_heartbeat_stale_minutes", 5))
+    heartbeat_fresh = bool(
+        heartbeat_at and timedelta(0) <= now - heartbeat_at <= timedelta(minutes=heartbeat_minutes)
+    )
+    heartbeat_required = bool(config.get("require_smarthq_heartbeat", False))
     return {
         "capturedAt": captured_at.isoformat(timespec="seconds") if captured_at else None,
-        "fresh": True,
+        "fresh": capture_fresh and (heartbeat_fresh or not heartbeat_required),
         "inUse": bool(device["inUse"]),
         "cycleActive": bool(device["cycleActive"]),
         "doorOpen": device.get("doorOpen"),
+        "apiLastSuccessAt": heartbeat_at.isoformat(timespec="seconds") if heartbeat_at else None,
+        "apiLastChangedAt": device.get("apiLastChangedAt"),
+        "heartbeatFresh": heartbeat_fresh,
         "source": direct_latest.get("source", "homebridge-hap-live"),
     }
 
@@ -149,7 +158,15 @@ def evolve_washer_state(
     if not current.get("fresh") or current.get("inUse") is None or current.get("cycleActive") is None:
         state["lastCheckedAt"] = now_text
         state["sourceFresh"] = False
-        return state, actions
+        if (
+            config.get("source_stale_alert_enabled", False)
+            and (state.get("primaryArmed") or state.get("ventingArmed") or state.get("armed"))
+            and not state.get("sourceStaleAlertSent")
+        ):
+            state["sourceStaleAlertSent"] = True
+            state["sourceStaleAlertedAt"] = now_text
+            actions.append("notify_source_stale")
+        return state, list(dict.fromkeys(actions))
 
     in_use = bool(current["inUse"])
     cycle_active = bool(current["cycleActive"])
@@ -157,6 +174,7 @@ def evolve_washer_state(
     previous_in_use = state.get("lastInUse")
     previous_cycle_active = state.get("lastCycleActive")
     state["sourceFresh"] = True
+    state["sourceStaleAlertSent"] = False
 
     if previous_cycle_active is None:
         previous_in_use = state.get("lastInUse")
@@ -282,12 +300,21 @@ def evolve_state(
     if not current.get("fresh") or current.get("inUse") is None:
         state["lastCheckedAt"] = now_text
         state["sourceFresh"] = False
-        return state, actions
+        if (
+            config.get("source_stale_alert_enabled", False)
+            and state.get("armed")
+            and not state.get("sourceStaleAlertSent")
+        ):
+            state["sourceStaleAlertSent"] = True
+            state["sourceStaleAlertedAt"] = now_text
+            actions.append("notify_source_stale")
+        return state, list(dict.fromkeys(actions))
 
     in_use = bool(current["inUse"])
     door_open = current.get("doorOpen")
     previous_in_use = state.get("lastInUse")
     state["sourceFresh"] = True
+    state["sourceStaleAlertSent"] = False
 
     if previous_in_use is None:
         state["lastInUse"] = in_use
@@ -522,6 +549,18 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
                 )
             )
             results.append({"action": action, **homepod_announcement(message, config)})
+        elif action == "notify_source_stale":
+            message = str(
+                config.get(
+                    "source_stale_message",
+                    f"SmartHQ has not returned fresh data for the {appliance_lower}. Finish alerts are paused.",
+                )
+            )
+            title = str(config.get("source_stale_title", "SmartHQ Laundry Data Stale"))
+            results.append({
+                "action": action,
+                **mac_notification(message, title, str(config.get("mac_sound", "Glass"))),
+            })
     return results
 
 
@@ -534,6 +573,8 @@ def write_report(payload: dict[str, Any], report_path: Path, appliance_name: str
         "",
         f"- Checked: `{payload['generatedAt']}`",
         f"- SmartHQ snapshot fresh: `{current.get('fresh')}`",
+        f"- SmartHQ API heartbeat fresh: `{current.get('heartbeatFresh')}`",
+        f"- Last successful SmartHQ API read: `{current.get('apiLastSuccessAt')}`",
         f"- State source: `{current.get('source', 'homebridge-cache')}`",
         f"- {appliance_name} running: `{current.get('inUse')}`",
         f"- {appliance_name} primary cycle active: `{current.get('cycleActive')}`",
