@@ -129,6 +129,188 @@ class WasherNotifierTest(unittest.TestCase):
         self.assertFalse(current["cycleActive"])
         self.assertFalse(current["doorOpen"])
 
+    def test_prefers_fresh_direct_smarthq_state_over_stale_homebridge_cache(self) -> None:
+        now = datetime(2026, 7, 22, 12, 0, tzinfo=TZ)
+        latest = {
+            "captured_at": now.isoformat(),
+            "homeEvents": {"currentCharacteristics": {}},
+        }
+        direct = {
+            "ok": True,
+            "source": "homebridge-hap-live",
+            "capturedAt": (now - timedelta(seconds=5)).isoformat(),
+            "devices": {
+                "washer": {"inUse": True, "cycleActive": True, "doorOpen": None},
+            },
+        }
+        current = washer_notifier.current_appliance_state(
+            latest, {**config(), "id": "washer", "accessory": "Washer"}, now, direct
+        )
+        self.assertTrue(current["inUse"])
+        self.assertTrue(current["cycleActive"])
+        self.assertIsNone(current["doorOpen"])
+        self.assertEqual(current["source"], "homebridge-hap-live")
+
+    def test_stale_direct_state_falls_back_to_homebridge_cache(self) -> None:
+        now = datetime(2026, 7, 22, 12, 0, tzinfo=TZ)
+        latest = {
+            "captured_at": now.isoformat(),
+            "homeEvents": {
+                "currentCharacteristics": {
+                    "in-use": {"accessory": "Washer", "service": "Washer", "characteristic": "InUse", "value": 0},
+                    "cycle": {"accessory": "Washer", "service": "Cycle Status", "characteristic": "MotionDetected", "value": 0},
+                    "door": {"accessory": "Washer", "service": "Washer Door", "characteristic": "ContactSensorState", "value": 0},
+                }
+            },
+        }
+        direct = {
+            "ok": True,
+            "capturedAt": (now - timedelta(hours=1)).isoformat(),
+            "devices": {"washer": {"inUse": True, "cycleActive": True, "doorOpen": None}},
+        }
+        current = washer_notifier.current_appliance_state(
+            latest, {**config(), "id": "washer", "accessory": "Washer"}, now, direct
+        )
+        self.assertFalse(current["inUse"])
+        self.assertEqual(current["source"], "homebridge-cache")
+
+    def test_reads_combo_state_from_live_hap_payload(self) -> None:
+        now = datetime(2026, 7, 22, 13, 43, tzinfo=TZ)
+        direct = {
+            "ok": True,
+            "source": "homebridge-hap-live",
+            "capturedAt": (now - timedelta(seconds=5)).isoformat(),
+            "devices": {
+                "combo": {"inUse": True, "cycleActive": True, "doorOpen": None},
+            },
+        }
+        current = washer_notifier.current_appliance_state(
+            {}, {**config(), "id": "combo", "accessory": "Combination Washer Dryer"}, now, direct
+        )
+        self.assertTrue(current["inUse"])
+        self.assertTrue(current["cycleActive"])
+        self.assertEqual(current["source"], "homebridge-hap-live")
+
+    def test_required_smarthq_heartbeat_gates_stale_live_state_without_cache_fallback(self) -> None:
+        now = datetime(2026, 7, 22, 14, 0, tzinfo=TZ)
+        direct = {
+            "ok": True,
+            "source": "homebridge-hap-live",
+            "capturedAt": (now - timedelta(seconds=5)).isoformat(),
+            "devices": {
+                "combo": {
+                    "inUse": False,
+                    "cycleActive": False,
+                    "doorOpen": None,
+                    "apiLastSuccessAt": (now - timedelta(minutes=8)).isoformat(),
+                },
+            },
+        }
+        current = washer_notifier.current_appliance_state(
+            {},
+            {
+                **config(),
+                "id": "combo",
+                "accessory": "Combination Washer Dryer",
+                "require_smarthq_heartbeat": True,
+                "smarthq_heartbeat_stale_minutes": 5,
+            },
+            now,
+            direct,
+        )
+        self.assertFalse(current["fresh"])
+        self.assertFalse(current["heartbeatFresh"])
+        self.assertEqual(current["source"], "homebridge-hap-live")
+
+    def test_fresh_smarthq_heartbeat_allows_live_state(self) -> None:
+        now = datetime(2026, 7, 22, 14, 0, tzinfo=TZ)
+        direct = {
+            "ok": True,
+            "source": "homebridge-hap-live",
+            "capturedAt": (now - timedelta(seconds=5)).isoformat(),
+            "devices": {
+                "dryer": {
+                    "inUse": True,
+                    "cycleActive": True,
+                    "doorOpen": None,
+                    "apiLastSuccessAt": (now - timedelta(seconds=10)).isoformat(),
+                },
+            },
+        }
+        current = washer_notifier.current_appliance_state(
+            {},
+            {
+                **config(),
+                "id": "dryer",
+                "accessory": "Dryer",
+                "require_smarthq_heartbeat": True,
+                "smarthq_heartbeat_stale_minutes": 5,
+            },
+            now,
+            direct,
+        )
+        self.assertTrue(current["fresh"])
+        self.assertTrue(current["heartbeatFresh"])
+
+    def test_stale_heartbeat_pauses_finish_and_warns_once(self) -> None:
+        now = datetime(2026, 7, 22, 14, 0, tzinfo=TZ)
+        prior = {"lastInUse": True, "armed": True, "runningSamples": 8}
+        stale = {"fresh": False, "inUse": False, "doorOpen": None}
+
+        stale_config = {**config(), "source_stale_alert_enabled": True}
+        state, actions = washer_notifier.evolve_state(prior, stale, now, stale_config)
+        self.assertEqual(actions, ["notify_source_stale"])
+        self.assertTrue(state["armed"])
+        self.assertTrue(state["lastInUse"])
+        self.assertTrue(state["sourceStaleAlertSent"])
+
+        repeated, repeated_actions = washer_notifier.evolve_state(
+            state, stale, now + timedelta(minutes=5), stale_config
+        )
+        self.assertEqual(repeated_actions, [])
+        recovered, _ = washer_notifier.evolve_state(
+            repeated,
+            {"fresh": True, "inUse": True, "doorOpen": None},
+            now + timedelta(minutes=6),
+            stale_config,
+        )
+        self.assertFalse(recovered["sourceStaleAlertSent"])
+
+    def test_physically_confirmed_manual_venting_rearms_fan_off_alert(self) -> None:
+        now = datetime(2026, 7, 22, 15, 44, tzinfo=TZ)
+        prior = {
+            "primaryArmed": False,
+            "ventingArmed": False,
+            "lastInUse": True,
+            "lastCycleActive": False,
+            "ventingStartedAt": (now - timedelta(hours=1)).isoformat(),
+        }
+        confirmed = washer_notifier.confirm_washer_venting(
+            prior,
+            {"fresh": True, "inUse": True, "cycleActive": False},
+            now,
+        )
+
+        self.assertTrue(confirmed["ventingArmed"])
+        self.assertEqual(confirmed["ventingStartedAt"], now.isoformat(timespec="seconds"))
+        self.assertFalse(confirmed["ventingStaleAlertSent"])
+
+    def test_manual_venting_confirmation_rejects_active_wash(self) -> None:
+        now = datetime(2026, 7, 22, 15, 44, tzinfo=TZ)
+        with self.assertRaisesRegex(ValueError, "not reporting active venting"):
+            washer_notifier.confirm_washer_venting(
+                {},
+                {"fresh": True, "inUse": True, "cycleActive": True},
+                now,
+            )
+
+    def test_mac_notification_adds_configured_sound(self) -> None:
+        completed = SimpleNamespace(returncode=0, stderr="", stdout="")
+        with mock.patch.object(washer_notifier.subprocess, "run", return_value=completed) as run:
+            result = washer_notifier.mac_notification("Finished", "Garage Combo Finished", "Glass")
+        self.assertTrue(result["ok"])
+        self.assertIn('sound name "Glass"', run.call_args.args[0][2])
+
     def test_migrates_running_washer_venting_without_false_wash_alert(self) -> None:
         now = datetime(2026, 7, 15, 17, 30, tzinfo=TZ)
         legacy = {
@@ -165,6 +347,38 @@ class WasherNotifierTest(unittest.TestCase):
         self.assertEqual(actions, ["finish_on", "notify_finish", "announce_finish"])
         self.assertTrue(evolved["ventingArmed"])
         self.assertTrue(evolved["awaitingUnload"])
+
+    def test_unknown_washer_door_does_not_arm_unload_reminder(self) -> None:
+        now = datetime(2026, 7, 15, 12, 37, tzinfo=TZ)
+        state = {
+            "lastCycleActive": True,
+            "lastInUse": True,
+            "primaryArmed": True,
+            "washStartedAt": (now - timedelta(hours=1)).isoformat(),
+            "runningSamples": 8,
+        }
+        evolved, actions = washer_notifier.evolve_state(
+            state,
+            {"fresh": True, "inUse": True, "cycleActive": False, "doorOpen": None},
+            now,
+            {**config(), "finish_signal": "cycleActive"},
+        )
+        self.assertIn("notify_finish", actions)
+        self.assertFalse(evolved["awaitingUnload"])
+
+    def test_unknown_dryer_door_suppresses_pending_unload_reminder(self) -> None:
+        now = datetime(2026, 7, 15, 12, 21, tzinfo=TZ)
+        state = {
+            "lastInUse": False,
+            "awaitingUnload": True,
+            "finishedAt": (now - timedelta(minutes=21)).isoformat(),
+            "reminderSent": False,
+        }
+        evolved, actions = washer_notifier.evolve_state(
+            state, {"fresh": True, "inUse": False, "doorOpen": None}, now, config()
+        )
+        self.assertNotIn("notify_reminder", actions)
+        self.assertFalse(evolved["reminderSent"])
 
     def test_venting_completion_sends_fan_reminder(self) -> None:
         now = datetime(2026, 7, 15, 18, 0, tzinfo=TZ)
@@ -235,7 +449,7 @@ class WasherNotifierTest(unittest.TestCase):
     def test_stale_venting_action_uses_check_message(self) -> None:
         notifications: list[tuple[str, str]] = []
 
-        def notification(message: str, title: str) -> dict:
+        def notification(message: str, title: str, _sound_name: str | None = None) -> dict:
             notifications.append((message, title))
             return {"ok": True}
 
@@ -282,7 +496,7 @@ class WasherNotifierTest(unittest.TestCase):
     def test_dryer_actions_use_dryer_messages_and_sensors(self) -> None:
         calls: list[tuple[str, str]] = []
 
-        def notification(message: str, title: str) -> dict:
+        def notification(message: str, title: str, _sound_name: str | None = None) -> dict:
             calls.append((message, title))
             return {"ok": True}
 
@@ -309,7 +523,7 @@ class WasherNotifierTest(unittest.TestCase):
         notifications: list[tuple[str, str]] = []
         webhook_calls: list[tuple[str, bool]] = []
 
-        def notification(message: str, title: str) -> dict:
+        def notification(message: str, title: str, _sound_name: str | None = None) -> dict:
             notifications.append((message, title))
             return {"ok": True}
 

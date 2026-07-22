@@ -41,8 +41,10 @@ function main() {
   const shouldApply = args.has("--apply");
   const root = pluginRoot();
   const washer = path.join(root, "dist/devices/clothesWasher.js");
+  const device = path.join(root, "dist/devices/device.js");
   const oven = path.join(root, "dist/devices/oven.js");
   const accessToken = path.join(root, "dist/getAccessToken.js");
+  const platform = path.join(root, "dist/platform.js");
   const washerStatus = patchFile(
     washer,
     `            const seconds = Math.round(minutes * 60); // Don't cap, let it show actual time
@@ -107,6 +109,86 @@ function main() {
     "                        url: new URL('/account/active/redirect', LOGIN_URL).toString(),",
     shouldApply
   );
+  const comboStatus = patchFile(
+    platform,
+    `                        case 'Clothes Washer':
+                            await this.createSmartHQClothesWasher(userId, device, details, features);
+                            break;`,
+    `                        case 'Clothes Washer':
+                            await this.createSmartHQClothesWasher(userId, device, details, features);
+                            break;
+                        case 'Combination Washer Dryer':
+                            await this.createSmartHQClothesWasher(userId, device, details, features);
+                            break;`,
+    shouldApply
+  );
+  const heartbeatImportsStatus = patchFile(
+    device,
+    `import axios from 'axios';
+import { ERD_TYPES } from '../settings.js';`,
+    `import axios from 'axios';
+import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { ERD_TYPES } from '../settings.js';
+const SMART_HOME_HEARTBEAT_PATH = process.env.SMART_HOME_SMARTHQ_HEARTBEAT_PATH
+    ?? join(homedir(), 'Library', 'Application Support', 'SmartHomeMonitor', 'data', 'smarthq_erd_heartbeat.json');
+function recordSmartHQHeartbeat(applianceId, nickname, erd, value) {
+    try {
+        const now = new Date().toISOString();
+        let payload = { version: 1, devices: {} };
+        try {
+            payload = JSON.parse(readFileSync(SMART_HOME_HEARTBEAT_PATH, 'utf8'));
+        }
+        catch {
+            // The first successful ERD read creates the heartbeat file.
+        }
+        payload.devices ??= {};
+        const prior = payload.devices[applianceId] ?? { erds: {} };
+        prior.erds ??= {};
+        const changed = prior.erds[erd]?.value !== value;
+        prior.nickname = nickname;
+        prior.lastSuccessAt = now;
+        prior.lastChangedAt = changed ? now : (prior.lastChangedAt ?? now);
+        prior.erds[erd] = {
+            value,
+            lastSuccessAt: now,
+            lastChangedAt: changed ? now : (prior.erds[erd]?.lastChangedAt ?? now),
+        };
+        payload.updatedAt = now;
+        payload.devices[applianceId] = prior;
+        mkdirSync(dirname(SMART_HOME_HEARTBEAT_PATH), { recursive: true });
+        const temporary = \`\${SMART_HOME_HEARTBEAT_PATH}.\${process.pid}.tmp\`;
+        writeFileSync(temporary, \`\${JSON.stringify(payload, null, 2)}\\n\`, { mode: 0o600 });
+        renameSync(temporary, SMART_HOME_HEARTBEAT_PATH);
+    }
+    catch {
+        // Observability must never break the appliance integration.
+    }
+}`,
+    shouldApply
+  );
+  const heartbeatReadStatus = patchFile(
+    device,
+    `            if (typeof d.data.value === 'object') {
+                const jsonValue = JSON.stringify(d.data.value);
+                await this.debugLog(\`ERD \${erd} returned object: \${jsonValue}\`);
+                return jsonValue;
+            }
+            await this.debugLog(\`ERD \${erd} value: \${d.data.value}\`);
+            return String(d.data.value);`,
+    `            if (typeof d.data.value === 'object') {
+                const jsonValue = JSON.stringify(d.data.value);
+                recordSmartHQHeartbeat(this.getApplianceId(), this.getDisplayName(), erd, jsonValue);
+                await this.debugLog(\`ERD \${erd} returned object: \${jsonValue}\`);
+                return jsonValue;
+            }
+            const value = String(d.data.value);
+            recordSmartHQHeartbeat(this.getApplianceId(), this.getDisplayName(), erd, value);
+            await this.debugLog(\`ERD \${erd} value: \${d.data.value}\`);
+            return value;`,
+    shouldApply
+  );
   console.log(JSON.stringify({
     root,
     applied: shouldApply,
@@ -114,6 +196,9 @@ function main() {
     oven: ovenStatus,
     auth: authStatus,
     authMfaUrl: authMfaUrlStatus,
+    combo: comboStatus,
+    heartbeatImports: heartbeatImportsStatus,
+    heartbeatRead: heartbeatReadStatus,
   }, null, 2));
 }
 
