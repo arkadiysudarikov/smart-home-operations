@@ -201,7 +201,7 @@ def evolve_washer_state(
                 "ventingStartedAt": now_text if in_use else None,
                 "ventingStaleAlertSent": False,
                 "ventingStaleAlertedAt": None,
-                "awaitingUnload": not bool(door_open),
+                "awaitingUnload": door_open is False,
                 "washFinishedAt": now_text,
                 "reminderSent": False,
                 "finishPulseUntil": (now + timedelta(seconds=pulse_seconds)).isoformat(timespec="seconds"),
@@ -244,6 +244,7 @@ def evolve_washer_state(
         actions.extend(["finish_off", "reminder_off"])
     elif (
         state.get("awaitingUnload")
+        and door_open is False
         and not state.get("reminderSent")
         and finished_at
         and now >= finished_at + timedelta(minutes=int(config.get("reminder_minutes", 20)))
@@ -317,7 +318,7 @@ def evolve_state(
         if state.get("armed") and (duration_ok or samples_ok):
             state.update({
                 "armed": False,
-                "awaitingUnload": not bool(door_open),
+                "awaitingUnload": door_open is False,
                 "finishedAt": now_text,
                 "reminderSent": False,
                 "finishPulseUntil": (now + timedelta(seconds=pulse_seconds)).isoformat(timespec="seconds"),
@@ -333,6 +334,7 @@ def evolve_state(
         actions.extend(["finish_off", "reminder_off"])
     elif (
         state.get("awaitingUnload")
+        and door_open is False
         and not state.get("reminderSent")
         and finished_at
         and now >= finished_at + timedelta(minutes=int(config.get("reminder_minutes", 20)))

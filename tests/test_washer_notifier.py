@@ -211,6 +211,38 @@ class WasherNotifierTest(unittest.TestCase):
         self.assertTrue(evolved["ventingArmed"])
         self.assertTrue(evolved["awaitingUnload"])
 
+    def test_unknown_washer_door_does_not_arm_unload_reminder(self) -> None:
+        now = datetime(2026, 7, 15, 12, 37, tzinfo=TZ)
+        state = {
+            "lastCycleActive": True,
+            "lastInUse": True,
+            "primaryArmed": True,
+            "washStartedAt": (now - timedelta(hours=1)).isoformat(),
+            "runningSamples": 8,
+        }
+        evolved, actions = washer_notifier.evolve_state(
+            state,
+            {"fresh": True, "inUse": True, "cycleActive": False, "doorOpen": None},
+            now,
+            {**config(), "finish_signal": "cycleActive"},
+        )
+        self.assertIn("notify_finish", actions)
+        self.assertFalse(evolved["awaitingUnload"])
+
+    def test_unknown_dryer_door_suppresses_pending_unload_reminder(self) -> None:
+        now = datetime(2026, 7, 15, 12, 21, tzinfo=TZ)
+        state = {
+            "lastInUse": False,
+            "awaitingUnload": True,
+            "finishedAt": (now - timedelta(minutes=21)).isoformat(),
+            "reminderSent": False,
+        }
+        evolved, actions = washer_notifier.evolve_state(
+            state, {"fresh": True, "inUse": False, "doorOpen": None}, now, config()
+        )
+        self.assertNotIn("notify_reminder", actions)
+        self.assertFalse(evolved["reminderSent"])
+
     def test_venting_completion_sends_fan_reminder(self) -> None:
         now = datetime(2026, 7, 15, 18, 0, tzinfo=TZ)
         state = {
