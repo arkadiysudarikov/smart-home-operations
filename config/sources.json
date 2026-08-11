@@ -185,7 +185,14 @@
     "announcement_start_hour": 8,
     "announcement_end_hour": 21,
     "homepod_enabled": true,
-    "homepod_targets": ["Primary HomePod"],
+    "homepod_targets": [
+      "Primary HomePod",
+      "Bar HomePod",
+      "Bathroom HomePod",
+      "Entry HomePod",
+      "Kitchen HomePod",
+      "Office HomePod"
+    ],
     "homepod_volume": 65,
     "homepod_clip_seconds": 8,
     "mac_sound": "Glass",
@@ -210,7 +217,14 @@
     "announcement_start_hour": 8,
     "announcement_end_hour": 21,
     "homepod_enabled": true,
-    "homepod_targets": ["Primary HomePod"],
+    "homepod_targets": [
+      "Primary HomePod",
+      "Bar HomePod",
+      "Bathroom HomePod",
+      "Entry HomePod",
+      "Kitchen HomePod",
+      "Office HomePod"
+    ],
     "homepod_volume": 65,
     "homepod_clip_seconds": 8,
     "mac_sound": "Glass",
@@ -237,7 +251,14 @@
     "announcement_start_hour": 8,
     "announcement_end_hour": 21,
     "homepod_enabled": true,
-    "homepod_targets": ["Primary HomePod"],
+    "homepod_targets": [
+      "Primary HomePod",
+      "Bar HomePod",
+      "Bathroom HomePod",
+      "Entry HomePod",
+      "Kitchen HomePod",
+      "Office HomePod"
+    ],
     "homepod_volume": 65,
     "homepod_clip_seconds": 8,
     "mac_sound": "Glass",

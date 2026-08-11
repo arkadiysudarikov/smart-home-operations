@@ -68,7 +68,8 @@ the child bridge's authenticated SmartHQ session. Door state is treated as
 unknown because the current washer and dryer do not expose usable door ERDs.
 The SmartHQ combination washer/dryer is mapped to the same live machine-state
 service and monitored separately as the garage combo. Laundry finish alerts use
-an audible Mac sound plus a louder daytime Primary HomePod announcement.
+an audible Mac sound plus a louder daytime announcement on every indoor HomePod
+(Primary, Bar, Bathroom, Entry, Kitchen, and Office).
 Successful per-appliance SmartHQ API reads also advance a heartbeat. A heartbeat
 older than five minutes pauses finish detection and sends one stale-data warning,
 preventing a failed API read or frozen HomeKit value from becoming a false finish.

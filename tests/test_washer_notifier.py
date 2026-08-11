@@ -553,17 +553,24 @@ class WasherNotifierTest(unittest.TestCase):
             [("Washer venting has finished. Turn off the laundry-room fan.", "Venting Finished")],
         )
 
-    def test_homepod_announcement_uses_configured_target_and_restores_output(self) -> None:
+    def test_homepod_announcement_uses_all_configured_targets_and_restores_output(self) -> None:
         completed = SimpleNamespace(returncode=0, stderr="", stdout="")
         with mock.patch.object(washer_notifier.subprocess, "run", side_effect=[completed, completed]) as run:
             result = washer_notifier.homepod_announcement(
                 "The washer has finished.",
-                {"homepod_targets": ["Primary HomePod"], "homepod_volume": 45, "homepod_clip_seconds": 5},
+                {
+                    "homepod_targets": ["Primary HomePod", "Kitchen HomePod", "Office HomePod"],
+                    "homepod_volume": 45,
+                    "homepod_clip_seconds": 5,
+                },
             )
         self.assertTrue(result["ok"])
         self.assertEqual(run.call_args_list[0].args[0][0], "say")
         apple_script = run.call_args_list[1].args[0][2]
-        self.assertIn('set targetNames to {"Primary HomePod"}', apple_script)
+        self.assertIn(
+            'set targetNames to {"Primary HomePod", "Kitchen HomePod", "Office HomePod"}',
+            apple_script,
+        )
         self.assertIn("set sound volume of deviceItem to 45", apple_script)
         self.assertIn("set current AirPlay devices to originalDevices", apple_script)
 
