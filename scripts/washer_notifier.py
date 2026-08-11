@@ -17,6 +17,7 @@ CONFIG_PATH = ROOT / "config" / "sources.json"
 DATA_DIR = ROOT / "data"
 REPORT_DIR = ROOT / "reports"
 LATEST_PATH = DATA_DIR / "latest.json"
+DIRECT_SMARTHQ_PATH = DATA_DIR / "latest_smarthq_laundry_state.json"
 SENSE_NOW_PATH = DATA_DIR / "sense_now_latest.json"
 ENVOY_PATH = DATA_DIR / "latest_envoy_direct.json"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
@@ -70,7 +71,43 @@ def find_characteristic(latest: dict[str, Any], accessory: str, service: str, ch
     return None
 
 
-def current_appliance_state(latest: dict[str, Any], config: dict[str, Any], now: datetime) -> dict[str, Any]:
+def direct_appliance_state(
+    direct_latest: dict[str, Any], config: dict[str, Any], now: datetime
+) -> dict[str, Any] | None:
+    captured_at = parse_time(direct_latest.get("capturedAt"))
+    max_age_minutes = int(config.get("max_snapshot_age_minutes", 10))
+    capture_fresh = bool(captured_at and timedelta(0) <= now - captured_at <= timedelta(minutes=max_age_minutes))
+    appliance_id = str(config.get("id") or config.get("accessory", "Washer")).lower()
+    device = direct_latest.get("devices", {}).get(appliance_id)
+    if direct_latest.get("ok") is not True or not capture_fresh or not isinstance(device, dict):
+        return None
+    if device.get("inUse") is None or device.get("cycleActive") is None:
+        return None
+    heartbeat_at = parse_time(device.get("apiLastSuccessAt"))
+    heartbeat_minutes = int(config.get("smarthq_heartbeat_stale_minutes", 5))
+    heartbeat_fresh = bool(
+        heartbeat_at and timedelta(0) <= now - heartbeat_at <= timedelta(minutes=heartbeat_minutes)
+    )
+    heartbeat_required = bool(config.get("require_smarthq_heartbeat", False))
+    return {
+        "capturedAt": captured_at.isoformat(timespec="seconds") if captured_at else None,
+        "fresh": capture_fresh and (heartbeat_fresh or not heartbeat_required),
+        "inUse": bool(device["inUse"]),
+        "cycleActive": bool(device["cycleActive"]),
+        "doorOpen": device.get("doorOpen"),
+        "apiLastSuccessAt": heartbeat_at.isoformat(timespec="seconds") if heartbeat_at else None,
+        "apiLastChangedAt": device.get("apiLastChangedAt"),
+        "heartbeatFresh": heartbeat_fresh,
+        "source": direct_latest.get("source", "homebridge-hap-live"),
+    }
+
+
+def current_appliance_state(
+    latest: dict[str, Any], config: dict[str, Any], now: datetime, direct_latest: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    direct = direct_appliance_state(direct_latest or {}, config, now)
+    if direct:
+        return direct
     captured_at = parse_time(latest.get("captured_at"))
     max_age_minutes = int(config.get("max_snapshot_age_minutes", 10))
     fresh = bool(captured_at and timedelta(0) <= now - captured_at <= timedelta(minutes=max_age_minutes))
@@ -88,6 +125,7 @@ def current_appliance_state(latest: dict[str, Any], config: dict[str, Any], now:
         "inUse": in_use,
         "cycleActive": cycle_active,
         "doorOpen": door_open,
+        "source": "homebridge-cache",
     }
 
 
@@ -97,6 +135,29 @@ def within_announcement_hours(now: datetime, config: dict[str, Any]) -> bool:
     if start <= end:
         return start <= now.hour < end
     return now.hour >= start or now.hour < end
+
+
+def confirm_washer_venting(
+    prior: dict[str, Any], current: dict[str, Any], now: datetime
+) -> dict[str, Any]:
+    if not current.get("fresh"):
+        raise ValueError("cannot confirm venting while SmartHQ data is stale")
+    if current.get("inUse") is not True or current.get("cycleActive") is not False:
+        raise ValueError("washer is not reporting active venting state")
+    state = dict(prior)
+    state.update(
+        {
+            "primaryArmed": False,
+            "ventingArmed": True,
+            "ventingStartedAt": now.isoformat(timespec="seconds"),
+            "ventingStaleAlertSent": False,
+            "ventingStaleAlertedAt": None,
+            "lastInUse": True,
+            "lastCycleActive": False,
+            "sourceFresh": True,
+        }
+    )
+    return state
 
 
 def evolve_washer_state(
@@ -120,7 +181,15 @@ def evolve_washer_state(
     if not current.get("fresh") or current.get("inUse") is None or current.get("cycleActive") is None:
         state["lastCheckedAt"] = now_text
         state["sourceFresh"] = False
-        return state, actions
+        if (
+            config.get("source_stale_alert_enabled", False)
+            and (state.get("primaryArmed") or state.get("ventingArmed") or state.get("armed"))
+            and not state.get("sourceStaleAlertSent")
+        ):
+            state["sourceStaleAlertSent"] = True
+            state["sourceStaleAlertedAt"] = now_text
+            actions.append("notify_source_stale")
+        return state, list(dict.fromkeys(actions))
 
     in_use = bool(current["inUse"])
     cycle_active = bool(current["cycleActive"])
@@ -128,6 +197,7 @@ def evolve_washer_state(
     previous_in_use = state.get("lastInUse")
     previous_cycle_active = state.get("lastCycleActive")
     state["sourceFresh"] = True
+    state["sourceStaleAlertSent"] = False
 
     if previous_cycle_active is None:
         previous_in_use = state.get("lastInUse")
@@ -172,7 +242,7 @@ def evolve_washer_state(
                 "ventingStartedAt": now_text if in_use else None,
                 "ventingStaleAlertSent": False,
                 "ventingStaleAlertedAt": None,
-                "awaitingUnload": not bool(door_open),
+                "awaitingUnload": door_open is False,
                 "washFinishedAt": now_text,
                 "reminderSent": False,
                 "finishPulseUntil": (now + timedelta(seconds=pulse_seconds)).isoformat(timespec="seconds"),
@@ -215,6 +285,7 @@ def evolve_washer_state(
         actions.extend(["finish_off", "reminder_off"])
     elif (
         state.get("awaitingUnload")
+        and door_open is False
         and not state.get("reminderSent")
         and finished_at
         and now >= finished_at + timedelta(minutes=int(config.get("reminder_minutes", 20)))
@@ -252,12 +323,21 @@ def evolve_state(
     if not current.get("fresh") or current.get("inUse") is None:
         state["lastCheckedAt"] = now_text
         state["sourceFresh"] = False
-        return state, actions
+        if (
+            config.get("source_stale_alert_enabled", False)
+            and state.get("armed")
+            and not state.get("sourceStaleAlertSent")
+        ):
+            state["sourceStaleAlertSent"] = True
+            state["sourceStaleAlertedAt"] = now_text
+            actions.append("notify_source_stale")
+        return state, list(dict.fromkeys(actions))
 
     in_use = bool(current["inUse"])
     door_open = current.get("doorOpen")
     previous_in_use = state.get("lastInUse")
     state["sourceFresh"] = True
+    state["sourceStaleAlertSent"] = False
 
     if previous_in_use is None:
         state["lastInUse"] = in_use
@@ -288,7 +368,7 @@ def evolve_state(
         if state.get("armed") and (duration_ok or samples_ok):
             state.update({
                 "armed": False,
-                "awaitingUnload": not bool(door_open),
+                "awaitingUnload": door_open is False,
                 "finishedAt": now_text,
                 "reminderSent": False,
                 "finishPulseUntil": (now + timedelta(seconds=pulse_seconds)).isoformat(timespec="seconds"),
@@ -304,6 +384,7 @@ def evolve_state(
         actions.extend(["finish_off", "reminder_off"])
     elif (
         state.get("awaitingUnload")
+        and door_open is False
         and not state.get("reminderSent")
         and finished_at
         and now >= finished_at + timedelta(minutes=int(config.get("reminder_minutes", 20)))
@@ -330,8 +411,10 @@ def webhook_set(webhook_url: str, accessory_id: str, active: bool) -> dict[str, 
         return {"ok": False, "active": active, "error": str(exc)}
 
 
-def mac_notification(message: str, title: str) -> dict[str, Any]:
+def mac_notification(message: str, title: str, sound_name: str | None = None) -> dict[str, Any]:
     script = f'display notification {json.dumps(message)} with title {json.dumps(title)}'
+    if sound_name:
+        script += f' sound name {json.dumps(sound_name)}'
     proc = subprocess.run(["osascript", "-e", script], text=True, capture_output=True, timeout=10, check=False)
     return {"ok": proc.returncode == 0, "returncode": proc.returncode, "error": proc.stderr.strip() or None}
 
@@ -441,7 +524,10 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
             result = webhook_set(webhook_url, sensor_id, action.endswith("_on"))
             results.append({"action": action, **result})
         elif action == "notify_finish":
-            results.append({"action": action, **mac_notification(finish_message, finish_title)})
+            results.append({
+                "action": action,
+                **mac_notification(finish_message, finish_title, str(config.get("mac_sound", "Glass"))),
+            })
         elif action == "notify_reminder":
             minutes = int(config.get("reminder_minutes", 20))
             results.append({
@@ -449,6 +535,7 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
                 **mac_notification(
                     f"The {appliance_lower} finished {minutes} minutes ago and the door is still closed.",
                     f"Unload {appliance_name}",
+                    str(config.get("mac_sound", "Glass")),
                 ),
             })
         elif action == "announce_finish" and config.get("homepod_enabled", False):
@@ -456,7 +543,10 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
         elif action == "notify_venting":
             message = str(config.get("venting_message", "Washer venting has finished. Turn off the laundry-room fan."))
             title = str(config.get("venting_title", "Venting Finished"))
-            results.append({"action": action, **mac_notification(message, title)})
+            results.append({
+                "action": action,
+                **mac_notification(message, title, str(config.get("mac_sound", "Glass"))),
+            })
         elif action == "announce_venting" and config.get("homepod_enabled", False):
             message = str(config.get("venting_announcement", "Washer venting has finished. Turn off the laundry-room fan."))
             results.append({"action": action, **homepod_announcement(message, config)})
@@ -469,7 +559,10 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
                 )
             )
             title = str(config.get("venting_stale_title", "Check Washer Venting"))
-            results.append({"action": action, **mac_notification(message, title)})
+            results.append({
+                "action": action,
+                **mac_notification(message, title, str(config.get("mac_sound", "Glass"))),
+            })
         elif action == "announce_venting_stale" and config.get("homepod_enabled", False):
             hours = int(config.get("maximum_venting_hours", 8))
             message = str(
@@ -479,6 +572,18 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
                 )
             )
             results.append({"action": action, **homepod_announcement(message, config)})
+        elif action == "notify_source_stale":
+            message = str(
+                config.get(
+                    "source_stale_message",
+                    f"SmartHQ has not returned fresh data for the {appliance_lower}. Finish alerts are paused.",
+                )
+            )
+            title = str(config.get("source_stale_title", "SmartHQ Laundry Data Stale"))
+            results.append({
+                "action": action,
+                **mac_notification(message, title, str(config.get("mac_sound", "Glass"))),
+            })
     return results
 
 
@@ -491,6 +596,9 @@ def write_report(payload: dict[str, Any], report_path: Path, appliance_name: str
         "",
         f"- Checked: `{payload['generatedAt']}`",
         f"- SmartHQ snapshot fresh: `{current.get('fresh')}`",
+        f"- SmartHQ API heartbeat fresh: `{current.get('heartbeatFresh')}`",
+        f"- Last successful SmartHQ API read: `{current.get('apiLastSuccessAt')}`",
+        f"- State source: `{current.get('source', 'homebridge-cache')}`",
         f"- {appliance_name} running: `{current.get('inUse')}`",
         f"- {appliance_name} primary cycle active: `{current.get('cycleActive')}`",
         f"- {appliance_name} door open: `{current.get('doorOpen')}`",
@@ -512,7 +620,12 @@ def write_report(payload: dict[str, Any], report_path: Path, appliance_name: str
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Send laundry-finished and unload-reminder notifications.")
-    parser.add_argument("--appliance", choices=("washer", "dryer"), default="washer")
+    parser.add_argument("--appliance", choices=("washer", "dryer", "combo"), default="washer")
+    parser.add_argument(
+        "--confirm-venting-start",
+        action="store_true",
+        help="arm washer venting completion after a physically confirmed manual venting start",
+    )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--now", help="override the current local time for testing")
     args = parser.parse_args()
@@ -532,8 +645,16 @@ def main() -> int:
     now = parse_time(args.now) if args.now else datetime.now(timezone.utc).astimezone(LOCAL_TZ)
     assert now is not None
     latest = load_json(LATEST_PATH, {})
-    current = current_appliance_state(latest, config, now)
+    direct_latest = load_json(DIRECT_SMARTHQ_PATH, {})
+    current = current_appliance_state(latest, config, now, direct_latest)
     prior = load_json(state_path, {})
+    if args.confirm_venting_start:
+        if appliance_id != "washer":
+            parser.error("--confirm-venting-start is valid only for the washer")
+        try:
+            prior = confirm_washer_venting(prior, current, now)
+        except ValueError as exc:
+            parser.error(str(exc))
     state, actions = evolve_state(prior, current, now, config)
     results = execute_actions(actions, config, args.dry_run)
     observation = power_observation(current, now, appliance_id)

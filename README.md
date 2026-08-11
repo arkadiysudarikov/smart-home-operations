@@ -60,6 +60,25 @@ collect labeled power-fallback samples:
 ./scripts/washer_notifier.py --appliance dryer
 ```
 
+The scheduled monitor first runs `capture_smarthq_laundry_state.js` to refresh
+the washer and dryer through Homebridge's local HAP client. The notifier prefers
+that fresh source over Homebridge's persisted accessory cache, which may remain
+unchanged until a HomeKit client explicitly reads a characteristic. This reuses
+the child bridge's authenticated SmartHQ session. Door state is treated as
+unknown because the current washer and dryer do not expose usable door ERDs.
+The SmartHQ combination washer/dryer is mapped to the same live machine-state
+service and monitored separately as the garage combo. Laundry finish alerts use
+an audible Mac sound plus a louder daytime Primary HomePod announcement.
+Successful per-appliance SmartHQ API reads also advance a heartbeat. A heartbeat
+older than five minutes pauses finish detection and sends one stale-data warning,
+preventing a failed API read or frozen HomeKit value from becoming a false finish.
+Two consecutive stale scheduled checks trigger a restart of only the SmartHQ
+child bridge. A 20-minute cooldown prevents restart loops, and the watchdog
+recaptures live state before the armed laundry notifiers continue.
+Manually started washer venting can be armed from a physically confirmed state
+with `washer_notifier.py --confirm-venting-start`; the command refuses unless
+fresh SmartHQ data shows the washer active with its wash cycle inactive.
+
 The dryer notifier requires a fresh observed `InUse` cycle before it can alert.
 The washer uses SmartHQ `Cycle Status` turning off for the useful wash-finished
 alert, while the later `InUse` transition to off means after-wash venting has
