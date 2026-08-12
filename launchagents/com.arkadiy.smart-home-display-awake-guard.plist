@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.arkadiy.smart-home-display-awake-guard</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/arkadiysudarikov/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3</string>
+    <string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/data/display_awake_policy_guard.py</string>
+    <string>--runtime-root</string>
+    <string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>StandardOutPath</key>
+  <string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/logs/display-awake-guard.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/logs/display-awake-guard.err.log</string>
+</dict>
+</plist>

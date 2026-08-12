@@ -340,6 +340,127 @@ def read_jsonl_tail(path: Path, limit: int) -> list[dict[str, Any]]:
     return rows
 
 
+def read_jsonl_local_day(path: Path, day: Any = None, limit: int = 1000) -> list[dict[str, Any]]:
+    if not path.exists():
+        return []
+    selected_day = day or datetime.now().astimezone().date()
+    rows: list[dict[str, Any]] = []
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return []
+    for line in lines[-limit:]:
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        timestamp = parse_dt(payload.get("timestamp"))
+        if timestamp and timestamp.astimezone().date() == selected_day:
+            rows.append(payload)
+    return rows
+
+def display_history(events: list[dict[str, Any]]) -> dict[str, Any]:
+    entries: list[dict[str, Any]] = []
+    zone_transitions = 0
+    source_transitions = 0
+    hold_starts = 0
+    releases = 0
+    blocker_changes = 0
+    lease_starts = 0
+    previous: dict[str, Any] | None = None
+    for event in events:
+        presence = event.get("presence") if isinstance(event.get("presence"), dict) else {}
+        targets = event.get("targets") if isinstance(event.get("targets"), dict) else {}
+        room = presence.get("confirmedRoom")
+        source = presence.get("source")
+        changes: list[str] = []
+        kinds: set[str] = set()
+        if previous is None:
+            changes.append("Tracking started")
+            kinds.add("system")
+        else:
+            previous_presence = previous.get("presence") if isinstance(previous.get("presence"), dict) else {}
+            previous_targets = previous.get("targets") if isinstance(previous.get("targets"), dict) else {}
+            previous_room = previous_presence.get("confirmedRoom")
+            previous_source = previous_presence.get("source")
+            if room != previous_room:
+                changes.append(f"Zone {display_zone_label(previous_room)} → {display_zone_label(room)}")
+                zone_transitions += 1
+                kinds.add("zone")
+            if source != previous_source:
+                changes.append(
+                    f"Primary {display_presence_device_label(previous_source)} → {display_presence_device_label(source)}"
+                )
+                source_transitions += 1
+                kinds.add("source")
+            for target_id in sorted(set(previous_targets) | set(targets)):
+                before = previous_targets.get(target_id) if isinstance(previous_targets.get(target_id), dict) else {}
+                after = targets.get(target_id) if isinstance(targets.get(target_id), dict) else {}
+                name = display_target_name(str(target_id))
+                if bool(after.get("wouldHold")) != bool(before.get("wouldHold")):
+                    if after.get("wouldHold"):
+                        changes.append(f"{name} hold started")
+                        hold_starts += 1
+                    else:
+                        changes.append(f"{name} released")
+                        releases += 1
+                    kinds.add("decision")
+                before_blockers = tuple(before.get("ineligibleReasons") or [])
+                after_blockers = tuple(after.get("ineligibleReasons") or [])
+                if after_blockers != before_blockers:
+                    label = ", ".join(display_reason_label(value) for value in after_blockers) or "cleared"
+                    changes.append(f"{name} blockers: {label}")
+                    blocker_changes += 1
+                    kinds.add("blocker")
+                if after.get("leaseActive") and not before.get("leaseActive"):
+                    changes.append(f"{name} actual lease started")
+                    lease_starts += 1
+                    kinds.add("assertion")
+        if not changes:
+            changes.append("Decision inputs changed")
+            kinds.add("decision")
+        holding = [
+            display_target_name(str(target_id))
+            for target_id, target in targets.items()
+            if isinstance(target, dict) and target.get("wouldHold")
+        ]
+        blocked = [
+            display_target_name(str(target_id))
+            for target_id, target in targets.items()
+            if isinstance(target, dict) and target.get("ineligibleReasons")
+        ]
+        entries.append(
+            {
+                "timestamp": event.get("timestamp"),
+                "room": room,
+                "source": source,
+                "changes": changes,
+                "kinds": sorted(kinds),
+                "holding": holding,
+                "blocked": blocked,
+                "actualLeases": [
+                    display_target_name(str(target_id))
+                    for target_id, target in targets.items()
+                    if isinstance(target, dict) and target.get("leaseActive")
+                ],
+            }
+        )
+        previous = event
+    return {
+        "eventCount": len(entries),
+        "zoneTransitions": zone_transitions,
+        "sourceTransitions": source_transitions,
+        "holdStarts": hold_starts,
+        "releases": releases,
+        "blockerChanges": blocker_changes,
+        "actualLeaseStarts": lease_starts,
+        "coverageStart": entries[0].get("timestamp") if entries else None,
+        "coverageEnd": entries[-1].get("timestamp") if entries else None,
+        "entries": entries,
+    }
+
 def append_garage_activity_event(payload: dict[str, Any]) -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     event = {
@@ -881,10 +1002,21 @@ def display_launchd_status() -> dict[str, Any]:
     }
 
 
+def display_presence_device_label(kind: Any) -> str:
+    return {"watch": "Watch Ultra 3", "iphone": "Arkadiy's iPhone"}.get(str(kind), str(kind or "none"))
+
+def display_zone_label(zone: Any) -> str:
+    value = str(zone or "")
+    if value.startswith("level_"):
+        return f"Level {value.removeprefix('level_')}"
+    return value or "Unmapped"
+
+
 def display_awake_observability() -> dict[str, Any]:
     status = load_json_file(DISPLAY_AWAKE_STATUS_PATH)
     summary = load_json_file(DISPLAY_AWAKE_SUMMARY_PATH)
     recent_events = read_jsonl_tail(DISPLAY_AWAKE_EVENTS_PATH, 30)
+    today_history = display_history(read_jsonl_local_day(DISPLAY_AWAKE_EVENTS_PATH))
     generated_at = status.get("generatedAt")
     age_hours = source_age_hours(generated_at)
     age_seconds = round(age_hours * 3600, 1) if age_hours is not None else None
@@ -893,7 +1025,8 @@ def display_awake_observability() -> dict[str, Any]:
     stale_after_seconds = max(120, poll_seconds * 4)
     missing = not bool(status)
     stale = age_seconds is None or age_seconds > stale_after_seconds
-    unifi_ok = (status.get("unifi") or {}).get("ok") if isinstance(status.get("unifi"), dict) else None
+    unifi = status.get("unifi") if isinstance(status.get("unifi"), dict) else {}
+    unifi_ok = unifi.get("ok")
     launchd = display_launchd_status()
     health = status.get("health") if isinstance(status.get("health"), dict) else {}
     if missing:
@@ -902,7 +1035,7 @@ def display_awake_observability() -> dict[str, Any]:
         overall = "stale"
     elif not launchd.get("loaded"):
         overall = "service_unloaded"
-    elif unifi_ok is False or health.get("status") == "degraded":
+    elif (unifi_ok is False and not unifi.get("cached")) or health.get("status") == "degraded":
         overall = "degraded"
     elif health.get("status") == "setup_required":
         overall = "setup_required"
@@ -928,7 +1061,9 @@ def display_awake_observability() -> dict[str, Any]:
         "targets": status.get("targets"),
         "summary": summary,
         "recentEvents": recent_events,
+        "todayHistory": today_history,
     }
+
 
 
 def html_escape(value: Any) -> str:
@@ -982,6 +1117,25 @@ def display_reason_label(reason: Any) -> str:
 def render_display_page(*, read_only: bool = False) -> bytes:
     observability = display_awake_observability()
     targets = observability.get("targets") if isinstance(observability.get("targets"), dict) else {}
+    presence = observability.get("presence") if isinstance(observability.get("presence"), dict) else {}
+    devices = presence.get("devices") if isinstance(presence.get("devices"), dict) else {}
+    watch = devices.get("watch") if isinstance(devices.get("watch"), dict) else {}
+    iphone = devices.get("iphone") if isinstance(devices.get("iphone"), dict) else {}
+    presence_source = str(presence.get("source") or "")
+    zone_source = str(presence.get("zoneSource") or "")
+    selected_kind = "watch" if zone_source.startswith("watch") else "iphone"
+    selected_device = watch if selected_kind == "watch" else iphone
+    selected_device_label = display_presence_device_label(selected_kind)
+    effective_zone = presence.get("confirmedRoom")
+    selected_ap = selected_device.get("accessPoint") if isinstance(selected_device, dict) else None
+    display_config = load_config().get("display_awake")
+    configured_lights = display_config.get("lights") if isinstance(display_config, dict) else []
+    light_names_by_target: dict[str, str] = {}
+    for light in configured_lights if isinstance(configured_lights, list) else []:
+        if not isinstance(light, dict):
+            continue
+        for target_id in light.get("targets") or []:
+            light_names_by_target[str(target_id)] = str(light.get("accessory") or "Mapped light")
     summary = observability.get("summary") if isinstance(observability.get("summary"), dict) else {}
     summary_targets = summary.get("targets") if isinstance(summary.get("targets"), dict) else {}
     would_hold_count = sum(1 for item in targets.values() if isinstance(item, dict) and item.get("wouldHold"))
@@ -1003,30 +1157,72 @@ def render_display_page(*, read_only: bool = False) -> bytes:
         totals = summary_targets.get(target_id) if isinstance(summary_targets.get(target_id), dict) else {}
         reasons = item.get("reasons") or []
         ineligible = item.get("ineligibleReasons") or []
-        badges = "".join(
-            f"<span class='reason'>{html_escape(display_reason_label(reason))}</span>"
-            for reason in (reasons or ineligible)
-        ) or "<span class='reason muted'>No active hold reason</span>"
+        attributions: list[str] = []
+        if "presence_room" in reasons:
+            attributions.append(
+                f"{selected_device_label} · {selected_ap or 'unknown AP'} → {display_zone_label(effective_zone)}"
+            )
+        if "recent_activity" in reasons:
+            attributions.append(f"This Mac · activity {display_duration(probe.get('idleSeconds'))} ago")
+        if "light_plus_activity" in reasons:
+            attributions.append(
+                f"{light_names_by_target.get(str(target_id), 'Mapped light')} · on + activity {display_duration(probe.get('idleSeconds'))} ago"
+            )
+        if "manual_override" in reasons:
+            attributions.append("Manual Screens Awake override")
+        attribution_badges = "".join(
+            f"<span class='reason signal'>{html_escape(value)}</span>" for value in attributions
+        ) or "<span class='reason muted'>No active hold signal</span>"
+        blocker_badges = "".join(
+            f"<span class='reason blocker'>{html_escape(display_reason_label(reason))}</span>" for reason in ineligible
+        )
         reachable = probe.get("reachable") is True
         eligible = item.get("eligible") is True
         would_hold = item.get("wouldHold") is True
-        decision = "Would hold" if would_hold else "Release"
-        decision_class = "good" if would_hold else "quiet"
-        machine_meta = f"{item.get('room') or 'unmapped'} · {'reachable' if reachable else 'unreachable'}"
+        lease_active = item.get("leaseActive") is True
+        blocked = bool(reasons and ineligible)
+        decision = "Actual lease" if lease_active else "Predicted hold" if would_hold else "Blocked" if blocked else "Release"
+        decision_class = "good" if would_hold or lease_active else "warn" if blocked else "quiet"
+        target_zone_source = str(item.get("zoneSource") or "")
+        zone_detail = (
+            "follows your presence"
+            if target_zone_source == "effective_presence"
+            else "Mac Wi-Fi association"
+            if target_zone_source == "unifi_client"
+            else "cached zone"
+            if target_zone_source == "cached"
+            else "configured zone"
+        )
+        observed_unifi_zone = item.get("observedUniFiZone")
+        conflict_detail = (
+            f" · UniFi sees {display_zone_label(observed_unifi_zone)}"
+            if observed_unifi_zone and observed_unifi_zone != item.get("zone")
+            else ""
+        )
+        machine_meta = f"{item.get('room') or 'unmapped'} · {display_zone_label(item.get('zone'))} ({zone_detail}){conflict_detail} · {'reachable' if reachable else 'unreachable'}{' · transient' if item.get('optional') else ''}"
+        held_by = " + ".join(
+            [
+                "Watch" if value.startswith("Watch Ultra 3") else "iPhone" if value.startswith("Arkadiy's iPhone") else "Local activity" if value.startswith("This Mac") else light_names_by_target.get(str(target_id), "Light") if "on + activity" in value else "Override"
+                for value in attributions
+            ]
+        ) or ("Blocked by safety gates" if blocked else "Nothing")
+        open_attr = " open" if would_hold or blocked else ""
         power = "AC" if probe.get("onAcPower") is True else "battery" if probe.get("onAcPower") is False else "unknown"
         lid = "closed" if probe.get("lidClosed") is True else "open" if probe.get("lidClosed") is False else "unknown"
         target_cards.append(
-            f"""<details class="machine">
+            f"""<details class="machine"{open_attr}>
 <summary><span class="machine-grid">
   <span><span class="machine-name">{html_escape(display_target_name(str(target_id)))}</span><br><span class="muted tiny">{html_escape(machine_meta)}</span></span>
   <span><span class="muted tiny">Idle</span><br><strong>{html_escape(display_duration(probe.get('idleSeconds')))}</strong></span>
   <span><span class="muted tiny">Eligible</span><br><strong class="{'good' if eligible else 'quiet'}">{'Yes' if eligible else 'No'}</strong></span>
   <span><span class="muted tiny">Decision</span><br><strong class="{decision_class}">{decision}</strong></span>
-  <span class="muted tiny reason-summary">{html_escape(', '.join(str(value) for value in (reasons or ineligible)) or 'no active hold reason')}</span>
+  <span><span class="muted tiny">Held by</span><br><strong class="tiny">{html_escape(held_by)}</strong></span>
 </span></summary>
 <div class="machine-detail">
-  <div><span class="muted tiny">Why</span><div class="reason-list">{badges}</div></div>
+  <div><span class="muted tiny">Signals causing this decision</span><div class="reason-list">{attribution_badges}{blocker_badges}</div></div>
   <div class="facts compact">
+    <div><span class="muted tiny">Lease state</span><strong>{'ACTIVE' if lease_active else 'none (shadow)' if observability.get('mode') == 'shadow' else 'inactive'}</strong></div>
+    <div><span class="muted tiny">Lease expires</span><strong>{html_escape(item.get('leaseExpiresAt') or '—')}</strong></div>
     <div><span class="muted tiny">Session</span><strong>{'locked' if probe.get('locked') else 'unlocked'}</strong></div>
     <div><span class="muted tiny">Power / lid</span><strong>{html_escape(power)} / {html_escape(lid)}</strong></div>
     <div><span class="muted tiny">Mapped light</span><strong>{'on' if item.get('lightOn') is True else 'off' if item.get('lightOn') is False else 'none'}</strong></div>
@@ -1037,31 +1233,69 @@ def render_display_page(*, read_only: bool = False) -> bytes:
 </div></details>"""
         )
     target_markup = "\n".join(target_cards) or "<div class='empty'>No display-manager status has been recorded.</div>"
-    recent = observability.get("recentEvents") if isinstance(observability.get("recentEvents"), list) else []
+    history = observability.get("todayHistory") if isinstance(observability.get("todayHistory"), dict) else {}
+    history_entries = history.get("entries") if isinstance(history.get("entries"), list) else []
     event_cards: list[str] = []
-    for item in reversed(recent[-12:]):
+    for item in reversed(history_entries):
         if not isinstance(item, dict):
             continue
-        event_targets = item.get("targets") if isinstance(item.get("targets"), dict) else {}
-        holding = [display_target_name(str(key)) for key, value in event_targets.items() if isinstance(value, dict) and value.get("wouldHold")]
-        blocked = [display_target_name(str(key)) for key, value in event_targets.items() if isinstance(value, dict) and value.get("ineligibleReasons")]
-        room = (item.get("presence") or {}).get("confirmedRoom") if isinstance(item.get("presence"), dict) else None
-        source = (item.get("presence") or {}).get("source") if isinstance(item.get("presence"), dict) else None
-        detail_parts = [f"Holding: {', '.join(holding)}" if holding else "Holding: none"]
+        changes = item.get("changes") if isinstance(item.get("changes"), list) else []
+        holding = item.get("holding") if isinstance(item.get("holding"), list) else []
+        blocked = item.get("blocked") if isinstance(item.get("blocked"), list) else []
+        kinds = " ".join(str(value) for value in (item.get("kinds") or []))
+        detail_parts = [f"Would hold: {', '.join(holding)}" if holding else "Would hold: none"]
         if blocked:
-            detail_parts.append(f"Ineligible: {', '.join(blocked)}")
+            detail_parts.append(f"Blocked: {', '.join(blocked)}")
         event_cards.append(
-            "<li>"
-            f"<span class='event-dot'></span><div><strong>{html_escape(room or 'No confirmed room')}</strong>"
-            f" <span class='muted'>via {html_escape(source or 'none')}</span><br>"
-            f"<span class='tiny'>{html_escape(' · '.join(detail_parts))}</span></div>"
+            f"<li data-kinds='{html_escape(kinds)}'>"
+            f"<span class='event-dot'></span><div><strong>{html_escape(' · '.join(changes))}</strong><br>"
+            f"<span class='tiny'>{html_escape(display_zone_label(item.get('room')))} via "
+            f"{html_escape(display_presence_device_label(item.get('source')))} · {html_escape(' · '.join(detail_parts))}</span></div>"
             f"<time>{html_escape(item.get('timestamp'))}</time></li>"
         )
     event_markup = "\n".join(event_cards) or "<li class='empty'>No decision changes recorded.</li>"
-    presence = observability.get("presence") if isinstance(observability.get("presence"), dict) else {}
-    devices = presence.get("devices") if isinstance(presence.get("devices"), dict) else {}
-    watch = devices.get("watch") if isinstance(devices.get("watch"), dict) else {}
-    iphone = devices.get("iphone") if isinstance(devices.get("iphone"), dict) else {}
+    history_summary_markup = (
+        f"<div class='summary-card'><span class='muted tiny'>Events today</span><strong>{html_escape(history.get('eventCount') or 0)}</strong></div>"
+        f"<div class='summary-card'><span class='muted tiny'>Floor transitions</span><strong>{html_escape(history.get('zoneTransitions') or 0)}</strong></div>"
+        f"<div class='summary-card'><span class='muted tiny'>Hold starts / releases</span><strong>{html_escape(history.get('holdStarts') or 0)} / {html_escape(history.get('releases') or 0)}</strong></div>"
+        f"<div class='summary-card'><span class='muted tiny'>Actual assertions</span><strong class='{'warn' if history.get('actualLeaseStarts') else 'good'}'>{html_escape(history.get('actualLeaseStarts') or 0)}</strong></div>"
+    )
+    presence_matches = []
+    for target_id, item in targets.items():
+        if not isinstance(item, dict) or "presence_room" not in (item.get("reasons") or []):
+            continue
+        state = "actual lease" if item.get("leaseActive") else "predicted hold" if item.get("wouldHold") else "blocked"
+        presence_matches.append(f"{display_target_name(str(target_id))} ({state})")
+    causality_markup = (
+        f"<strong>{html_escape(selected_device_label)}</strong><span class='arrow'>→</span>"
+        f"<span><span class='muted tiny'>Trusted access point</span><strong>{html_escape(selected_ap or 'last confirmed')}</strong></span><span class='arrow'>→</span>"
+        f"<span><span class='muted tiny'>Arkadiy zone</span><strong>{html_escape(display_zone_label(effective_zone))}</strong></span><span class='arrow'>→</span>"
+        f"<span><span class='muted tiny'>Presence affects</span><strong>{html_escape(', '.join(presence_matches) or 'no targets')}</strong></span>"
+    )
+    iphone_ready = iphone.get("fresh") is True
+    iphone_role = "Primary default signal"
+    iphone_state = (
+        "Currently driving the effective zone"
+        if zone_source == "iphone"
+        else "Last iPhone zone retained during disconnect grace"
+        if zone_source == "iphone_grace"
+        else "Stationary while the Watch is movement-confirmed"
+        if zone_source.startswith("watch")
+        else "Available but not driving a trusted floor"
+        if iphone_ready
+        else "Not available"
+    )
+    watch_role = "Movement-confirmed zone signal" if zone_source == "watch_carried" else "Watch diagnostic only"
+    iphone_fallback_markup = (
+        f"<span class='badge'><span class='dot {'good' if iphone_ready else 'warn'}'></span>{html_escape(iphone_role)}</span>"
+        f"<strong>{html_escape(display_presence_device_label('iphone'))}</strong>"
+        f"<span><span class='muted tiny'>Access point</span><strong>{html_escape(iphone.get('accessPoint') or 'unknown')}</strong></span>"
+        f"<span class='arrow'>→</span>"
+        f"<span><span class='muted tiny'>Zone</span><strong>{html_escape(display_zone_label(iphone.get('room')))}</strong></span>"
+        f"<span class='muted'>{html_escape(iphone_state)}</span>"
+        f"<span class='badge'><span class='dot {'good' if watch.get('fresh') else 'warn'}'></span>{html_escape(watch_role)}</span>"
+        f"<span><strong>{html_escape(display_zone_label(watch.get('room')))}</strong> · {html_escape(watch.get('accessPoint') or 'unknown AP')}</span>"
+    )
     unifi = observability.get("unifi") if isinstance(observability.get("unifi"), dict) else {}
     launchd = observability.get("launchd") if isinstance(observability.get("launchd"), dict) else {}
     status = str(observability.get("status") or "missing")
@@ -1113,7 +1347,9 @@ h1,h2,p {{ margin:0; }} h1 {{ font-size:22px; }} h2 {{ font-size:15px; margin-to
 .dot,.event-dot {{ width:8px; height:8px; border-radius:50%; background:var(--muted); flex:0 0 auto; }} .dot.good,.event-dot {{ background:var(--good); }} .dot.warn {{ background:var(--warn); }}
 .good {{ color:var(--good); }} .quiet {{ color:var(--muted); }} .warn {{ color:var(--warn); }}
 .presence {{ padding:13px 15px; border:1px solid var(--border); border-radius:12px; background:var(--panel2); }}
-.presence-main {{ display:flex; align-items:center; gap:11px; }} .presence-icon {{ display:grid; place-items:center; width:34px; height:34px; border:1px solid var(--border); border-radius:50%; color:var(--accent); font-size:19px; }}
+.causality {{ display:flex; align-items:center; gap:12px; padding:14px 16px; border:1px solid var(--accent); border-radius:12px; background:var(--panel); flex-wrap:wrap; }} .causality > span:not(.arrow) {{ display:grid; }} .arrow {{ color:var(--accent); font-size:19px; font-weight:700; }}
+.fallback-presence {{ display:flex; align-items:center; gap:12px; padding:11px 14px; border:1px dashed var(--border); border-radius:12px; background:var(--panel2); flex-wrap:wrap; }} .fallback-presence > span:not(.badge):not(.arrow) {{ display:grid; }}
+.presence-main {{ display:flex; align-items:center; gap:11px; }} .presence-main strong {{ display:block; }} .presence-icon {{ display:grid; place-items:center; width:34px; height:34px; border:1px solid var(--border); border-radius:50%; color:var(--accent); font-size:19px; }}
 .facts {{ justify-content:flex-start; }} .facts > div {{ min-width:92px; }} .facts strong {{ display:block; font-size:13px; }}
 .summary-grid {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); align-items:stretch; }}
 .summary-card {{ padding:12px 14px; border:1px solid var(--border); border-radius:12px; background:var(--panel); }} .summary-card strong {{ display:block; font-size:20px; margin-top:2px; }}
@@ -1125,28 +1361,44 @@ button.secondary {{ background:transparent; color:var(--accent); }} button.terti
 .machine-grid {{ display:grid; grid-template-columns:minmax(160px,1.35fr) repeat(3,minmax(82px,.65fr)) minmax(160px,1.3fr); align-items:center; }} .machine-name {{ font-weight:700; }}
 .machine-detail {{ align-items:flex-start; padding:13px 15px 15px; border-top:1px solid var(--border); background:var(--panel2); }} .machine-detail > div:first-child {{ min-width:230px; }}
 .facts.compact {{ display:grid; grid-template-columns:repeat(3,minmax(95px,1fr)); flex:1; }} .reason-list {{ display:flex; gap:6px; flex-wrap:wrap; margin-top:7px; }} .reason {{ background:var(--panel); font-size:12px; }}
+.reason.signal {{ border-color:var(--good); }} .reason.blocker {{ border-color:var(--warn); color:var(--warn); }}
 .event-list {{ list-style:none; margin:0; padding:0; border:1px solid var(--border); border-radius:10px; background:var(--panel); overflow:hidden; }} .event-list li {{ justify-content:flex-start; padding:10px 12px; border-bottom:1px solid var(--border); }} .event-list li:last-child {{ border-bottom:0; }} .event-list li div {{ flex:1; }} time {{ color:var(--muted); font-size:11px; text-align:right; max-width:220px; }}
+.history-tools {{ display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; }} .history-summary {{ grid-template-columns:repeat(4,minmax(0,1fr)); }}
+select {{ border:1px solid var(--border); background:var(--panel); color:var(--text); border-radius:8px; padding:8px 10px; font:inherit; }}
 .footer {{ color:var(--muted); font-size:12px; }} a {{ color:var(--accent); }} #result {{ min-height:20px; white-space:pre-wrap; }}
-@media (max-width:720px) {{ .summary-grid {{ grid-template-columns:1fr; }} .machine-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .machine-grid > :first-child,.machine-grid > :last-child {{ grid-column:1/-1; }} .machine-detail {{ display:grid; }} .facts.compact {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .presence {{ align-items:flex-start; }} }}
-@media (max-width:430px) {{ .shell {{ padding:18px 12px 36px; }} .presence {{ display:grid; }} .facts.compact {{ grid-template-columns:1fr 1fr; }} time {{ display:none; }} }}
+@media (max-width:720px) {{ .summary-grid {{ grid-template-columns:1fr; }} .history-summary {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .machine-grid {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .machine-grid > :first-child,.machine-grid > :last-child {{ grid-column:1/-1; }} .machine-detail {{ display:grid; }} .facts.compact {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .presence {{ align-items:flex-start; }} }}
+@media (max-width:430px) {{ .shell {{ padding:18px 12px 36px; }} .presence {{ display:grid; }} .causality {{ display:grid; grid-template-columns:1fr; }} .causality .arrow {{ transform:rotate(90deg); width:20px; }} .fallback-presence {{ display:grid; grid-template-columns:1fr 1fr; }} .fallback-presence > .muted {{ grid-column:1/-1; }} .facts.compact {{ grid-template-columns:1fr 1fr; }} time {{ display:none; }} }}
 </style></head><body>
 <main class="shell">
   <header class="topline"><div><h1>Display Awake</h1><p class="muted tiny">Updated {html_escape(observability.get('generatedAt') or 'never')} · age {html_escape(display_duration(observability.get('ageSeconds')))}</p></div><span class="badge"><span class="dot {status_class}"></span>{html_escape(mode)} · {html_escape(status)}</span></header>
-  <section class="presence"><div class="presence-main"><div class="presence-icon">⌁</div><div><span class="muted tiny">Confirmed presence</span><strong>{html_escape(presence.get('confirmedRoom') or 'No confirmed room')}</strong></div></div><div class="facts"><div><span class="muted tiny">Source</span><strong>{html_escape(presence.get('source') or 'none')}</strong></div><div><span class="muted tiny">Watch</span><strong>{'fresh' if watch.get('fresh') else 'not fresh'} · {html_escape(display_duration(watch.get('ageSeconds')))}</strong></div><div><span class="muted tiny">iPhone</span><strong>{'fresh' if iphone.get('fresh') else 'not fresh'} · {html_escape(display_duration(iphone.get('ageSeconds')))}</strong></div><div><span class="muted tiny">Override</span><strong>{'Manual' if observability.get('manualOverride') else 'Auto'}</strong></div></div></section>
-  <section class="summary-grid"><div class="summary-card"><span class="muted tiny">Would hold now</span><strong>{would_hold_count} of {len(targets)}</strong></div><div class="summary-card"><span class="muted tiny">Predicted / actual</span><strong>{html_escape(display_duration(predicted_total))} / {html_escape(display_duration(lease_total))}</strong></div><div class="summary-card"><span class="muted tiny">UniFi / controller</span><strong>{'healthy' if unifi.get('ok') is True else 'unavailable'} · {'loaded' if launchd.get('loaded') else 'unloaded'}</strong><span class="muted tiny">poll {html_escape(observability.get('pollSeconds'))}s</span></div></section>
+  <section class="presence"><div class="presence-main"><div class="presence-icon">⌁</div><div><span class="muted tiny">Arkadiy presence</span><strong>{html_escape(display_zone_label(presence.get('confirmedRoom')) if presence.get('confirmedRoom') else 'No trusted zone')}</strong></div></div><div class="facts"><div><span class="muted tiny">Trusted zone source</span><strong>{'Movement-confirmed Watch' if zone_source == 'watch_carried' else 'Watch grace' if zone_source == 'watch_grace' else 'Arkadiy’s iPhone' if zone_source == 'iphone' else 'iPhone grace' if zone_source == 'iphone_grace' else 'none'}</strong></div><div><span class="muted tiny">Watch signal</span><strong>{'fresh' if watch.get('fresh') else 'not fresh'} · {html_escape(display_duration(watch.get('ageSeconds')))}</strong></div><div><span class="muted tiny">iPhone signal</span><strong>{'fresh' if iphone.get('fresh') else 'not fresh'} · {html_escape(display_duration(iphone.get('ageSeconds')))}</strong></div><div><span class="muted tiny">Override</span><strong>{'Manual' if observability.get('manualOverride') else 'Auto'}</strong></div></div></section>
+  <section class="causality">{causality_markup}</section>
+  <section class="fallback-presence">{iphone_fallback_markup}</section>
+  <section class="summary-grid"><div class="summary-card"><span class="muted tiny">Would hold now</span><strong>{would_hold_count} of {len(targets)}</strong></div><div class="summary-card"><span class="muted tiny">Predicted / actual</span><strong>{html_escape(display_duration(predicted_total))} / {html_escape(display_duration(lease_total))}</strong></div><div class="summary-card"><span class="muted tiny">UniFi / controller</span><strong>{'healthy' if unifi.get('ok') is True else 'cached' if unifi.get('cached') else 'unavailable'} · {'loaded' if launchd.get('loaded') else 'unloaded'}</strong><span class="muted tiny">poll {html_escape(observability.get('pollSeconds'))}s{' · cache ' + display_duration(unifi.get('cacheAgeSeconds')) if unifi.get('cached') else ''}</span></div></section>
   <div class="notice">{html_escape(shadow_note)}</div>
   {controls_markup}
   <div id="result" class="muted tiny"></div>
   <h2>Mac decisions</h2><section class="machine-list">{target_markup}</section>
-  <h2>Recent decision changes</h2><ol class="event-list">{event_markup}</ol>
+  <div class="history-tools"><div><h2>Today’s event history</h2><p class="muted tiny">Sanitized change-only log · {html_escape(history.get('coverageStart') or 'no events')} through {html_escape(history.get('coverageEnd') or 'now')}</p></div><label class="tiny">Show <select id="history-filter"><option value="all">All changes</option><option value="zone">Floor transitions</option><option value="decision">Holds and releases</option><option value="blocker">Blockers</option></select></label></div>
+  <section class="summary-grid history-summary">{history_summary_markup}</section>
+  <p id="history-visible" class="muted tiny">Showing all {html_escape(history.get('eventCount') or 0)} events.</p>
+  <ol class="event-list" id="event-history">{event_markup}</ol>
   {footer_markup}
 </main>
 <script>
 {action_script}
 document.getElementById('refresh').addEventListener('click',()=>location.reload());
+document.getElementById('history-filter').addEventListener('change',(event)=>{{
+  const selected=event.target.value;
+  const rows=[...document.querySelectorAll('#event-history li[data-kinds]')];
+  let visible=0;
+  rows.forEach((row)=>{{ const show=selected==='all'||row.dataset.kinds.split(' ').includes(selected); row.hidden=!show; if(show) visible+=1; }});
+  document.getElementById('history-visible').textContent=`Showing ${{visible}} ${{selected==='all'?'events':event.target.selectedOptions[0].text.toLowerCase()}}.`;
+}});
 </script>
 </body></html>"""
     return body.encode()
+
 
 
 def display_energy_value(value: Any, suffix: str = "", digits: int = 1) -> str:
