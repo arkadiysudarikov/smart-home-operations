@@ -60,6 +60,40 @@ class DisplayAwakeManagerTest(unittest.TestCase):
         self.assertNotIn(IPHONE_MAC, serialized)
         self.assertTrue(all(len(item["candidate"]) == 12 for item in candidates))
 
+    def test_phone_occupancy_counts_any_phone_on_selected_access_point(self) -> None:
+        clients = [
+            {"display_name": "Guest iPhone", "ap_mac": AP_ONE_MAC, "status": "online"},
+            {"display_name": "Pixel 10", "ap_mac": AP_ONE_MAC, "status": "online"},
+            {"display_name": "Apple Watch", "ap_mac": AP_ONE_MAC, "status": "online"},
+            {"display_name": "Galaxy", "ap_mac": AP_TWO_MAC, "status": "online"},
+        ]
+
+        occupancy = display_awake.phone_occupancy(
+            clients,
+            {AP_ONE_MAC: "Extender", AP_TWO_MAC: "Level 1"},
+            ["Extender"],
+        )
+
+        self.assertTrue(occupancy["occupied"])
+        self.assertEqual(occupancy["phoneCount"], 2)
+        self.assertNotIn("Guest iPhone", json.dumps(occupancy))
+        self.assertNotIn("Pixel 10", json.dumps(occupancy))
+
+    def test_phone_occupancy_ignores_offline_and_other_access_points(self) -> None:
+        clients = [
+            {"display_name": "iPhone", "ap_mac": AP_ONE_MAC, "status": "offline"},
+            {"display_name": "Pixel 10", "ap_mac": AP_TWO_MAC, "status": "online"},
+        ]
+
+        occupancy = display_awake.phone_occupancy(
+            clients,
+            {AP_ONE_MAC: "Extender", AP_TWO_MAC: "Level 1"},
+            ["Extender"],
+        )
+
+        self.assertFalse(occupancy["occupied"])
+        self.assertEqual(occupancy["phoneCount"], 0)
+
     def test_enrollment_writes_private_identifiers_but_returns_only_labels(self) -> None:
         clients = [client(WATCH_MAC, "watch", AP_ONE_MAC), client(IPHONE_MAC, "iphone", AP_TWO_MAC)]
         with tempfile.TemporaryDirectory() as tmp:

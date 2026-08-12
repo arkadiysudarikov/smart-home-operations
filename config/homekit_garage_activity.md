@@ -47,9 +47,18 @@ This arrival automation also currently targets `Garage Activity`, along with
 
 - `When The First Person Arrives Home`
 
-The controller endpoint then turns `Garage Light` on to 100%, holds it until at
-least five minutes after the latest activity, and restores the pre-hold state
-only if the light is still in the controller-owned 100% state.
+The controller endpoint then turns `Garage Light` on to 100% and holds it until
+at least five minutes after the latest activity. If any phone is currently
+connected to the UniFi access point currently aliased `Garage` (or its legacy
+alias `Extender`), presence extends the hold in five-minute increments. The
+check uses a privacy-safe live client count; it neither requires personal
+enrollment nor records device identifiers. Once activity and that occupancy
+have both cleared, the controller turns the light off if it is still in the
+controller-owned 100% state. A manual off or brightness change is preserved.
+
+The explicit off policy avoids restoring an already-on starting state when an
+Alarm.com direct garage-door rule reaches the light just before the HomeKit
+`Garage Activity` automation.
 
 Each endpoint activation and hold expiry is tracked in
 `data/garage_activity_events.jsonl` and summarized in `/status` under
