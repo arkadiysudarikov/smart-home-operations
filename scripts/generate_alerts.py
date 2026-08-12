@@ -7,8 +7,9 @@ import sqlite3
 import subprocess
 import urllib.parse
 import urllib.request
+from bisect import bisect_left
 from collections import Counter
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -25,16 +26,22 @@ COMBINED_ENERGY_PATH = DATA_DIR / "latest_combined_energy_monitor.json"
 ENERGY_OBSERVABILITY_PATH = DATA_DIR / "latest_energy_observability.json"
 ENERGY_ALERT_STABILIZATION_PATH = DATA_DIR / "energy_alert_stabilization.json"
 ENERGY_ALERT_DELIVERY_PATH = DATA_DIR / "energy_alert_delivery.json"
+ENERGY_HIGH_CONTEXT_PATH = DATA_DIR / "latest_energy_high_context.json"
+ENERGY_HIGH_CONTEXT_REPORT_PATH = REPORT_DIR / "energy_high_context.md"
+ENERGY_HIGH_EVENTS_PATH = DATA_DIR / "energy_high_events.jsonl"
+ENERGY_HIGH_EVENTS_REPORT_PATH = REPORT_DIR / "energy_high_events.md"
 SCE_API_STATUS_PATH = DATA_DIR / "latest_sce_api.json"
 ALARM_COM_PATH = DATA_DIR / "latest_alarm_com.json"
 LATEST_CHARACTERISTICS_PATH = DATA_DIR / "latest_characteristics.json"
 ALARM_STATE_COMPARISON_PATH = DATA_DIR / "latest_alarm_homebridge_state.json"
 SENSE_NOW_PATH = DATA_DIR / "sense_now_latest.json"
 SENSE_TRENDS_PATH = DATA_DIR / "sense_trends_latest.json"
+DISPLAY_AWAKE_STATUS_PATH = DATA_DIR / "latest_display_awake.json"
 ACTION_STATUS_URL = "http://127.0.0.1:18765/status"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
 HOMEBRIDGE_DIR = Path.home() / ".homebridge"
 HOMEBRIDGE_CONFIG_PATH = HOMEBRIDGE_DIR / "config.json"
+ALARM_DOT_COM_PLUGIN = "homebridge-node-alarm-dot-com"
 
 
 def running_from_runtime_root() -> bool:
@@ -354,6 +361,858 @@ def load_sense_now() -> dict[str, Any]:
 
 def load_sense_trends() -> dict[str, Any]:
     data = load_json_file(SENSE_TRENDS_PATH)
+    return data if isinstance(data, dict) else {}
+
+
+def as_float(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            return None
+    return None
+
+
+def clamp(value: float, lower: float, upper: float) -> float:
+    return max(lower, min(upper, value))
+
+
+def percentile(values: list[float], fraction: float) -> float | None:
+    if not values:
+        return None
+    values = sorted(values)
+    if len(values) == 1:
+        return values[0]
+    position = clamp(fraction, 0.0, 1.0) * (len(values) - 1)
+    lower = int(position)
+    upper = min(lower + 1, len(values) - 1)
+    weight = position - lower
+    return values[lower] * (1 - weight) + values[upper] * weight
+
+
+def same_time_history(sample_at: datetime, lookback_days: int, window_minutes: int) -> list[dict[str, Any]]:
+    if not DB_PATH.exists():
+        return []
+    lower_bound = sample_at - timedelta(days=max(1, lookback_days))
+    upper_bound = sample_at - timedelta(hours=1)
+    try:
+        with sqlite3.connect(DB_PATH) as db:
+            db.row_factory = sqlite3.Row
+            rows = db.execute(
+                """
+                select captured_at, envoy_site_load_kw, envoy_production_kw, envoy_grid_net_kw,
+                       battery_charging, battery_discharging, sense_load_kw, active_states_json
+                from energy_observations
+                where captured_at >= ? and captured_at <= ?
+                order by captured_at
+                """,
+                (lower_bound.isoformat(), upper_bound.isoformat()),
+            ).fetchall()
+    except sqlite3.Error:
+        return []
+    sample_minute = sample_at.hour * 60 + sample_at.minute
+    selected: list[dict[str, Any]] = []
+    for row in rows:
+        captured_at_raw = str(row["captured_at"] or "")
+        observed_at = parse_captured_at(captured_at_raw)
+        observed_minute = observed_at.hour * 60 + observed_at.minute
+        minute_delta = abs(observed_minute - sample_minute)
+        minute_delta = min(minute_delta, 1440 - minute_delta)
+        if minute_delta > window_minutes:
+            continue
+        envoy_load = as_float(row["envoy_site_load_kw"])
+        sense_load = as_float(row["sense_load_kw"])
+        load_candidates = [value for value in (envoy_load, sense_load) if value is not None]
+        try:
+            active_states = json.loads(row["active_states_json"] or "[]")
+        except json.JSONDecodeError:
+            active_states = []
+        selected.append(
+            {
+                "_capturedAtRaw": captured_at_raw,
+                "capturedAt": observed_at.isoformat(timespec="seconds"),
+                "loadKw": max(load_candidates) if load_candidates else None,
+                "solarKw": as_float(row["envoy_production_kw"]),
+                "gridNetKw": as_float(row["envoy_grid_net_kw"]),
+                "batteryCharging": bool(row["battery_charging"]),
+                "batteryDischarging": bool(row["battery_discharging"]),
+                "activeStates": active_states if isinstance(active_states, list) else [],
+            }
+        )
+    snapshot_conditions = snapshot_conditions_for_observations(
+        lower_bound,
+        upper_bound,
+        [(str(item.get("_capturedAtRaw") or ""), parse_captured_at(str(item.get("_capturedAtRaw") or ""))) for item in selected],
+    )
+    for item in selected:
+        captured_at_raw = str(item.pop("_capturedAtRaw", "") or "")
+        condition = snapshot_conditions.get(captured_at_raw)
+        if condition:
+            item["condition"] = condition
+    return selected
+
+
+def solar_condition_band(production_kw: float | None) -> str:
+    if not isinstance(production_kw, (int, float)):
+        return "unknown"
+    if production_kw < 0.2:
+        return "dark"
+    if production_kw < 1.5:
+        return "low"
+    if production_kw < 4.0:
+        return "medium"
+    return "strong"
+
+
+def grid_condition_mode(grid_kw: float | None) -> str:
+    if not isinstance(grid_kw, (int, float)):
+        return "unknown"
+    if grid_kw >= 0.5:
+        return "importing"
+    if grid_kw <= -0.5:
+        return "exporting"
+    return "neutral"
+
+
+def battery_condition_mode(charging: bool, discharging: bool) -> str:
+    if charging:
+        return "charging"
+    if discharging:
+        return "discharging"
+    return "idle"
+
+
+def condition_states_from_sense_devices(devices: list[dict[str, Any]]) -> set[str]:
+    states: set[str] = set()
+    for device in devices:
+        watts = as_float(device.get("watts"))
+        if watts is None or watts < 500:
+            continue
+        name = str(device.get("name") or "")
+        device_id = str(device.get("id") or "")
+        text = f"{name} {device_id}".lower()
+        if any(token in text for token in ("ev", "jeep", "charger", "charging")):
+            states.add("EV charging")
+    return states
+
+
+def snapshot_conditions_for_observations(
+    lower_bound: datetime,
+    upper_bound: datetime,
+    observations: list[tuple[str, datetime]],
+    max_age_seconds: int = 90,
+) -> dict[str, dict[str, Any]]:
+    observations = [(raw, observed_at) for raw, observed_at in observations if raw]
+    if not observations or not DB_PATH.exists():
+        return {}
+    try:
+        with sqlite3.connect(DB_PATH) as db:
+            db.row_factory = sqlite3.Row
+            snapshot_rows = db.execute(
+                """
+                select captured_at
+                from snapshots
+                where captured_at >= ? and captured_at <= ?
+                order by captured_at
+                """,
+                (lower_bound.isoformat(), upper_bound.isoformat()),
+            ).fetchall()
+    except sqlite3.Error:
+        return {}
+
+    snapshot_index: list[tuple[float, str]] = []
+    for row in snapshot_rows:
+        raw = str(row["captured_at"] or "")
+        if raw:
+            snapshot_index.append((parse_captured_at(raw).timestamp(), raw))
+    if not snapshot_index:
+        return {}
+    snapshot_epochs = [item[0] for item in snapshot_index]
+    matched_snapshots: dict[str, str] = {}
+    for observed_raw, observed_at in observations:
+        observed_epoch = observed_at.timestamp()
+        position = bisect_left(snapshot_epochs, observed_epoch)
+        candidates: list[tuple[float, str]] = []
+        for index in (position - 1, position):
+            if 0 <= index < len(snapshot_index):
+                candidates.append((abs(snapshot_index[index][0] - observed_epoch), snapshot_index[index][1]))
+        if not candidates:
+            continue
+        delta, snapshot_raw = min(candidates, key=lambda item: item[0])
+        if delta <= max_age_seconds:
+            matched_snapshots[observed_raw] = snapshot_raw
+    if not matched_snapshots:
+        return {}
+
+    conditions_by_snapshot: dict[str, dict[str, Any]] = {}
+    snapshot_keys = sorted(set(matched_snapshots.values()))
+    try:
+        with sqlite3.connect(DB_PATH) as db:
+            db.row_factory = sqlite3.Row
+            for index in range(0, len(snapshot_keys), 250):
+                chunk = snapshot_keys[index : index + 250]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = db.execute(
+                    f"select captured_at, raw_json from snapshots where captured_at in ({placeholders})",
+                    chunk,
+                ).fetchall()
+                for row in rows:
+                    try:
+                        raw_snapshot = json.loads(row["raw_json"] or "{}")
+                    except json.JSONDecodeError:
+                        continue
+                    characteristics = (raw_snapshot.get("homeEvents") or {}).get("currentCharacteristics")
+                    if isinstance(characteristics, dict):
+                        conditions_by_snapshot[str(row["captured_at"])] = homekit_condition_signature(characteristics)
+    except sqlite3.Error:
+        return {}
+    return {
+        observed_raw: conditions_by_snapshot[snapshot_raw]
+        for observed_raw, snapshot_raw in matched_snapshots.items()
+        if snapshot_raw in conditions_by_snapshot
+    }
+
+
+def thermostat_condition_mode(thermostat: dict[str, Any]) -> str:
+    if not thermostat.get("available"):
+        return "unknown"
+    if thermostat.get("cooling"):
+        return "cooling"
+    if thermostat.get("heating"):
+        return "heating"
+    return "idle"
+
+
+def envelope_condition_mode(envelope: dict[str, Any]) -> str:
+    if envelope.get("available") is False:
+        return "unknown"
+    return "open" if int(envelope.get("openCount") or 0) > 0 else "closed"
+
+
+def blind_condition_band(blinds: dict[str, Any]) -> str:
+    if not blinds.get("available"):
+        return "unknown"
+    count = int(blinds.get("count") or 0)
+    if count <= 0:
+        return "unknown"
+    open_count = int(blinds.get("openCount") or 0)
+    partial_count = int(blinds.get("partialCount") or 0)
+    average = as_float(blinds.get("averagePosition"))
+    if open_count == 0 and partial_count == 0:
+        return "closed"
+    if average is not None and average <= 20:
+        return "closed"
+    if average is not None and average >= 70:
+        return "open"
+    if open_count >= max(1, round(count * 0.5)):
+        return "open"
+    return "mixed"
+
+
+def energy_condition_signature(
+    *,
+    states: set[str],
+    production_kw: float | None,
+    grid_kw: float | None,
+    battery_charging: bool,
+    battery_discharging: bool,
+    hvac_mode: str = "unknown",
+    envelope_mode: str = "unknown",
+    blind_band: str = "unknown",
+) -> dict[str, Any]:
+    return {
+        "evCharging": "EV charging" in states,
+        "gridMode": grid_condition_mode(grid_kw),
+        "solarBand": solar_condition_band(production_kw),
+        "batteryMode": battery_condition_mode(battery_charging, battery_discharging),
+        "hvacMode": hvac_mode or "unknown",
+        "envelopeMode": envelope_mode or "unknown",
+        "blindBand": blind_band or "unknown",
+    }
+
+
+def history_row_condition_signature(row: dict[str, Any]) -> dict[str, Any]:
+    states = {str(item) for item in row.get("activeStates") or []}
+    condition = row.get("condition") if isinstance(row.get("condition"), dict) else {}
+    return energy_condition_signature(
+        states=states,
+        production_kw=as_float(row.get("solarKw")),
+        grid_kw=as_float(row.get("gridNetKw")),
+        battery_charging=row.get("batteryCharging") is True,
+        battery_discharging=row.get("batteryDischarging") is True,
+        hvac_mode=str(condition.get("hvacMode") or "unknown"),
+        envelope_mode=str(condition.get("envelopeMode") or "unknown"),
+        blind_band=str(condition.get("blindBand") or "unknown"),
+    )
+
+
+def condition_value_known(value: Any) -> bool:
+    return value not in (None, "", "unknown")
+
+
+def condition_signatures_match(row_signature: dict[str, Any], current_signature: dict[str, Any]) -> bool:
+    required_keys = ("evCharging", "gridMode", "solarBand", "batteryMode")
+    optional_keys = ("hvacMode", "envelopeMode", "blindBand")
+    for key in required_keys:
+        if row_signature.get(key) != current_signature.get(key):
+            return False
+    for key in optional_keys:
+        row_value = row_signature.get(key)
+        current_value = current_signature.get(key)
+        if condition_value_known(row_value) and condition_value_known(current_value) and row_value != current_value:
+            return False
+    return True
+
+
+def matching_condition_history(history: list[dict[str, Any]], signature: dict[str, Any]) -> list[dict[str, Any]]:
+    return [row for row in history if condition_signatures_match(history_row_condition_signature(row), signature)]
+
+
+def alarm_components() -> dict[str, list[dict[str, Any]]]:
+    alarm = load_alarm_com()
+    systems = (alarm.get("alarmState") or {}).get("systems") or []
+    if not systems:
+        return {}
+    components = systems[0].get("components") or {}
+    return {key: value for key, value in components.items() if isinstance(value, list)}
+
+
+def thermostat_energy_context(components: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    thermostats = components.get("thermostats") or []
+    if not thermostats:
+        return {"available": False}
+    item = thermostats[0]
+    state = item.get("state")
+    desired = item.get("desiredState")
+    state_text = str(item.get("stateText") or "")
+    ambient = as_float(item.get("ambientTemp"))
+    cool_setpoint = as_float(item.get("coolSetpoint"))
+    heat_setpoint = as_float(item.get("heatSetpoint"))
+    cooling = state == 3 or desired == 3 or state_text.lower() == "cooling"
+    heating = state == 2 or desired == 2 or state_text.lower() == "heating"
+    delta = ambient - cool_setpoint if ambient is not None and cool_setpoint is not None else None
+    return {
+        "available": True,
+        "id": item.get("id"),
+        "name": item.get("description") or "Thermostat",
+        "stateText": state_text or None,
+        "state": state,
+        "desiredState": desired,
+        "cooling": cooling,
+        "heating": heating,
+        "ambientF": ambient,
+        "coolSetpointF": cool_setpoint,
+        "heatSetpointF": heat_setpoint,
+        "coolingDeltaF": delta,
+        "humidity": as_float(item.get("humidityLevel")),
+    }
+
+
+def open_envelope_context(components: dict[str, list[dict[str, Any]]]) -> dict[str, Any]:
+    names: list[str] = []
+    seen_count = 0
+    envelope_terms = ("door", "window", "slider", "gate", "shed")
+    for item in components.get("sensors") or []:
+        name = str(item.get("description") or "")
+        state_text = str(item.get("stateText") or "")
+        if any(term in name.lower() for term in envelope_terms):
+            seen_count += 1
+            if state_text.lower() == "open":
+                names.append(name)
+    for item in components.get("garages") or []:
+        seen_count += 1
+        state_text = str(item.get("stateText") or "")
+        if state_text.lower() == "open":
+            names.append(str(item.get("description") or "Garage Door"))
+    return {"available": seen_count > 0, "count": seen_count, "openCount": len(names), "openNames": sorted(set(names))}
+
+
+def blind_energy_context(characteristics: dict[str, Any]) -> dict[str, Any]:
+    positions: dict[str, float] = {}
+    for item in characteristics.values():
+        if item.get("service") != "WindowCovering" or item.get("characteristic") != "CurrentPosition":
+            continue
+        name = str(item.get("accessory") or "")
+        position = as_float(item.get("value"))
+        if name and position is not None:
+            positions[name] = position
+    open_names = sorted(name for name, position in positions.items() if position >= 60)
+    partial_names = sorted(name for name, position in positions.items() if 20 < position < 60)
+    closed_names = sorted(name for name, position in positions.items() if position <= 20)
+    return {
+        "available": bool(positions),
+        "count": len(positions),
+        "openCount": len(open_names),
+        "partialCount": len(partial_names),
+        "closedCount": len(closed_names),
+        "openNames": open_names[:12],
+        "partialNames": partial_names[:12],
+        "averagePosition": round(sum(positions.values()) / len(positions), 1) if positions else None,
+    }
+
+
+def homekit_hvac_mode(characteristics: dict[str, Any]) -> str:
+    modes: set[str] = set()
+    for item in characteristics.values():
+        if not isinstance(item, dict):
+            continue
+        if item.get("plugin") != ALARM_DOT_COM_PLUGIN:
+            continue
+        if item.get("characteristic") != "CurrentHeatingCoolingState":
+            continue
+        value = item.get("value")
+        if value == 2:
+            modes.add("cooling")
+        elif value == 1:
+            modes.add("heating")
+        elif value == 0:
+            modes.add("idle")
+    if "cooling" in modes:
+        return "cooling"
+    if "heating" in modes:
+        return "heating"
+    if "idle" in modes:
+        return "idle"
+    return "unknown"
+
+
+def homekit_envelope_context(characteristics: dict[str, Any]) -> dict[str, Any]:
+    names: list[str] = []
+    seen_count = 0
+    envelope_terms = ("door", "window", "slider", "gate", "shed")
+    for item in characteristics.values():
+        if not isinstance(item, dict):
+            continue
+        if item.get("plugin") != ALARM_DOT_COM_PLUGIN:
+            continue
+        name = str(item.get("service") or item.get("accessory") or "")
+        characteristic = str(item.get("characteristic") or "")
+        name_lower = name.lower()
+        if characteristic == "ContactSensorState":
+            if not any(term in name_lower for term in envelope_terms):
+                continue
+            seen_count += 1
+            if item.get("value") == 1:
+                names.append(name)
+        elif characteristic == "CurrentDoorState":
+            seen_count += 1
+            if item.get("value") != 1:
+                names.append(name)
+    return {"available": seen_count > 0, "count": seen_count, "openCount": len(names), "openNames": sorted(set(names))}
+
+
+def homekit_condition_signature(characteristics: dict[str, Any]) -> dict[str, str]:
+    blinds = blind_energy_context(characteristics)
+    envelope = homekit_envelope_context(characteristics)
+    return {
+        "hvacMode": homekit_hvac_mode(characteristics),
+        "envelopeMode": envelope_condition_mode(envelope),
+        "blindBand": blind_condition_band(blinds),
+    }
+
+
+def peak_rate_active(characteristics: dict[str, Any]) -> bool:
+    for item in characteristics.values():
+        text = f"{item.get('accessory') or ''} {item.get('service') or ''}"
+        if "Peak Rate" in text and item.get("characteristic") == "ContactSensorState":
+            return item.get("value") == 1
+    return False
+
+
+def live_load_candidates(config: dict[str, Any], latest: dict[str, Any], sample_at: datetime) -> list[dict[str, Any]]:
+    metrics = latest.get("homebridge", {}).get("logs", {}).get("latestMetrics", {})
+    candidates: list[dict[str, Any]] = []
+    envoy_load = as_float(metrics.get("enphase_consumption_total_kw"))
+    if envoy_load is not None:
+        candidates.append({"source": "Envoy", "kw": envoy_load})
+    sense_now = load_sense_now()
+    sense_watts = as_float(sense_now.get("watts"))
+    sense_captured_at = parse_captured_at(sense_now.get("capturedAt"))
+    sense_fresh_seconds = float(config["alerts"].get("sense_live_high_load_fresh_seconds", 180))
+    if sense_watts is not None and sense_captured_at and abs((sample_at - sense_captured_at).total_seconds()) <= sense_fresh_seconds:
+        candidates.append(
+            {
+                "source": "Sense",
+                "kw": sense_watts / 1000.0,
+                "capturedAt": sense_captured_at.isoformat(timespec="seconds"),
+                "devices": [
+                    {"name": item.get("name"), "watts": item.get("watts"), "id": item.get("id")}
+                    for item in sense_now.get("devices") or []
+                    if isinstance(item, dict)
+                ],
+            }
+        )
+    return candidates
+
+
+def recommended_action_for_sense_device(name: str) -> str | None:
+    normalized = name.lower()
+    if any(token in normalized for token in ("ev", "jeep", "charger", "charging")):
+        return "Pause or delay EV charging."
+    if "dryer" in normalized:
+        return "Pause the dryer if practical, or avoid starting another large load."
+    if "washer" in normalized:
+        return "Pause the washer if practical, or avoid starting another large load."
+    if "hot tub" in normalized or "spa" in normalized:
+        return "Delay hot tub heating."
+    if "ac" in name.upper() or "air conditioner" in normalized:
+        return "Turn AC off or raise the cooling setpoint."
+    return None
+
+
+def energy_high_context(config: dict[str, Any], latest: dict[str, Any]) -> dict[str, Any]:
+    sample_at = parse_captured_at(latest.get("captured_at"))
+    metrics = latest.get("homebridge", {}).get("logs", {}).get("latestMetrics", {})
+    candidates = live_load_candidates(config, latest, sample_at)
+    live_load_kw = max((item["kw"] for item in candidates), default=None)
+    base_threshold = float(config["alerts"].get("energy_high_kw", config["alerts"].get("high_load_kw", 8)))
+    min_threshold = float(config["alerts"].get("energy_high_min_kw", 2.5))
+    max_threshold = float(config["alerts"].get("energy_high_max_kw", 5.5))
+    threshold = base_threshold
+    adjustments: list[dict[str, Any]] = []
+    reasons: list[str] = []
+    actions: list[str] = []
+
+    components = alarm_components()
+    thermostat = thermostat_energy_context(components)
+    envelope = open_envelope_context(components)
+    characteristics = load_latest_characteristics()
+    blinds = blind_energy_context(characteristics)
+    peak_rate = peak_rate_active(characteristics)
+    production_kw = as_float(metrics.get("enphase_production_kw"))
+    net_kw = as_float(metrics.get("enphase_consumption_net_kw"))
+    battery_charging = metrics.get("enphase_battery_charging") is True
+    battery_discharging = metrics.get("enphase_battery_discharging") is True
+    sense_devices: list[dict[str, Any]] = []
+    for candidate in candidates:
+        if candidate.get("source") == "Sense":
+            sense_devices = [item for item in candidate.get("devices") or [] if isinstance(item.get("watts"), (int, float))]
+    combined_states = {str(item) for item in (load_combined_energy().get("states") or [])}
+    condition_states = combined_states | condition_states_from_sense_devices(sense_devices)
+    current_condition = energy_condition_signature(
+        states=condition_states,
+        production_kw=production_kw,
+        grid_kw=net_kw,
+        battery_charging=battery_charging,
+        battery_discharging=battery_discharging,
+        hvac_mode=thermostat_condition_mode(thermostat),
+        envelope_mode=envelope_condition_mode(envelope),
+        blind_band=blind_condition_band(blinds),
+    )
+
+    history = same_time_history(
+        sample_at,
+        int(config["alerts"].get("energy_high_history_days", 21)),
+        int(config["alerts"].get("energy_high_history_window_minutes", 60)),
+    )
+    condition_history = matching_condition_history(history, current_condition)
+    normal_history_min_samples = int(config["alerts"].get("energy_high_normal_history_min_samples", 24))
+    historical_loads = [item["loadKw"] for item in history if isinstance(item.get("loadKw"), (int, float))]
+    condition_loads = [item["loadKw"] for item in condition_history if isinstance(item.get("loadKw"), (int, float))]
+    normal_history_loads = condition_loads if len(condition_loads) >= normal_history_min_samples else historical_loads
+    historical_solar = [item["solarKw"] for item in history if isinstance(item.get("solarKw"), (int, float))]
+    load_p75 = percentile(historical_loads, 0.75)
+    load_p90 = percentile(historical_loads, 0.90)
+    normal_load_p90 = percentile(normal_history_loads, 0.90)
+    solar_p75 = percentile(historical_solar, 0.75)
+    historical_threshold = None
+    normal_threshold = None
+    if load_p75 is not None:
+        historical_threshold = clamp(load_p75 + float(config["alerts"].get("energy_high_history_margin_kw", 0.35)), min_threshold, max_threshold)
+        if historical_threshold < threshold:
+            adjustments.append({"reason": "higher than usual for this time of day", "kw": round(historical_threshold - threshold, 3)})
+            threshold = historical_threshold
+    if normal_load_p90 is not None and len(normal_history_loads) >= normal_history_min_samples:
+        normal_threshold = clamp(
+            normal_load_p90 + float(config["alerts"].get("energy_high_normal_margin_kw", 0.75)),
+            min_threshold,
+            float(config["alerts"].get("energy_high_normal_max_kw", max_threshold)),
+        )
+
+    if thermostat.get("cooling"):
+        delta = -0.35
+        threshold += delta
+        adjustments.append({"reason": "AC is cooling", "kw": delta})
+        actions.append("Turn AC off or raise the cooling setpoint.")
+    if thermostat.get("cooling") and isinstance(thermostat.get("coolingDeltaF"), (int, float)) and thermostat["coolingDeltaF"] >= 3:
+        delta = 0.2
+        threshold += delta
+        adjustments.append({"reason": "comfort guard: room is still well above setpoint", "kw": delta})
+    if envelope["openCount"] and (thermostat.get("cooling") or thermostat.get("heating")):
+        delta = -min(0.8, 0.25 * envelope["openCount"])
+        threshold += delta
+        adjustments.append({"reason": f"{envelope['openCount']} door/window/garage opening(s) while HVAC is active", "kw": round(delta, 3)})
+        actions.append("Close open doors, windows, sliders, gates, or garage doors.")
+    if thermostat.get("cooling") and blinds.get("openCount") and isinstance(production_kw, (int, float)) and production_kw >= 0.5:
+        delta = -min(0.5, 0.04 * int(blinds["openCount"]))
+        threshold += delta
+        adjustments.append({"reason": f"{blinds['openCount']} blind/shade covering(s) are open during cooling daylight", "kw": round(delta, 3)})
+        actions.append("Close sun-facing blinds or shades.")
+    if peak_rate:
+        delta = -0.3
+        threshold += delta
+        adjustments.append({"reason": "peak-rate calendar is active", "kw": delta})
+    if battery_discharging:
+        delta = -0.25
+        threshold += delta
+        adjustments.append({"reason": "battery is discharging", "kw": delta})
+    if isinstance(net_kw, (int, float)) and net_kw >= 0.5:
+        delta = -0.25
+        threshold += delta
+        adjustments.append({"reason": "grid import is meaningful", "kw": delta})
+    if battery_charging and isinstance(net_kw, (int, float)) and net_kw <= 0 and isinstance(production_kw, (int, float)) and production_kw >= 3:
+        delta = 0.6
+        threshold += delta
+        adjustments.append({"reason": "solar is strong and battery is charging", "kw": delta})
+    elif (
+        isinstance(production_kw, (int, float))
+        and solar_p75 is not None
+        and solar_p75 >= 0.5
+        and production_kw < solar_p75 * 0.55
+    ):
+        delta = -0.25
+        threshold += delta
+        adjustments.append({"reason": "solar is weak versus this time of day history", "kw": delta})
+
+    context_threshold = clamp(threshold, min_threshold, max_threshold)
+    threshold = context_threshold
+    if normal_threshold is not None and normal_threshold > base_threshold and normal_threshold > threshold:
+        adjustments.append(
+            {
+                "reason": "same-time history says this load can be normal",
+                "kw": round(normal_threshold - threshold, 3),
+            }
+        )
+        threshold = normal_threshold
+    if live_load_kw is not None and live_load_kw >= threshold:
+        reasons.append(f"live load {live_load_kw:.2f} kW is above dynamic threshold {threshold:.2f} kW")
+    for item in sorted(sense_devices, key=lambda device: float(device.get("watts") or 0), reverse=True):
+        name = str(item.get("name") or "")
+        if str(item.get("id") or "").lower() == "solar" or name.lower() == "solar":
+            continue
+        if float(item.get("watts") or 0) >= 700:
+            reasons.append(f"Sense sees {name} at {float(item.get('watts') or 0):.0f} W")
+            device_action = recommended_action_for_sense_device(name)
+            if device_action:
+                actions.insert(0, device_action)
+            break
+    active = bool(live_load_kw is not None and live_load_kw >= threshold)
+    if not active:
+        reasons.append(
+            f"live load {live_load_kw:.2f} kW is below dynamic threshold {threshold:.2f} kW"
+            if live_load_kw is not None
+            else "no fresh live load candidate is available"
+        )
+    return {
+        "generatedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "sampleAt": sample_at.isoformat(timespec="seconds"),
+        "active": active,
+        "liveLoadKw": round(live_load_kw, 3) if live_load_kw is not None else None,
+        "thresholdKw": round(threshold, 3),
+        "baseThresholdKw": round(base_threshold, 3),
+        "candidates": candidates,
+        "adjustments": adjustments,
+        "reasons": reasons,
+        "recommendedActions": list(dict.fromkeys(actions)) if active else [],
+        "thermostat": thermostat,
+        "envelope": envelope,
+        "blinds": blinds,
+        "peakRate": peak_rate,
+        "solar": {"productionKw": production_kw, "sameTimeP75Kw": round(solar_p75, 3) if solar_p75 is not None else None},
+        "grid": {"netKw": net_kw},
+        "battery": {"charging": battery_charging, "discharging": battery_discharging},
+        "history": {
+            "sampleCount": len(historical_loads),
+            "conditionSampleCount": len(condition_loads),
+            "normalSampleCount": len(normal_history_loads),
+            "normalSource": "matching conditions" if len(condition_loads) >= normal_history_min_samples else "same time",
+            "conditionSignature": current_condition,
+            "sameTimeLoadP75Kw": round(load_p75, 3) if load_p75 is not None else None,
+            "sameTimeLoadP90Kw": round(load_p90, 3) if load_p90 is not None else None,
+            "normalLoadP90Kw": round(normal_load_p90, 3) if normal_load_p90 is not None else None,
+            "historicalThresholdKw": round(historical_threshold, 3) if historical_threshold is not None else None,
+            "sameTimeNormalThresholdKw": round(normal_threshold, 3) if normal_threshold is not None else None,
+        },
+    }
+
+
+def write_energy_high_context(context: dict[str, Any]) -> None:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    ENERGY_HIGH_CONTEXT_PATH.write_text(json.dumps(context, indent=2, sort_keys=True) + "\n")
+    record_energy_high_transition(context)
+    lines = [
+        "# Energy High Context",
+        "",
+        f"- Generated: `{context.get('generatedAt')}`",
+        f"- Sample: `{context.get('sampleAt')}`",
+        f"- Active: `{context.get('active')}`",
+        f"- Live load: `{context.get('liveLoadKw')}` kW",
+        f"- Dynamic threshold: `{context.get('thresholdKw')}` kW",
+        "",
+        "## Why",
+        "",
+    ]
+    for reason in context.get("reasons") or []:
+        lines.append(f"- {reason}")
+    lines.extend(["", "## Suggested Actions", ""])
+    actions = context.get("recommendedActions") or []
+    if actions:
+        for action in actions:
+            lines.append(f"- {action}")
+    else:
+        lines.append("- No specific action is recommended while the tile is clear.")
+    lines.extend(["", "## Context", ""])
+    for key in ("thermostat", "envelope", "blinds", "solar", "grid", "battery", "history"):
+        lines.append(f"- `{key}`: `{json.dumps(context.get(key), sort_keys=True)}`")
+    ENERGY_HIGH_CONTEXT_REPORT_PATH.write_text("\n".join(lines) + "\n")
+
+
+def energy_high_primary_load(context: dict[str, Any]) -> dict[str, Any] | None:
+    devices: list[dict[str, Any]] = []
+    for candidate in context.get("candidates") or []:
+        if not isinstance(candidate, dict) or candidate.get("source") != "Sense":
+            continue
+        for device in candidate.get("devices") or []:
+            if not isinstance(device, dict):
+                continue
+            name = str(device.get("name") or "")
+            if str(device.get("id") or "").lower() == "solar" or name.lower() == "solar":
+                continue
+            watts = as_float(device.get("watts"))
+            if watts is None:
+                continue
+            devices.append({"id": device.get("id"), "name": name or "Unknown", "watts": watts})
+    if not devices:
+        return None
+    return max(devices, key=lambda item: float(item.get("watts") or 0))
+
+
+def load_energy_high_events(limit: int = 40) -> list[dict[str, Any]]:
+    if not ENERGY_HIGH_EVENTS_PATH.exists():
+        return []
+    events: list[dict[str, Any]] = []
+    try:
+        lines = ENERGY_HIGH_EVENTS_PATH.read_text().splitlines()
+    except OSError:
+        return []
+    for line in lines[-max(limit * 2, limit) :]:
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(event, dict):
+            events.append(event)
+    return events[-limit:]
+
+
+def record_energy_high_transition(context: dict[str, Any]) -> dict[str, Any] | None:
+    current_active = context.get("active")
+    if not isinstance(current_active, bool):
+        return None
+    previous = next((event for event in reversed(load_energy_high_events()) if isinstance(event.get("active"), bool)), None)
+    if previous and previous.get("active") == current_active:
+        write_energy_high_events_report(load_energy_high_events(), context)
+        return None
+    if previous is None:
+        event_type = "observed_on" if current_active else "observed_off"
+    else:
+        event_type = "turned_on" if current_active else "turned_off"
+    event = {
+        "eventType": event_type,
+        "recordedAt": datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+        "sampleAt": context.get("sampleAt"),
+        "generatedAt": context.get("generatedAt"),
+        "active": current_active,
+        "previousActive": previous.get("active") if previous else None,
+        "liveLoadKw": context.get("liveLoadKw"),
+        "thresholdKw": context.get("thresholdKw"),
+        "reasons": context.get("reasons") or [],
+        "recommendedActions": context.get("recommendedActions") or [],
+        "primaryLoad": energy_high_primary_load(context),
+        "thermostat": context.get("thermostat"),
+        "envelope": context.get("envelope"),
+        "blinds": context.get("blinds"),
+        "battery": context.get("battery"),
+    }
+    ENERGY_HIGH_EVENTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with ENERGY_HIGH_EVENTS_PATH.open("a") as handle:
+        handle.write(json.dumps(event, sort_keys=True) + "\n")
+    events = load_energy_high_events()
+    write_energy_high_events_report(events, context)
+    return event
+
+
+def write_energy_high_events_report(events: list[dict[str, Any]], current_context: dict[str, Any] | None = None) -> None:
+    REPORT_DIR.mkdir(parents=True, exist_ok=True)
+    lines = [
+        "# Energy High Events",
+        "",
+        f"- Generated: `{datetime.now(timezone.utc).astimezone().isoformat(timespec='seconds')}`",
+        f"- Events retained in this report: `{len(events)}`",
+        "",
+    ]
+    if current_context:
+        active_text = "on" if current_context.get("active") else "off"
+        primary = energy_high_primary_load(current_context) or {}
+        primary_text = (
+            f"{primary.get('name')} {float(primary.get('watts')):.0f} W"
+            if isinstance(primary.get("watts"), (int, float))
+            else str(primary.get("name") or "")
+        )
+        reasons = "; ".join(str(item) for item in (current_context.get("reasons") or [])[:2]) or "none"
+        actions = "; ".join(str(item) for item in (current_context.get("recommendedActions") or [])[:2]) or "none"
+        lines.extend(
+            [
+                "## Current State",
+                "",
+                f"- State: `{active_text}`",
+                f"- Sample: `{current_context.get('sampleAt') or ''}`",
+                f"- Load: `{current_context.get('liveLoadKw'):.2f} kW`" if isinstance(current_context.get("liveLoadKw"), (int, float)) else "- Load: `unknown`",
+                f"- Threshold: `{current_context.get('thresholdKw'):.2f} kW`" if isinstance(current_context.get("thresholdKw"), (int, float)) else "- Threshold: `unknown`",
+                f"- Primary load: `{primary_text or 'none'}`",
+                f"- Reason: {reasons}",
+                f"- Action: {actions}",
+                "",
+            ]
+        )
+    if not events:
+        lines.append("- No ENERGY HIGH observations or transitions recorded yet.")
+    else:
+        lines.extend(["| Time | Event | Load | Threshold | Primary load | Reason | Action |", "|---|---:|---:|---:|---|---|---|"])
+        for event in reversed(events[-40:]):
+            primary = event.get("primaryLoad") if isinstance(event.get("primaryLoad"), dict) else {}
+            primary_text = (
+                f"{primary.get('name')} {float(primary.get('watts')):.0f} W"
+                if isinstance(primary.get("watts"), (int, float))
+                else str(primary.get("name") or "")
+            )
+            reason = "; ".join(str(item) for item in (event.get("reasons") or [])[:2])
+            action = "; ".join(str(item) for item in (event.get("recommendedActions") or [])[:2])
+            lines.append(
+                "| "
+                + " | ".join(
+                    [
+                        str(event.get("sampleAt") or event.get("recordedAt") or ""),
+                        str(event.get("eventType") or ""),
+                        f"{event.get('liveLoadKw'):.2f} kW" if isinstance(event.get("liveLoadKw"), (int, float)) else "",
+                        f"{event.get('thresholdKw'):.2f} kW" if isinstance(event.get("thresholdKw"), (int, float)) else "",
+                        primary_text,
+                        reason,
+                        action,
+                    ]
+                )
+                + " |"
+            )
+    ENERGY_HIGH_EVENTS_REPORT_PATH.write_text("\n".join(lines) + "\n")
+
+
+def load_display_awake_status() -> dict[str, Any]:
+    data = load_json_file(DISPLAY_AWAKE_STATUS_PATH)
     return data if isinstance(data, dict) else {}
 
 
@@ -1235,6 +2094,8 @@ def apply_warning_silence(alerts: list[dict[str, str]], until: datetime | None) 
 def parse_captured_at(raw: str | None) -> datetime:
     if not raw:
         return datetime.now(timezone.utc).astimezone(LOCAL_TZ)
+    if raw.endswith("Z"):
+        raw = raw[:-1] + "+00:00"
     try:
         parsed = datetime.fromisoformat(raw)
     except ValueError:
@@ -1409,13 +2270,19 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
         if alert:
             alerts.append(alert)
 
-    load_kw = metrics.get("enphase_consumption_total_kw")
-    if isinstance(load_kw, (int, float)) and load_kw >= config["alerts"]["high_load_kw"]:
+    high_context = energy_high_context(config, latest)
+    if high_context.get("active") is True:
+        load_kw = high_context.get("liveLoadKw")
+        threshold_kw = high_context.get("thresholdKw")
+        reasons = "; ".join(str(item) for item in (high_context.get("reasons") or [])[:2])
         alerts.append(
             {
                 "severity": "warning",
                 "title": "House load is high",
-                "detail": f"Enphase total consumption is `{load_kw:.3f} kW`.",
+                "detail": (
+                    f"Live load is `{float(load_kw):.3f} kW` against dynamic threshold `{float(threshold_kw):.3f} kW`."
+                    + (f" {reasons}." if reasons else "")
+                ),
             }
         )
 
@@ -1472,6 +2339,16 @@ def build_alerts(config: dict[str, Any], latest: dict[str, Any], rows: list[sqli
                 "severity": "warning",
                 "title": "UniFi occupancy API is failing",
                 "detail": "Homebridge UniFi occupancy is receiving gateway/timeout errors from the UniFi Network API.",
+            }
+        )
+
+    display_unifi = (load_display_awake_status().get("unifi") or {})
+    if display_unifi.get("ok") is False and not display_unifi.get("cached"):
+        alerts.append(
+            {
+                "severity": "critical",
+                "title": "UniFi display presence is unavailable",
+                "detail": "Live UniFi presence is unavailable, so Arkadiy's floor cannot be confirmed from current network data.",
             }
         )
 
@@ -1810,6 +2687,14 @@ def active_state_titles(config: dict[str, Any], latest: dict[str, Any]) -> set[s
         if net_kw <= float(config["alerts"]["grid_export_kw"]):
             live_energy_state_titles.add("Grid exporting")
 
+    high_context = energy_high_context(config, latest)
+    if running_from_runtime_root() and isinstance(latest.get("sourceConfig"), dict):
+        write_energy_high_context(high_context)
+    if high_context.get("active") is True:
+        live_energy_state_titles.add("House load is high")
+    elif high_context.get("active") is False and isinstance(high_context.get("liveLoadKw"), (int, float)):
+        live_energy_state_titles.add("House load is normal")
+
     if isinstance(production_kw, (int, float)) and isinstance(total_kw, (int, float)):
         if production_kw >= total_kw + float(config["alerts"]["solar_surplus_margin_kw"]):
             live_energy_state_titles.add("Solar surplus")
@@ -1821,6 +2706,8 @@ def active_state_titles(config: dict[str, Any], latest: dict[str, Any]) -> set[s
 
     states.update(live_energy_state_titles)
     live_energy_titles = {
+        "House load is high",
+        "House load is normal",
         "Grid importing",
         "Grid exporting",
         "Solar surplus",

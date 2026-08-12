@@ -1043,6 +1043,8 @@ class ActionServerTest(unittest.TestCase):
         self.assertIn("follows your presence", page)
         self.assertIn("UniFi sees Level 3", page)
         self.assertIn("none (shadow)", page)
+        self.assertIn("Display sleep", page)
+        self.assertIn("released to idle sleep", page)
         self.assertIn("Shadow mode records these decisions", page)
         self.assertIn("Today’s event history", page)
         self.assertIn("Floor transitions", page)

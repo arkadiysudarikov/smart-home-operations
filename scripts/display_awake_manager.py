@@ -6,12 +6,14 @@ import hashlib
 import ipaddress
 import json
 import os
+import re
 import shlex
 import signal
 import ssl
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
@@ -231,46 +233,212 @@ def request_json(
     *,
     method: str = "GET",
     body: dict[str, Any] | None = None,
+    extra_headers: dict[str, str] | None = None,
     timeout: int = 15,
 ) -> Any:
     data = json.dumps(body).encode() if body is not None else None
     headers = {"Accept": "application/json", "User-Agent": "smart-home-display-awake"}
     if data is not None:
         headers["Content-Type"] = "application/json"
+    if extra_headers:
+        headers.update(extra_headers)
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     with opener.open(request, timeout=timeout) as response:
         raw = response.read()
     return json.loads(raw.decode("utf-8")) if raw else None
 
 
-def query_unifi_clients(homebridge_path: Path = HOMEBRIDGE_CONFIG) -> tuple[list[dict[str, Any]], dict[str, str]]:
+def keychain_secret(service: str, account: str) -> str | None:
+    if not service or not account:
+        return None
+    result = subprocess.run(
+        ["/usr/bin/security", "find-generic-password", "-s", service, "-a", account, "-w"],
+        capture_output=True,
+        text=True,
+        timeout=5,
+        check=False,
+    )
+    secret = result.stdout.strip() if result.returncode == 0 else ""
+    return secret or None
+
+
+def integration_clients(
+    clients_payload: Any,
+    devices_payload: Any,
+    *,
+    observed_at: float,
+) -> list[dict[str, Any]]:
+    clients = clients_payload.get("data") if isinstance(clients_payload, dict) else None
+    devices = devices_payload.get("data") if isinstance(devices_payload, dict) else None
+    if not isinstance(clients, list):
+        return []
+    device_details = {
+        str(device.get("id") or ""): {
+            "mac": normalize_mac(device.get("macAddress")),
+            "name": str(device.get("name") or "").strip() or None,
+        }
+        for device in devices or []
+        if isinstance(device, dict) and device.get("id")
+    }
+    normalized: list[dict[str, Any]] = []
+    for client in clients:
+        if not isinstance(client, dict):
+            continue
+        name = str(client.get("name") or "")
+        uplink = device_details.get(str(client.get("uplinkDeviceId") or ""), {})
+        normalized.append(
+            {
+                "mac": client.get("macAddress"),
+                "display_name": name,
+                "hostname": name,
+                "name": name,
+                "ip": client.get("ipAddress"),
+                "ip_address": client.get("ipAddress"),
+                "ap_mac": uplink.get("mac"),
+                "ap_name": uplink.get("name"),
+                "last_seen": observed_at,
+                "status": "online",
+            }
+        )
+    return normalized
+
+
+class UnifiSession:
+    """Reuse one controller session and avoid prolonging authentication lockouts."""
+
+    def __init__(self, *, auth_backoff_seconds: int = 900) -> None:
+        self.auth_backoff_seconds = max(30, auth_backoff_seconds)
+        self.connection_key: tuple[Any, ...] | None = None
+        self.opener: urllib.request.OpenerDirector | None = None
+        self.authenticated = False
+        self.next_auth_attempt = 0.0
+
+    def reset(self) -> None:
+        self.opener = None
+        self.authenticated = False
+        self.next_auth_attempt = 0.0
+
+    def clients(self, unifi: dict[str, Any]) -> list[dict[str, Any]]:
+        controller = str(unifi.get("controller") or "").rstrip("/")
+        api_key_service = str(unifi.get("api_key_keychain_service") or "")
+        api_key_account = str(unifi.get("api_key_keychain_account") or "")
+        username = unifi.get("username")
+        password = unifi.get("password")
+        if not controller or (not api_key_service and (not username or not password)):
+            raise RuntimeError("UniFi controller credentials are incomplete")
+
+        unifios = unifi.get("unifios") is not False
+        site = str(unifi.get("site") or "default")
+        connection_key = (
+            controller,
+            api_key_service,
+            api_key_account,
+            username,
+            password,
+            unifi.get("secure"),
+            unifios,
+            site,
+        )
+        if connection_key != self.connection_key:
+            self.connection_key = connection_key
+            self.reset()
+
+        now = time.monotonic()
+        if self.opener is None:
+            context = ssl._create_unverified_context() if unifi.get("secure") is False else None
+            self.opener = urllib.request.build_opener(
+                urllib.request.HTTPCookieProcessor(CookieJar()),
+                urllib.request.HTTPSHandler(context=context),
+            )
+        if api_key_service:
+            if now < self.next_auth_attempt:
+                raise RuntimeError("UniFi authentication is cooling down")
+            api_key = keychain_secret(api_key_service, api_key_account)
+            if not api_key:
+                raise RuntimeError("UniFi API key is unavailable")
+            headers = {"X-API-KEY": api_key}
+            prefix = "/proxy/network/integration/v1"
+            try:
+                sites_payload = request_json(
+                    self.opener,
+                    f"{controller}{prefix}/sites",
+                    extra_headers=headers,
+                    timeout=12,
+                )
+                sites = sites_payload.get("data") if isinstance(sites_payload, dict) else None
+                matching_sites = [
+                    item
+                    for item in sites or []
+                    if isinstance(item, dict) and str(item.get("internalReference") or "") == site
+                ]
+                selected_site = matching_sites[0] if matching_sites else (sites or [None])[0]
+                site_id = selected_site.get("id") if isinstance(selected_site, dict) else None
+                if not site_id:
+                    raise RuntimeError("UniFi API did not return the configured site")
+                clients_payload = request_json(
+                    self.opener,
+                    f"{controller}{prefix}/sites/{site_id}/clients?limit=200",
+                    extra_headers=headers,
+                    timeout=12,
+                )
+                devices_payload = request_json(
+                    self.opener,
+                    f"{controller}{prefix}/sites/{site_id}/devices?limit=200",
+                    extra_headers=headers,
+                    timeout=12,
+                )
+            except urllib.error.HTTPError as exc:
+                if exc.code in {401, 403, 429}:
+                    self.next_auth_attempt = now + self.auth_backoff_seconds
+                raise
+            self.next_auth_attempt = 0.0
+            return integration_clients(clients_payload, devices_payload, observed_at=time.time())
+        if not self.authenticated:
+            if now < self.next_auth_attempt:
+                raise RuntimeError("UniFi authentication is cooling down")
+            auth_path = "/api/auth/login" if unifios else "/api/login"
+            try:
+                request_json(
+                    self.opener,
+                    f"{controller}{auth_path}",
+                    method="POST",
+                    body={"username": username, "password": password},
+                    timeout=12,
+                )
+            except urllib.error.HTTPError as exc:
+                if exc.code in {401, 403, 429}:
+                    self.next_auth_attempt = now + self.auth_backoff_seconds
+                raise
+            self.authenticated = True
+            self.next_auth_attempt = 0.0
+
+        prefix = "/proxy/network" if unifios else ""
+        try:
+            payload = request_json(self.opener, f"{controller}{prefix}/v2/api/site/{site}/clients/active")
+        except urllib.error.HTTPError as exc:
+            if exc.code in {401, 403, 429}:
+                self.authenticated = False
+                self.next_auth_attempt = now + self.auth_backoff_seconds
+            raise
+        return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+
+
+_DEFAULT_UNIFI_SESSION = UnifiSession()
+
+
+def query_unifi_clients(
+    homebridge_path: Path = HOMEBRIDGE_CONFIG,
+    *,
+    session: UnifiSession | None = None,
+    config: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, str]]:
     homebridge = read_json(homebridge_path)
     platform = unifi_platform(homebridge)
-    unifi = platform.get("unifi") if isinstance(platform.get("unifi"), dict) else {}
-    controller = str(unifi.get("controller") or "").rstrip("/")
-    username = unifi.get("username")
-    password = unifi.get("password")
-    if not controller or not username or not password:
-        raise RuntimeError("UniFi controller credentials are incomplete")
-
-    context = ssl._create_unverified_context() if unifi.get("secure") is False else None
-    opener = urllib.request.build_opener(
-        urllib.request.HTTPCookieProcessor(CookieJar()),
-        urllib.request.HTTPSHandler(context=context),
-    )
-    unifios = unifi.get("unifios") is not False
-    auth_path = "/api/auth/login" if unifios else "/api/login"
-    request_json(
-        opener,
-        f"{controller}{auth_path}",
-        method="POST",
-        body={"username": username, "password": password},
-        timeout=12,
-    )
-    prefix = "/proxy/network" if unifios else ""
-    site = str(unifi.get("site") or "default")
-    payload = request_json(opener, f"{controller}{prefix}/v2/api/site/{site}/clients/active")
-    clients = [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+    unifi = dict(platform.get("unifi")) if isinstance(platform.get("unifi"), dict) else {}
+    display_config = config if isinstance(config, dict) else load_config()
+    unifi["api_key_keychain_service"] = display_config.get("unifi_api_keychain_service")
+    unifi["api_key_keychain_account"] = display_config.get("unifi_api_keychain_account")
+    clients = (session or _DEFAULT_UNIFI_SESSION).clients(unifi)
     aliases = {
         str(item.get("accessPoint") or "").lower(): str(item.get("alias") or "")
         for item in platform.get("accessPointAliases", [])
@@ -435,7 +603,7 @@ def write_room_mapping(entries: list[str], path: Path = HOME_MAPPING_PATH) -> di
 
 def client_ap_alias(client: dict[str, Any], aliases: dict[str, str]) -> str | None:
     ap_mac = normalize_mac(client.get("ap_mac") or client.get("uplink_mac") or client.get("last_uplink_mac"))
-    return aliases.get(ap_mac or "")
+    return aliases.get(ap_mac or "") or str(client.get("ap_name") or "").strip() or None
 
 
 def client_last_seen(client: dict[str, Any]) -> float | None:
@@ -519,6 +687,12 @@ class PresenceTracker:
         watch_fresh = watch.get("fresh") is True
         iphone_room = str(iphone.get("room")) if iphone_fresh and iphone.get("room") else None
         watch_room = str(watch.get("room")) if watch_fresh and watch.get("room") else None
+        iphone_access_point = (
+            str(iphone.get("accessPoint")) if iphone_fresh and iphone.get("accessPoint") else None
+        )
+        watch_access_point = (
+            str(watch.get("accessPoint")) if watch_fresh and watch.get("accessPoint") else None
+        )
         prior_rooms = self.state.get("deviceRooms") if isinstance(self.state.get("deviceRooms"), dict) else {}
         prior_iphone = prior_rooms.get("iphone")
         prior_watch = prior_rooms.get("watch")
@@ -564,6 +738,13 @@ class PresenceTracker:
         selected_kind = candidate_source
         if selected_kind is None and carried_source is None:
             selected_kind = "iphone" if iphone_fresh else "watch" if watch_fresh else None
+        candidate_access_point = (
+            iphone_access_point
+            if candidate_source == "iphone"
+            else watch_access_point
+            if candidate_source == "watch"
+            else None
+        )
         confirmed = self.state.get("confirmedRoom")
 
         if candidate_room:
@@ -575,6 +756,7 @@ class PresenceTracker:
                         "pendingCount": 0,
                         "lastConfirmedAt": now,
                         "confirmedSource": candidate_source,
+                        "confirmedAccessPoint": candidate_access_point,
                     }
                 )
             else:
@@ -595,6 +777,7 @@ class PresenceTracker:
                             "pendingSource": None,
                             "pendingCount": 0,
                             "lastConfirmedAt": now,
+                            "confirmedAccessPoint": candidate_access_point,
                         }
                     )
         else:
@@ -604,6 +787,7 @@ class PresenceTracker:
                     {
                         "confirmedRoom": None,
                         "confirmedSource": None,
+                        "confirmedAccessPoint": None,
                         "pendingRoom": None,
                         "pendingSource": None,
                         "pendingCount": 0,
@@ -648,6 +832,7 @@ class PresenceTracker:
             "carriedSource": carried_source,
             "zoneSource": zone_source,
             "confirmedRoom": self.state.get("confirmedRoom"),
+            "confirmedAccessPoint": self.state.get("confirmedAccessPoint"),
             "pendingRoom": self.state.get("pendingRoom"),
             "pendingSource": self.state.get("pendingSource"),
             "pendingCount": int(self.state.get("pendingCount") or 0),
@@ -689,7 +874,9 @@ def normalized_hostname(value: Any) -> str:
         if hostname.endswith(suffix):
             hostname = hostname[: -len(suffix)]
             break
-    return hostname
+    # UniFi may append a shortened hardware suffix to a client display name.
+    # Match the configured host name while still requiring the exact base name.
+    return re.sub(r"\s+[0-9a-f]{2}(?::[0-9a-f]{2}){1,5}$", "", hostname)
 
 
 def target_with_live_unifi_host(target: dict[str, Any], clients: list[dict[str, Any]]) -> dict[str, Any]:
@@ -838,6 +1025,7 @@ def evaluate_policy(
     manual_override: bool,
     activity_hold_seconds: int,
     light_activity_hold_seconds: int,
+    presence_access_point: str | None = None,
 ) -> dict[str, Any]:
     reasons: list[str] = []
     ineligible: list[str] = []
@@ -853,11 +1041,24 @@ def evaluate_policy(
         ineligible.append("lid_closed")
 
     idle = probe.get("idleSeconds")
+    recent_activity = isinstance(idle, (int, float)) and idle <= activity_hold_seconds
+    configured_access_points = target.get("presence_access_points")
+    if isinstance(configured_access_points, list):
+        allowed_access_points = {
+            str(value).strip().casefold() for value in configured_access_points if str(value).strip()
+        }
+        presence_matches = bool(
+            presence_access_point and presence_access_point.strip().casefold() in allowed_access_points
+        )
+        presence_match_source = "access_point" if presence_matches else None
+    else:
+        presence_matches = bool(target_room and presence_room == target_room)
+        presence_match_source = "room" if presence_matches else None
     if manual_override:
         reasons.append("manual_override")
-    if target_room and presence_room == target_room:
+    if presence_matches:
         reasons.append("presence_room")
-    if isinstance(idle, (int, float)) and idle <= activity_hold_seconds:
+    if recent_activity:
         reasons.append("recent_activity")
     if light_on and isinstance(idle, (int, float)) and idle <= light_activity_hold_seconds:
         reasons.append("light_plus_activity")
@@ -866,6 +1067,7 @@ def evaluate_policy(
         "hold": bool(reasons) and not ineligible,
         "reasons": reasons,
         "ineligibleReasons": ineligible,
+        "presenceMatchSource": presence_match_source,
     }
 
 
@@ -1015,6 +1217,9 @@ class DisplayAwakeManager:
             lease_seconds=int(self.config.get("lease_seconds") or 150),
             refresh_seconds=int(self.config.get("lease_refresh_seconds") or 90),
         )
+        self.unifi_session = UnifiSession(
+            auth_backoff_seconds=int(self.config.get("unifi_auth_backoff_seconds") or 900)
+        )
         self.stopping = threading.Event()
 
     def cycle(self, *, now: float | None = None) -> dict[str, Any]:
@@ -1029,7 +1234,7 @@ class DisplayAwakeManager:
         unifi_cache_used = False
         unifi_cache_age: float | None = None
         try:
-            clients, aliases = query_unifi_clients()
+            clients, aliases = query_unifi_clients(session=self.unifi_session, config=self.config)
         except Exception as exc:
             unifi_error = type(exc).__name__
 
@@ -1066,6 +1271,7 @@ class DisplayAwakeManager:
             )
         presence = self.tracker.update(observations, timestamp)
         write_private_json(DATA_DIR / "display_awake_presence_state.json", self.tracker.state)
+        presence_access_point = str(presence.get("confirmedAccessPoint") or "").strip() or None
 
         previous = read_json(STATUS_PATH)
         configured_targets = [
@@ -1106,6 +1312,7 @@ class DisplayAwakeManager:
                 manual_override=manual_override,
                 activity_hold_seconds=int(self.config.get("activity_hold_seconds") or 1800),
                 light_activity_hold_seconds=int(self.config.get("light_activity_hold_seconds") or 7200),
+                presence_access_point=presence_access_point,
             )
             enforcement_enabled = enforcement_enabled_for_target(mode, target_id, enforce_targets)
             lease_active = self.leases.tick(target, decision["hold"]) if enforcement_enabled else False

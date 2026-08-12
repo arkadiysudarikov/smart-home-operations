@@ -225,7 +225,9 @@ sanitized enrollment tokens, provide both tokens with `--enroll-watch` and
 `--set-room-map 'ACCESS POINT=room'`. The `⚙️ Screens Awake` and
 `⚙️ Screens Auto` action switches enable and cancel the persistent manual
 override; both still respect lock, login, reachability, laptop power, and lid
-safety gates. The local `/displays` page and `/status/displays` JSON endpoint
+safety gates. On Homebridge startup, all one-shot action switches clear cached
+state and ignore replayed `On` values for 60 seconds so a power recovery cannot
+repeat a stale action. The local `/displays` page and `/status/displays` JSON endpoint
 show controller/LaunchAgent health, enrollment and mapping readiness, current
 presence, each Mac's decision reasons, recent decision changes, and accumulated
 shadow/enforcement durations. Long controller gaps are excluded from duration

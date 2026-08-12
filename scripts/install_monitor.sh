@@ -17,8 +17,6 @@ DISPLAY_GUARD_RUNTIME="$RUNTIME/data/display_awake_policy_guard.py"
 
 python3 "$ROOT/scripts/display_awake_policy_guard.py" --validate-source --source-root "$ROOT"
 
-"$ROOT/scripts/check_install_source.sh" "$ROOT"
-
 mkdir -p "$HOME/Library/LaunchAgents"
 mkdir -p "$RUNTIME"
 mkdir -p "$RUNTIME/logs"
@@ -28,9 +26,8 @@ rsync -a --delete \
   --exclude 'logs' \
   --exclude 'reports' \
   "$ROOT/" "$RUNTIME/"
+python3 "$ROOT/scripts/sync_display_awake_policy.py" --source-root "$ROOT" --runtime-root "$RUNTIME"
 mkdir -p "$RUNTIME/data"
-cp "$ROOT/scripts/display_awake_policy_guard.py" "$DISPLAY_GUARD_RUNTIME"
-chmod 700 "$DISPLAY_GUARD_RUNTIME"
 python3 "$DISPLAY_GUARD_RUNTIME" --baseline --source-root "$ROOT" --runtime-root "$RUNTIME"
 cp "$PLIST_SRC" "$PLIST_DST"
 cp "$ACTIONS_PLIST_SRC" "$ACTIONS_PLIST_DST"
