@@ -68,6 +68,42 @@ process.stdout.write(JSON.stringify(actions));
         self.assertIn('"X-Smart-Home-Source": PLUGIN_NAME', source)
         self.assertIn('"X-Smart-Home-Reason": `homekit-switch:${action.id || "custom"}`', source)
 
+    def test_startup_replay_protection_suppresses_only_early_on_events(self) -> None:
+        script = """
+const plugin = require(process.argv[1]);
+const deadline = 10000;
+process.stdout.write(JSON.stringify({
+  defaultMs: plugin.DEFAULT_STARTUP_REPLAY_PROTECTION_MS,
+  earlyOn: plugin.shouldSuppressStartupReplay(true, 9999, deadline),
+  earlyOff: plugin.shouldSuppressStartupReplay(false, 9999, deadline),
+  atDeadline: plugin.shouldSuppressStartupReplay(true, deadline, deadline),
+  afterDeadline: plugin.shouldSuppressStartupReplay(true, 10001, deadline),
+}));
+"""
+        result = subprocess.run(
+            [str(NODE), "-e", script, str(PLUGIN_PATH)],
+            check=True,
+            capture_output=True,
+            text=True,
+            env={**os.environ, "PATH": f"{NODE.parent}:{os.environ.get('PATH', '')}"},
+        )
+
+        behavior = json.loads(result.stdout)
+        self.assertEqual(behavior["defaultMs"], 60_000)
+        self.assertTrue(behavior["earlyOn"])
+        self.assertFalse(behavior["earlyOff"])
+        self.assertFalse(behavior["atDeadline"])
+        self.assertFalse(behavior["afterDeadline"])
+
+    def test_cached_switch_state_is_cleared_before_set_listener_is_armed(self) -> None:
+        source = PLUGIN_PATH.read_text()
+
+        clear_index = source.index("onCharacteristic.updateValue(false);")
+        set_listener_index = source.index('.on("set", async (value, callback) => {')
+        self.assertLess(clear_index, set_listener_index)
+        self.assertIn("startupReplayProtectionUntil = Date.now()", source)
+        self.assertIn("ignored during startup replay protection", source)
+
 
 if __name__ == "__main__":
     unittest.main()

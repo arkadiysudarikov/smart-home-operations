@@ -48,6 +48,96 @@ class FakeProcess:
 
 
 class DisplayAwakeManagerTest(unittest.TestCase):
+    def test_unifi_session_logs_in_once_and_reuses_cookie_session(self) -> None:
+        unifi = {
+            "controller": "https://controller.example",
+            "username": "service-user",
+            "password": "secret",
+            "unifios": True,
+        }
+        opener = mock.Mock()
+        session = display_awake.UnifiSession()
+        with (
+            mock.patch.object(display_awake.urllib.request, "build_opener", return_value=opener),
+            mock.patch.object(
+                display_awake,
+                "request_json",
+                side_effect=[None, [{"status": "online"}], [{"status": "online"}]],
+            ) as request_json,
+        ):
+            self.assertEqual(session.clients(unifi), [{"status": "online"}])
+            self.assertEqual(session.clients(unifi), [{"status": "online"}])
+
+        self.assertEqual(request_json.call_count, 3)
+        self.assertEqual(request_json.call_args_list[0].kwargs["method"], "POST")
+        self.assertNotIn("method", request_json.call_args_list[1].kwargs)
+        self.assertNotIn("method", request_json.call_args_list[2].kwargs)
+
+    def test_unifi_session_backs_off_after_login_rate_limit(self) -> None:
+        unifi = {
+            "controller": "https://controller.example",
+            "username": "service-user",
+            "password": "secret",
+            "unifios": True,
+        }
+        rate_limit = display_awake.urllib.error.HTTPError(
+            "https://controller.example/api/auth/login", 429, "rate limited", {}, None
+        )
+        session = display_awake.UnifiSession(auth_backoff_seconds=300)
+        with (
+            mock.patch.object(display_awake.time, "monotonic", return_value=1_000.0),
+            mock.patch.object(display_awake.urllib.request, "build_opener", return_value=mock.Mock()),
+            mock.patch.object(display_awake, "request_json", side_effect=rate_limit) as request_json,
+        ):
+            with self.assertRaises(display_awake.urllib.error.HTTPError):
+                session.clients(unifi)
+            with self.assertRaisesRegex(RuntimeError, "cooling down"):
+                session.clients(unifi)
+
+        self.assertEqual(request_json.call_count, 1)
+
+    def test_unifi_session_uses_keychain_backed_integration_api(self) -> None:
+        unifi = {
+            "controller": "https://controller.example",
+            "site": "default",
+            "api_key_keychain_service": "UniFi API",
+            "api_key_keychain_account": "display-manager",
+        }
+        session = display_awake.UnifiSession()
+        sites = {"data": [{"id": "site-id", "internalReference": "default"}]}
+        clients = {
+            "data": [
+                {
+                    "macAddress": WATCH_MAC,
+                    "name": "Apple Watch",
+                    "ipAddress": "192.0.2.10",
+                    "uplinkDeviceId": "ap-id",
+                }
+            ]
+        }
+        devices = {"data": [{"id": "ap-id", "macAddress": AP_ONE_MAC, "name": "U6 Mesh"}]}
+        with (
+            mock.patch.object(display_awake, "keychain_secret", return_value="api-secret"),
+            mock.patch.object(display_awake.urllib.request, "build_opener", return_value=mock.Mock()),
+            mock.patch.object(display_awake.time, "time", return_value=1_000.0),
+            mock.patch.object(
+                display_awake,
+                "request_json",
+                side_effect=[sites, clients, devices],
+            ) as request_json,
+        ):
+            result = session.clients(unifi)
+
+        self.assertEqual(result[0]["mac"], WATCH_MAC)
+        self.assertEqual(result[0]["ap_mac"], AP_ONE_MAC)
+        self.assertEqual(result[0]["ap_name"], "U6 Mesh")
+        self.assertEqual(result[0]["last_seen"], 1_000.0)
+        self.assertEqual(request_json.call_count, 3)
+        self.assertEqual(
+            request_json.call_args_list[0].kwargs["extra_headers"],
+            {"X-API-KEY": "api-secret"},
+        )
+
     def test_candidates_are_sanitized_and_tokenized(self) -> None:
         candidates = display_awake.sanitized_candidates(
             [client(WATCH_MAC, "watch", AP_ONE_MAC), client(IPHONE_MAC, "iphone", AP_TWO_MAC)],
@@ -65,7 +155,8 @@ class DisplayAwakeManagerTest(unittest.TestCase):
             {"display_name": "Guest iPhone", "ap_mac": AP_ONE_MAC, "status": "online"},
             {"display_name": "Pixel 10", "ap_mac": AP_ONE_MAC, "status": "online"},
             {"display_name": "Apple Watch", "ap_mac": AP_ONE_MAC, "status": "online"},
-            {"display_name": "Galaxy", "ap_mac": AP_TWO_MAC, "status": "online"},
+            {"display_name": "Samsung Galaxy", "ap_mac": AP_TWO_MAC, "status": "online"},
+            {"display_name": "MyQ Garage Door", "ap_mac": AP_ONE_MAC, "status": "online"},
         ]
 
         occupancy = display_awake.phone_occupancy(
@@ -469,7 +560,7 @@ class DisplayAwakeManagerTest(unittest.TestCase):
         tracker = display_awake.PresenceTracker(
             confirmation_polls=2,
             grace_seconds=600,
-            state={"confirmedRoom": "office", "lastConfirmedAt": 1_000},
+            state={"confirmedRoom": "office", "confirmedAccessPoint": "Office", "lastConfirmedAt": 1_000},
         )
 
         result = tracker.update(
@@ -480,6 +571,7 @@ class DisplayAwakeManagerTest(unittest.TestCase):
         self.assertEqual(result["confirmedRoom"], "office")
         self.assertEqual(result["source"], "watch")
         self.assertEqual(result["zoneSource"], "iphone_grace")
+        self.assertEqual(result["confirmedAccessPoint"], "Office")
 
     def test_policy_uses_presence_activity_light_and_override(self) -> None:
         target = {"id": "office", "ac_only": False}
@@ -536,6 +628,54 @@ class DisplayAwakeManagerTest(unittest.TestCase):
             )
             self.assertTrue(result["hold"])
             self.assertEqual(result["reasons"], ["presence_room"])
+
+    def test_target_access_point_policy_overrides_coarse_floor_mapping(self) -> None:
+        target = {
+            "id": "office",
+            "zone": "level_2",
+            "presence_access_points": ["Family", "Office"],
+        }
+        probe = {"reachable": True, "consoleUser": "user", "locked": False, "idleSeconds": 4_000}
+
+        family = display_awake.evaluate_policy(
+            target=target,
+            probe=probe,
+            target_room="level_2",
+            presence_room="level_1",
+            presence_access_point="Family",
+            light_on=False,
+            manual_override=False,
+            activity_hold_seconds=1_800,
+            light_activity_hold_seconds=7_200,
+        )
+        office = display_awake.evaluate_policy(
+            target=target,
+            probe=probe,
+            target_room="level_2",
+            presence_room="level_2",
+            presence_access_point="Office",
+            light_on=False,
+            manual_override=False,
+            activity_hold_seconds=1_800,
+            light_activity_hold_seconds=7_200,
+        )
+        primary = display_awake.evaluate_policy(
+            target=target,
+            probe=probe,
+            target_room="level_2",
+            presence_room="level_2",
+            presence_access_point="Primary",
+            light_on=False,
+            manual_override=False,
+            activity_hold_seconds=1_800,
+            light_activity_hold_seconds=7_200,
+        )
+
+        self.assertTrue(family["hold"])
+        self.assertEqual(family["presenceMatchSource"], "access_point")
+        self.assertTrue(office["hold"])
+        self.assertFalse(primary["hold"])
+        self.assertEqual(primary["reasons"], [])
 
     def test_macbook_presence_zone_overrides_sticky_unifi_association(self) -> None:
         probe = {"wifiMac": WATCH_MAC}
@@ -625,6 +765,14 @@ class DisplayAwakeManagerTest(unittest.TestCase):
         self.assertEqual(target["host_key_alias"], "m4-bar-mini.local")
         self.assertEqual(target["configured_host"], "m4-bar-mini.local")
         self.assertEqual(target["probe_host_source"], "unifi")
+
+    def test_target_accepts_unifi_client_name_with_hardware_suffix(self) -> None:
+        target = display_awake.target_with_live_unifi_host(
+            {"id": "office", "host": "m4-office-mini.local", "host_source": "unifi"},
+            [{"hostname": "m4-office-mini aa:bb", "status": "online", "ip": "192.0.2.16"}],
+        )
+
+        self.assertEqual(target["host"], "192.0.2.16")
 
     def test_target_ignores_untrusted_or_offline_unifi_address(self) -> None:
         configured = {"id": "bar", "host": "m4-bar-mini.local", "host_source": "unifi"}
@@ -802,6 +950,7 @@ class DisplayAwakeManagerTest(unittest.TestCase):
         self.assertIn("com.arkadiy.smart-home-display-awake.plist", installer)
         self.assertIn("com.arkadiy.smart-home-display-awake-guard.plist", installer)
         self.assertIn("display_awake_policy_guard.py\" --validate-source", installer)
+        self.assertIn("sync_display_awake_policy.py", installer)
         self.assertIn("com.arkadiy.smart-home-display-awake.plist", snapshot)
         self.assertIn("com.arkadiy.smart-home-display-awake-guard.plist", snapshot)
         self.assertIn('"scripts/display_awake_manager.py"', snapshot)

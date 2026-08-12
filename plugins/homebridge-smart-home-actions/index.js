@@ -3,6 +3,7 @@
 const PLUGIN_NAME = "homebridge-smart-home-actions";
 const PLATFORM_NAME = "SmartHomeActions";
 const RETIRED_ACTION_IDS = new Set(["office-restart"]);
+const DEFAULT_STARTUP_REPLAY_PROTECTION_MS = 60000;
 
 const DEFAULT_ACTIONS = [
   { id: "check", name: "⚙️ Home Check", path: "/action/run-check", timeoutMs: 120000 },
@@ -35,6 +36,10 @@ function normalizeConfiguredActions(configuredActions) {
   return normalized.length ? [...normalized, ...missingDefaults] : DEFAULT_ACTIONS;
 }
 
+function shouldSuppressStartupReplay(value, now, protectionUntil) {
+  return Boolean(value) && Number.isFinite(protectionUntil) && now < protectionUntil;
+}
+
 module.exports = (homebridge) => {
   homebridge.registerPlatform(PLUGIN_NAME, PLATFORM_NAME, SmartHomeActionsPlatform);
 };
@@ -49,8 +54,16 @@ class SmartHomeActionsPlatform {
     this.accessories = new Map();
     this.baseUrl = (this.config.baseUrl || "http://127.0.0.1:18765").replace(/\/+$/, "");
     this.actions = this.configuredActions();
+    this.startupReplayProtectionMs = Math.max(
+      0,
+      Number(this.config.startupReplayProtectionMs ?? DEFAULT_STARTUP_REPLAY_PROTECTION_MS),
+    );
+    this.startupReplayProtectionUntil = 0;
 
-    this.api.on("didFinishLaunching", () => this.syncAccessories());
+    this.api.on("didFinishLaunching", () => {
+      this.startupReplayProtectionUntil = Date.now() + this.startupReplayProtectionMs;
+      this.syncAccessories();
+    });
   }
 
   configureAccessory(accessory) {
@@ -105,12 +118,24 @@ class SmartHomeActionsPlatform {
       .setCharacteristic(this.Characteristic.Model, "Local Action Switch")
       .setCharacteristic(this.Characteristic.SerialNumber, `smart-home-action-${action.id || action.name}`);
 
-    service.getCharacteristic(this.Characteristic.On)
+    const onCharacteristic = service.getCharacteristic(this.Characteristic.On);
+    onCharacteristic.updateValue(false);
+    onCharacteristic
       .removeAllListeners("get")
       .removeAllListeners("set")
       .on("get", (callback) => callback(null, false))
       .on("set", async (value, callback) => {
         if (!value) {
+          callback(null);
+          return;
+        }
+
+        if (shouldSuppressStartupReplay(value, Date.now(), this.startupReplayProtectionUntil)) {
+          const remainingMs = Math.max(0, this.startupReplayProtectionUntil - Date.now());
+          this.log.warn(
+            `${action.name} ignored during startup replay protection (${Math.ceil(remainingMs / 1000)}s remaining).`,
+          );
+          onCharacteristic.updateValue(false);
           callback(null);
           return;
         }
@@ -123,7 +148,7 @@ class SmartHomeActionsPlatform {
           callback(error);
         } finally {
           setTimeout(() => {
-            service.getCharacteristic(this.Characteristic.On).updateValue(false);
+            onCharacteristic.updateValue(false);
           }, Number(action.resetAfterMs || this.config.resetAfterMs || 1000));
         }
       });
@@ -189,3 +214,5 @@ class SmartHomeActionsPlatform {
 }
 
 module.exports.normalizeConfiguredActions = normalizeConfiguredActions;
+module.exports.shouldSuppressStartupReplay = shouldSuppressStartupReplay;
+module.exports.DEFAULT_STARTUP_REPLAY_PROTECTION_MS = DEFAULT_STARTUP_REPLAY_PROTECTION_MS;

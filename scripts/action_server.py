@@ -38,6 +38,7 @@ GARAGE_ACTIVITY_EVENTS_PATH = DATA_DIR / "garage_activity_events.jsonl"
 DISPLAY_AWAKE_STATUS_PATH = DATA_DIR / "latest_display_awake.json"
 DISPLAY_AWAKE_SUMMARY_PATH = DATA_DIR / "latest_display_awake_summary.json"
 DISPLAY_AWAKE_EVENTS_PATH = DATA_DIR / "display_awake_events.jsonl"
+ENERGY_HIGH_EVENTS_PATH = DATA_DIR / "energy_high_events.jsonl"
 DISPLAY_AWAKE_OVERRIDE_PATH = DATA_DIR / "display_awake_override.json"
 ACTION_AUDIT_PATH = LOG_DIR / "actions.audit.jsonl"
 ENERGY_REFRESH_STATUS_PATH = DATA_DIR / "latest_energy_refresh.json"
@@ -872,6 +873,8 @@ def energy_status(history_days: int = 7) -> dict[str, Any]:
     alarm_energy = read_json_status(ROOT / "config" / "alarm_energy_readings.json")
     sense = read_json_status(DATA_DIR / "sense_trends_latest.json")
     sense_now = read_json_status(DATA_DIR / "sense_now_latest.json")
+    energy_high = load_json_file(DATA_DIR / "latest_energy_high_context.json")
+    energy_high_events = read_jsonl_tail(ENERGY_HIGH_EVENTS_PATH, 40)
     envoy = read_json_status(DATA_DIR / "latest_envoy_direct.json")
     automation = read_json_status(DATA_DIR / "latest_energy_automation_opportunities.json")
     observability = read_json_status(DATA_DIR / "latest_energy_observability.json")
@@ -900,6 +903,7 @@ def energy_status(history_days: int = 7) -> dict[str, Any]:
         "alarmEnergy": alarm_energy,
         "sense": sense,
         "senseNow": sense_now,
+        "energyHigh": energy_high,
         "envoy": envoy,
         "automationOpportunities": automation,
         "combined": combined,
@@ -923,6 +927,8 @@ def energy_status(history_days: int = 7) -> dict[str, Any]:
         "alarmEnergy": alarm_energy,
         "sense": sense,
         "senseNow": sense_now,
+        "energyHigh": energy_high,
+        "energyHighEvents": energy_high_events,
         "envoy": envoy,
         "automationOpportunities": automation,
         "observability": observability,
@@ -1209,6 +1215,13 @@ def render_display_page(*, read_only: bool = False) -> bytes:
         open_attr = " open" if would_hold or blocked else ""
         power = "AC" if probe.get("onAcPower") is True else "battery" if probe.get("onAcPower") is False else "unknown"
         lid = "closed" if probe.get("lidClosed") is True else "open" if probe.get("lidClosed") is False else "unknown"
+        display_sleep = (
+            "held by this policy"
+            if lease_active
+            else "held by another macOS feature"
+            if probe.get("nativeDisplayAssertion") is True
+            else "released to idle sleep"
+        )
         target_cards.append(
             f"""<details class="machine"{open_attr}>
 <summary><span class="machine-grid">
@@ -1225,6 +1238,7 @@ def render_display_page(*, read_only: bool = False) -> bytes:
     <div><span class="muted tiny">Lease expires</span><strong>{html_escape(item.get('leaseExpiresAt') or '—')}</strong></div>
     <div><span class="muted tiny">Session</span><strong>{'locked' if probe.get('locked') else 'unlocked'}</strong></div>
     <div><span class="muted tiny">Power / lid</span><strong>{html_escape(power)} / {html_escape(lid)}</strong></div>
+    <div><span class="muted tiny">Display sleep</span><strong>{html_escape(display_sleep)}</strong></div>
     <div><span class="muted tiny">Mapped light</span><strong>{'on' if item.get('lightOn') is True else 'off' if item.get('lightOn') is False else 'none'}</strong></div>
     <div><span class="muted tiny">Predicted today</span><strong>{html_escape(display_duration(totals.get('predictedHoldSeconds') or 0))}</strong></div>
     <div><span class="muted tiny">Lease time today</span><strong>{html_escape(display_duration(totals.get('leaseActiveSeconds') or 0))}</strong></div>
@@ -1550,6 +1564,8 @@ def render_energy_page(history_days: int = 7) -> bytes:
     status = energy_status(history_days)
     observability = status.get("observability") or {}
     live = observability.get("live") or {}
+    energy_high = status.get("energyHigh") or {}
+    energy_high_events = status.get("energyHighEvents") or []
     quality = observability.get("quality") or {}
     selected_quality = observability.get("selectedRangeQuality") or {}
     daily = filter_daily_energy_rows(observability.get("dailyComparison") or [], history_days)
@@ -1749,6 +1765,120 @@ def render_energy_page(history_days: int = 7) -> bytes:
         allow_negative=False,
         reference_lines=projection_references,
     )
+    projection_alert_titles = {
+        "Energy projection exceeds goal",
+        "Energy projection is high",
+        "Energy projection is critical",
+    }
+    projection_alerts = [
+        item for item in observability.get("alerts") or []
+        if isinstance(item, dict) and item.get("title") in projection_alert_titles
+    ]
+    severity_rank = {"info": 0, "warning": 1, "critical": 2}
+    projection_alert = max(
+        projection_alerts,
+        key=lambda item: severity_rank.get(str(item.get("severity") or ""), 0),
+        default={},
+    )
+    bill_high_active = bool(projection_alert)
+    bill_high_class = "active" if bill_high_active else "clear"
+    over_budget_text = (
+        f"{over_budget:.0f} kWh"
+        if isinstance(over_budget, (int, float))
+        else "n/a"
+    )
+    bill_high_facts = [
+        ("Projection", display_energy_value(projected, " kWh", 0)),
+        ("Budget", display_energy_value(budget, " kWh", 0)),
+        ("Over budget", over_budget_text),
+        ("Current period", display_energy_value(alarm_current, " kWh", 0)),
+        ("Same point last cycle", display_energy_value(alarm_same_point, " kWh", 0)),
+        ("Recent average bill", display_energy_value(alarm_average_bill, " kWh", 0)),
+    ]
+    bill_high_fact_markup = "".join(
+        f"<div><span class='muted'>{html_escape(label)}</span><strong>{html_escape(value)}</strong></div>"
+        for label, value in bill_high_facts
+    )
+    bill_high_reason_markup = (
+        f"<li>{html_escape(projection_alert.get('detail') or projection_alert.get('title') or '')}</li>"
+        if bill_high_active
+        else "<li>Billing-period projection is under the configured alert thresholds.</li>"
+    )
+    bill_high_action_markup = (
+        "<li>Reduce discretionary load or shift it to solar hours, then refresh Alarm.com after the next interval.</li>"
+        if bill_high_active
+        else "<li>No current budget action.</li>"
+    )
+    bill_high_panel = f"""
+    <section class='panel bill-high {bill_high_class}'>
+      <div class='decision-head'><div><h2>BILL HIGH</h2><span class='muted'>Billing-period budget tile · Alarm.com projection</span></div><span class='pill {bill_high_class}'>{'on' if bill_high_active else 'off'}</span></div>
+      <div class='decision-facts'>{bill_high_fact_markup}</div>
+      <div class='decision-grid'><div><h3>Why</h3><ul>{bill_high_reason_markup}</ul></div><div><h3>Action</h3><ul>{bill_high_action_markup}</ul></div></div>
+    </section>
+    """
+    energy_high_active = energy_high.get("active") is True
+    thermostat = energy_high.get("thermostat") or {}
+    envelope = energy_high.get("envelope") or {}
+    blinds = energy_high.get("blinds") or {}
+    battery = energy_high.get("battery") or {}
+    thermostat_text = (
+        f"{thermostat.get('stateText') or 'unknown'} · {display_energy_value(thermostat.get('ambientF'), '°F', 0)} / set {display_energy_value(thermostat.get('coolSetpointF'), '°F', 0)}"
+        if thermostat.get("available")
+        else "not available"
+    )
+    energy_high_facts = [
+        ("Live load", display_energy_value(energy_high.get("liveLoadKw"), " kW", 2)),
+        ("Dynamic threshold", display_energy_value(energy_high.get("thresholdKw"), " kW", 2)),
+        ("Thermostat", thermostat_text),
+        ("Open doors/windows", str(envelope.get("openCount") or 0)),
+        ("Open blinds", f"{blinds.get('openCount') or 0}/{blinds.get('count') or 0}"),
+        ("Battery", "Charging" if battery.get("charging") else "Discharging" if battery.get("discharging") else "Idle"),
+    ]
+    energy_high_fact_markup = "".join(
+        f"<div><span class='muted'>{html_escape(label)}</span><strong>{html_escape(value)}</strong></div>"
+        for label, value in energy_high_facts
+    )
+    energy_high_reason_markup = "".join(
+        f"<li>{html_escape(reason)}</li>" for reason in energy_high.get("reasons") or []
+    ) or "<li>No active high-load reason.</li>"
+    energy_high_action_markup = "".join(
+        f"<li>{html_escape(action)}</li>" for action in energy_high.get("recommendedActions") or []
+    ) or "<li>No current action.</li>"
+    energy_high_class = "active" if energy_high_active else "clear"
+    energy_high_panel = f"""
+    <section class='panel energy-high {energy_high_class}'>
+      <div class='decision-head'><div><h2>ENERGY HIGH</h2><span class='muted'>Generated {html_escape(energy_high.get('generatedAt') or 'n/a')} · sample {html_escape(energy_high.get('sampleAt') or 'n/a')}</span></div><span class='pill {energy_high_class}'>{'on' if energy_high_active else 'off'}</span></div>
+      <div class='decision-facts'>{energy_high_fact_markup}</div>
+      <div class='decision-grid'><div><h3>Why</h3><ul>{energy_high_reason_markup}</ul></div><div><h3>Action</h3><ul>{energy_high_action_markup}</ul></div></div>
+    </section>
+    """
+    energy_high_event_rows = ""
+    for event in reversed(energy_high_events[-12:]):
+        primary = event.get("primaryLoad") if isinstance(event.get("primaryLoad"), dict) else {}
+        primary_text = (
+            f"{primary.get('name')} {float(primary.get('watts')):.0f} W"
+            if isinstance(primary.get("watts"), (int, float))
+            else str(primary.get("name") or "")
+        )
+        energy_high_event_rows += (
+            "<tr>"
+            f"<td>{html_escape(str(event.get('sampleAt') or event.get('recordedAt') or '').replace('T', ' ')[:19])}</td>"
+            f"<td><span class='pill {html_escape('active' if event.get('active') else 'clear')}'>{html_escape(event.get('eventType') or '')}</span></td>"
+            f"<td>{html_escape(display_energy_value(event.get('liveLoadKw'), ' kW', 2))}</td>"
+            f"<td>{html_escape(display_energy_value(event.get('thresholdKw'), ' kW', 2))}</td>"
+            f"<td>{html_escape(primary_text)}</td>"
+            f"<td>{html_escape('; '.join(str(item) for item in (event.get('reasons') or [])[:2]))}</td>"
+            f"<td>{html_escape('; '.join(str(item) for item in (event.get('recommendedActions') or [])[:2]))}</td>"
+            "</tr>"
+        )
+    if not energy_high_event_rows:
+        energy_high_event_rows = "<tr><td colspan='7'>No ENERGY HIGH transitions recorded yet.</td></tr>"
+    energy_high_events_panel = f"""
+    <section class='panel wide event-log'>
+      <h2>ENERGY HIGH event log</h2>
+      <table><thead><tr><th>Time</th><th>Event</th><th>Load</th><th>Threshold</th><th>Primary load</th><th>Reason</th><th>Action</th></tr></thead><tbody>{energy_high_event_rows}</tbody></table>
+    </section>
+    """
     transition_markup = "".join(
         "<li>"
         f"<time>{html_escape(str(item.get('capturedAt') or '').replace('T', ' ')[:16])}</time> "
@@ -1931,20 +2061,25 @@ button,.range {{ border:1px solid var(--accent);border-radius:8px;padding:8px 11
 .range-cards {{ display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px }} .range-card {{ border-top:3px solid var(--accent) }}
 .cards {{ display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:10px 0 18px }} .card,.panel {{ background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px }} .grid>.panel {{ min-width:0;overflow-x:auto }}
 .card span,.card small {{ display:block }} .card strong {{ display:block;font-size:24px;margin:5px 0 }} .grid {{ display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px }} .wide {{ grid-column:1/-1 }}
+.energy-high,.bill-high {{ margin:10px 0 16px;border-left:5px solid #94a3b8 }} .energy-high.active,.bill-high.active {{ border-left-color:#dc2626 }} .energy-high.clear,.bill-high.clear {{ border-left-color:#16a34a }}
+.decision-head,.decision-facts,.decision-grid {{ display:grid;gap:10px }} .decision-head {{ grid-template-columns:1fr auto;align-items:start }} .decision-facts {{ grid-template-columns:repeat(6,minmax(0,1fr));margin-top:12px }} .decision-facts div {{ border:1px solid var(--line);border-radius:8px;padding:9px;background:#f8fafc }} .decision-facts span,.decision-facts strong {{ display:block }} .decision-facts strong {{ margin-top:3px }} .decision-grid {{ grid-template-columns:1fr 1fr;margin-top:12px }} .decision-grid h3 {{ margin:0 0 6px;font-size:13px;text-transform:uppercase;color:var(--muted) }} .decision-grid ul {{ margin:0;padding-left:18px }}
 .chart {{ width:100%;height:auto;display:block }} .chart-title {{ font-size:17px;font-weight:700;fill:var(--ink) }} .chart-subtitle,.axis,.legend {{ font-size:10px;fill:var(--muted) }} .gridline {{ stroke:var(--line);stroke-width:1 }} .threshold-label {{ font-size:10px;font-weight:700 }} .data-point {{ stroke-width:1.5;opacity:.12 }} .data-point.partial {{ opacity:.8;stroke-width:2.5 }} .data-point:hover,.data-point:focus {{ opacity:1;stroke:var(--ink);stroke-width:2;outline:none }}
 table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bottom:1px solid var(--line);text-align:left;vertical-align:top }} th {{ font-size:11px;text-transform:uppercase;color:var(--muted) }}
-.pill {{ border-radius:999px;padding:3px 7px;background:#e2e8f0 }} .pill.fresh,.pill.complete,.pill.current,.pill.clear {{ background:#dcfce7;color:#166534 }} .pill.stale,.pill.failed,.pill.missing,.pill.critical {{ background:#fee2e2;color:#991b1b }} .pill.outdated,.pill.goal,.pill.warning {{ background:#ffedd5;color:#9a3412 }}
+.pill {{ border-radius:999px;padding:3px 7px;background:#e2e8f0 }} .pill.fresh,.pill.complete,.pill.current,.pill.clear {{ background:#dcfce7;color:#166534 }} .pill.stale,.pill.failed,.pill.missing,.pill.critical,.pill.active {{ background:#fee2e2;color:#991b1b }} .pill.outdated,.pill.goal,.pill.warning {{ background:#ffedd5;color:#9a3412 }}
 .alert-panel {{ margin:14px 0 }} .alert-row {{ display:flex;justify-content:space-between;gap:16px;padding:11px 0;border-bottom:1px solid var(--line) }} .alert-row:last-child {{ border-bottom:0 }} .alert-row p {{ margin:3px 0 0;color:var(--muted) }} .alert-row.warning strong {{ color:#9a3412 }} .alert-row.critical strong {{ color:#991b1b }}
 .projection-grid {{ align-items:start }} .transition-list {{ margin:8px 0 0;padding-left:20px }} .transition-list li {{ margin:8px 0 }} .transition-list time {{ color:var(--muted);font-variant-numeric:tabular-nums }}
 .stabilization-status {{ display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px;margin:12px 0 }} .stabilization-status>div {{ background:var(--bg);border-radius:8px;padding:9px }} .stabilization-status span,.stabilization-status strong {{ display:block }} .stabilization-status strong {{ margin-top:6px;width:max-content }} .publication-events,.delivery-events {{ border-bottom:1px solid var(--line);padding-bottom:8px }}
 .empty {{ min-height:180px;display:grid;place-content:center;text-align:center;color:var(--muted) }} code {{ background:#eef2f7;padding:2px 4px;border-radius:4px }}
-@media(max-width:980px) {{ .range-cards {{ grid-template-columns:repeat(2,minmax(0,1fr)) }} }}
-@media(max-width:820px) {{ .cards {{ grid-template-columns:1fr }} .grid {{ grid-template-columns:minmax(0,1fr) }} .wide {{ grid-column:auto }} }} @media(max-width:520px) {{ main {{ padding:20px 12px 40px }} .range-cards,.stabilization-status {{ grid-template-columns:1fr }} }}
+@media(max-width:980px) {{ .range-cards {{ grid-template-columns:repeat(2,minmax(0,1fr)) }} .decision-facts {{ grid-template-columns:repeat(3,minmax(0,1fr)) }} }}
+@media(max-width:820px) {{ .cards,.decision-grid {{ grid-template-columns:1fr }} .grid {{ grid-template-columns:minmax(0,1fr) }} .wide {{ grid-column:auto }} }} @media(max-width:520px) {{ main {{ padding:20px 12px 40px }} .range-cards,.stabilization-status,.decision-facts {{ grid-template-columns:1fr }} }}
 </style></head><body><main>
 <header class='top'><div><h1>Smart Home Energy</h1><div class='muted'>Updated {html_escape(observability.get('generatedAt') or status.get('generatedAt'))} · selected range {html_escape(range_quality_status)} · retained history {html_escape(quality.get('status') or 'collecting')}</div></div><div class='ranges'>{range_links}</div></header>
 <section class='range-overview' id='selected-range' data-days='{history_days}'><div class='range-heading'><h2>Selected period · {html_escape(range_label)}</h2><span class='muted'>{html_escape(daily[0].get('date') if daily else 'n/a')} → {html_escape(daily[-1].get('date') if daily else 'n/a')}</span></div><div class='range-cards'>{range_card_markup}</div></section>
 <section class='panel primary-chart' id='range-chart'>{grid_chart}</section>
 <h2>Live now</h2>
+{energy_high_panel}
+{bill_high_panel}
+{energy_high_events_panel}
 <section class='cards'>{card_markup}</section>
 <section class='panel alert-panel'><h2>Active energy alerts</h2>{alert_markup}</section>
 {sce_recovery_markup}

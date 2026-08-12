@@ -24,6 +24,7 @@ class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
     def test_sense_daily_completeness_follows_plotted_cloud_trend(self) -> None:
         today = datetime.now().astimezone().date()
         yesterday = today.fromordinal(today.toordinal() - 1).isoformat()
+        self.patch_module(load_sce_daily_totals=lambda: {})
 
         row = combined.build_daily_summary(
             {}, {}, {}, {}, {"trends": {yesterday: {"consumption": {"total": 12.3}}}}
@@ -34,6 +35,7 @@ class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
         self.assertFalse(row["senseIntervalComplete"])
 
     def test_daily_summary_retains_more_than_ten_days(self) -> None:
+        self.patch_module(load_sce_daily_totals=lambda: {})
         trends = {
             f"2026-06-{day:02d}": {"consumption": {"total": float(day)}}
             for day in range(1, 13)

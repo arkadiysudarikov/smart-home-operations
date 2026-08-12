@@ -16,18 +16,22 @@ GUARD_DIR_NAME = "display_awake_guard"
 STATUS_NAME = "latest_display_awake_guard.json"
 
 REQUIRED_AP_ZONES = {
-    "1588EThompson": "level_1",
-    "Level 1": "level_1",
-    "Level 2": "level_2",
-    "Level 3": "level_3",
-    "Express": "level_3",
-    "Extender": "level_2",
+    "Bar": "level_3",
+    "Family": "level_1",
+    "Garage": "level_1",
+    "Guest": "level_2",
+    "Office": "level_2",
+    "Primary": "level_2",
 }
 REQUIRED_TARGETS = {
-    "m2-office-mini": {"zone": "level_2", "local": True},
+    "m2-office-mini": {
+        "zone": "level_2",
+        "local": True,
+        "presence_access_points": ["Family", "Office"],
+    },
     "m2-garage-mini": {"zone": "level_1", "host": "m2-garage-mini.localdomain"},
     "m4-bar-mini": {"zone": "level_3"},
-    "m4-office-mini": {"zone": "level_2", "host": "m4-office-mini.localdomain"},
+    "m4-office-mini": {"zone": "level_2", "host": "m4-office-mini.local"},
     "m2-macbook-pro": {
         "dynamic_room": True,
         "dynamic_zone_source": "presence",
@@ -87,6 +91,7 @@ def policy_projection(config: dict[str, Any]) -> dict[str, Any]:
     return {
         "default_mode": display.get("default_mode"),
         "unifi_observation_cache_seconds": display.get("unifi_observation_cache_seconds"),
+        "unifi_auth_backoff_seconds": display.get("unifi_auth_backoff_seconds"),
         "access_point_rooms": {key: mappings.get(key) for key in REQUIRED_AP_ZONES},
         "targets": projected_targets,
     }
@@ -99,6 +104,8 @@ def policy_violations(config: dict[str, Any]) -> list[str]:
         violations.append("default_mode_not_shadow")
     if projection.get("unifi_observation_cache_seconds") != 120:
         violations.append("unifi_cache_missing")
+    if projection.get("unifi_auth_backoff_seconds") != 900:
+        violations.append("unifi_auth_backoff_invalid")
     for alias, expected in REQUIRED_AP_ZONES.items():
         if (projection.get("access_point_rooms") or {}).get(alias) != expected:
             violations.append(f"ap_mapping:{alias}")

@@ -29,6 +29,16 @@ def base_config() -> dict[str, Any]:
             "battery_low_percent": 20,
             "energy_stale_restart_grace_minutes": 10,
             "high_load_kw": 8,
+            "energy_high_kw": 3.5,
+            "energy_high_min_kw": 2.5,
+            "energy_high_max_kw": 5.5,
+            "energy_high_history_days": 21,
+            "energy_high_history_window_minutes": 60,
+            "energy_high_history_margin_kw": 0.35,
+            "energy_high_normal_history_min_samples": 24,
+            "energy_high_normal_margin_kw": 0.75,
+            "energy_high_normal_max_kw": 16,
+            "sense_live_high_load_fresh_seconds": 180,
             "warning_recent_window": 3,
             "warning_high_count": 2,
             "sense_live_401_warning_min": 3,
@@ -431,6 +441,554 @@ class GenerateAlertsTest(unittest.TestCase):
         states = generate_alerts.active_state_titles(base_config(), latest)
         self.assertIn("Energy data stale", states)
 
+    def test_high_load_state_uses_actionable_energy_threshold(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 2.0,
+            "enphase_consumption_net_kw": 0.0,
+            "enphase_consumption_total_kw": 3.6,
+        }
+        self.patch_module(
+            load_combined_energy=lambda: {},
+            load_alarm_com=lambda: {},
+            load_latest_characteristics=lambda: {},
+            load_sense_now=lambda: {},
+            same_time_history=lambda *args: [],
+        )
+
+        states = generate_alerts.active_state_titles(base_config(), latest)
+
+        self.assertIn("House load is high", states)
+
+    def test_high_load_state_clears_below_actionable_energy_threshold(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 2.0,
+            "enphase_consumption_net_kw": 0.0,
+            "enphase_consumption_total_kw": 3.4,
+        }
+        self.patch_module(
+            load_combined_energy=lambda: {},
+            load_alarm_com=lambda: {},
+            load_latest_characteristics=lambda: {},
+            load_sense_now=lambda: {},
+            same_time_history=lambda *args: [],
+        )
+
+        states = generate_alerts.active_state_titles(base_config(), latest)
+
+        self.assertNotIn("House load is high", states)
+        self.assertIn("House load is normal", states)
+
+    def test_energy_ok_state_stays_off_without_fresh_load(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {}
+        self.patch_module(
+            load_combined_energy=lambda: {},
+            load_alarm_com=lambda: {},
+            load_latest_characteristics=lambda: {},
+            load_sense_now=lambda: {},
+            same_time_history=lambda *args: [],
+        )
+
+        states = generate_alerts.active_state_titles(base_config(), latest)
+
+        self.assertNotIn("House load is high", states)
+        self.assertNotIn("House load is normal", states)
+
+    def test_high_load_state_uses_fresh_sense_live_watts_when_envoy_lags(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 2.0,
+            "enphase_consumption_net_kw": 0.0,
+            "enphase_consumption_total_kw": 1.6,
+        }
+        self.patch_module(
+            load_combined_energy=lambda: {},
+            load_alarm_com=lambda: {},
+            load_latest_characteristics=lambda: {},
+            load_sense_now=lambda: {"ok": True, "capturedAt": "2026-06-10T20:05:20Z", "watts": 4266},
+            same_time_history=lambda *args: [],
+        )
+
+        states = generate_alerts.active_state_titles(base_config(), latest)
+
+        self.assertIn("House load is high", states)
+
+    def test_high_load_state_ignores_stale_sense_live_watts(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 2.0,
+            "enphase_consumption_net_kw": 0.0,
+            "enphase_consumption_total_kw": 1.6,
+        }
+        self.patch_module(
+            load_combined_energy=lambda: {},
+            load_alarm_com=lambda: {},
+            load_latest_characteristics=lambda: {},
+            load_sense_now=lambda: {"ok": True, "capturedAt": "2026-06-10T19:55:00Z", "watts": 4266},
+            same_time_history=lambda *args: [],
+        )
+
+        states = generate_alerts.active_state_titles(base_config(), latest)
+
+        self.assertNotIn("House load is high", states)
+        self.assertIn("House load is normal", states)
+
+    def test_energy_high_context_lowers_threshold_for_actionable_cooling_context(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 1.2,
+            "enphase_consumption_net_kw": 0.6,
+            "enphase_consumption_total_kw": 3.1,
+            "enphase_battery_discharging": True,
+        }
+        self.patch_module(
+            load_combined_energy=lambda: {},
+            load_alarm_com=lambda: {
+                "alarmState": {
+                    "systems": [
+                        {
+                            "components": {
+                                "thermostats": [
+                                    {
+                                        "id": "t1",
+                                        "description": "Thermostat",
+                                        "stateText": "Cooling",
+                                        "state": 3,
+                                        "desiredState": 3,
+                                        "ambientTemp": 74,
+                                        "coolSetpoint": 70,
+                                    }
+                                ],
+                                "sensors": [{"description": "Entry Door", "stateText": "Closed"}],
+                                "garages": [],
+                            }
+                        }
+                    ]
+                }
+            },
+            load_latest_characteristics=lambda: {
+                "blind": {
+                    "accessory": "Office West Blinds",
+                    "service": "WindowCovering",
+                    "characteristic": "CurrentPosition",
+                    "value": 100,
+                }
+            },
+            load_sense_now=lambda: {},
+            same_time_history=lambda *args: [{"loadKw": 3.0, "solarKw": 3.0}],
+        )
+
+        context = generate_alerts.energy_high_context(base_config(), latest)
+
+        self.assertTrue(context["active"])
+        self.assertLess(context["thresholdKw"], 3.5)
+        self.assertIn("Turn AC off or raise the cooling setpoint.", context["recommendedActions"])
+
+    def test_energy_high_context_clears_after_load_drops(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 1.2,
+            "enphase_consumption_net_kw": 0.1,
+            "enphase_consumption_total_kw": 1.7,
+        }
+        self.patch_module(
+            load_combined_energy=lambda: {},
+            load_alarm_com=lambda: {
+                "alarmState": {
+                    "systems": [
+                        {
+                            "components": {
+                                "thermostats": [
+                                    {
+                                        "id": "t1",
+                                        "description": "Thermostat",
+                                        "stateText": "Off",
+                                        "state": 1,
+                                        "desiredState": 1,
+                                        "ambientTemp": 72,
+                                        "coolSetpoint": 70,
+                                    }
+                                ],
+                                "sensors": [],
+                                "garages": [],
+                            }
+                        }
+                    ]
+                }
+            },
+            load_latest_characteristics=lambda: {},
+            load_sense_now=lambda: {},
+            same_time_history=lambda *args: [{"loadKw": 3.0, "solarKw": 3.0}],
+        )
+
+        context = generate_alerts.energy_high_context(base_config(), latest)
+        states = generate_alerts.active_state_titles(base_config(), latest)
+
+        self.assertFalse(context["active"])
+        self.assertNotIn("House load is high", states)
+
+    def test_energy_high_context_hides_actions_when_load_is_clear(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 1.2,
+            "enphase_consumption_net_kw": -0.2,
+            "enphase_consumption_total_kw": 0.7,
+            "enphase_battery_discharging": True,
+        }
+        self.patch_module(
+            load_alarm_com=lambda: {
+                "alarmState": {
+                    "systems": [
+                        {
+                            "components": {
+                                "thermostats": [
+                                    {
+                                        "id": "t1",
+                                        "description": "Thermostat",
+                                        "stateText": "Cooling",
+                                        "state": 3,
+                                        "desiredState": 3,
+                                        "ambientTemp": 73,
+                                        "coolSetpoint": 70,
+                                    }
+                                ],
+                                "sensors": [],
+                                "garages": [],
+                            }
+                        }
+                    ]
+                }
+            },
+            load_latest_characteristics=lambda: {
+                "blind": {
+                    "accessory": "Office West Blinds",
+                    "service": "WindowCovering",
+                    "characteristic": "CurrentPosition",
+                    "value": 100,
+                }
+            },
+            load_sense_now=lambda: {},
+            same_time_history=lambda *args: [{"loadKw": 3.0, "solarKw": 3.0}],
+        )
+
+        context = generate_alerts.energy_high_context(base_config(), latest)
+
+        self.assertFalse(context["active"])
+        self.assertEqual([], context["recommendedActions"])
+
+    def test_energy_high_context_ignores_sense_solar_for_load_attribution(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 4.1,
+            "enphase_consumption_net_kw": 0.1,
+            "enphase_consumption_total_kw": 1.5,
+        }
+        self.patch_module(
+            load_combined_energy=lambda: {},
+            load_alarm_com=lambda: {},
+            load_latest_characteristics=lambda: {},
+            load_sense_now=lambda: {
+                "ok": True,
+                "capturedAt": "2026-06-10T20:05:20Z",
+                "watts": 4164,
+                "devices": [
+                    {"id": "solar", "name": "Solar", "watts": 4311},
+                    {"id": "a68ac64b", "name": "Central AC", "watts": 2920},
+                    {"id": "unknown", "name": "Other", "watts": 1114},
+                ],
+            },
+            same_time_history=lambda *args: [],
+        )
+
+        context = generate_alerts.energy_high_context(base_config(), latest)
+
+        self.assertTrue(context["active"])
+        self.assertIn("Sense sees Central AC at 2920 W", context["reasons"])
+        self.assertNotIn("Sense sees Solar at 4311 W", context["reasons"])
+
+    def test_energy_high_context_prioritizes_dominant_ev_load_action(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 0.2,
+            "enphase_consumption_net_kw": 9.5,
+            "enphase_consumption_total_kw": 9.7,
+        }
+        self.patch_module(
+            load_combined_energy=lambda: {},
+            load_alarm_com=lambda: {
+                "alarmState": {
+                    "systems": [
+                        {
+                            "components": {
+                                "thermostats": [
+                                    {
+                                        "id": "t1",
+                                        "description": "Thermostat",
+                                        "stateText": "Cooling",
+                                        "state": 3,
+                                        "desiredState": 3,
+                                        "ambientTemp": 74,
+                                        "coolSetpoint": 69,
+                                    }
+                                ],
+                                "sensors": [],
+                                "garages": [],
+                            }
+                        }
+                    ]
+                }
+            },
+            load_latest_characteristics=lambda: {},
+            load_sense_now=lambda: {
+                "ok": True,
+                "capturedAt": "2026-06-10T20:05:20Z",
+                "watts": 9800,
+                "devices": [
+                    {"id": "category-ev", "name": "Jeep 4xe Charging", "watts": 6850},
+                    {"id": "a68ac64b", "name": "Central AC", "watts": 2700},
+                ],
+            },
+            same_time_history=lambda *args: [],
+        )
+
+        context = generate_alerts.energy_high_context(base_config(), latest)
+
+        self.assertTrue(context["active"])
+        self.assertEqual("Pause or delay EV charging.", context["recommendedActions"][0])
+        self.assertIn("Turn AC off or raise the cooling setpoint.", context["recommendedActions"])
+
+    def test_energy_high_context_clears_usual_ev_load_under_matching_conditions(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 0.0,
+            "enphase_consumption_net_kw": 12.1,
+            "enphase_consumption_total_kw": 12.1,
+        }
+        ev_history = [
+            {
+                "loadKw": 12.0 + (index % 5) * 0.1,
+                "solarKw": 0.0,
+                "gridNetKw": 12.0,
+                "batteryCharging": False,
+                "batteryDischarging": False,
+                "activeStates": ["EV charging", "Grid importing"],
+            }
+            for index in range(30)
+        ]
+        low_history = [
+            {
+                "loadKw": 2.0,
+                "solarKw": 0.0,
+                "gridNetKw": 2.0,
+                "batteryCharging": False,
+                "batteryDischarging": False,
+                "activeStates": ["Grid importing"],
+            }
+            for _ in range(30)
+        ]
+        self.patch_module(
+            load_combined_energy=lambda: {"states": ["EV charging", "Grid importing"]},
+            load_alarm_com=lambda: {},
+            load_latest_characteristics=lambda: {},
+            load_sense_now=lambda: {
+                "ok": True,
+                "capturedAt": "2026-06-10T20:05:20Z",
+                "watts": 12100,
+                "devices": [{"id": "category-ev", "name": "Jeep 4xe Charging", "watts": 6800}],
+            },
+            same_time_history=lambda *args: ev_history + low_history,
+        )
+
+        context = generate_alerts.energy_high_context(base_config(), latest)
+        states = generate_alerts.active_state_titles(base_config(), latest)
+
+        self.assertFalse(context["active"])
+        self.assertGreater(context["thresholdKw"], 12.5)
+        self.assertEqual("matching conditions", context["history"]["normalSource"])
+        self.assertIn("House load is normal", states)
+
+    def test_energy_high_context_does_not_use_ev_history_for_non_ev_load(self) -> None:
+        latest = latest_snapshot()
+        latest["homebridge"]["logs"]["latestMetrics"] = {
+            "enphase_production_kw": 0.0,
+            "enphase_consumption_net_kw": 5.0,
+            "enphase_consumption_total_kw": 5.0,
+        }
+        ev_history = [
+            {
+                "loadKw": 12.0,
+                "solarKw": 0.0,
+                "gridNetKw": 12.0,
+                "batteryCharging": False,
+                "batteryDischarging": False,
+                "activeStates": ["EV charging", "Grid importing"],
+            }
+            for _ in range(30)
+        ]
+        non_ev_history = [
+            {
+                "loadKw": 2.0,
+                "solarKw": 0.0,
+                "gridNetKw": 2.0,
+                "batteryCharging": False,
+                "batteryDischarging": False,
+                "activeStates": ["Grid importing"],
+            }
+            for _ in range(30)
+        ]
+        self.patch_module(
+            load_combined_energy=lambda: {"states": ["Grid importing"]},
+            load_alarm_com=lambda: {},
+            load_latest_characteristics=lambda: {},
+            load_sense_now=lambda: {},
+            same_time_history=lambda *args: ev_history + non_ev_history,
+        )
+
+        context = generate_alerts.energy_high_context(base_config(), latest)
+
+        self.assertTrue(context["active"])
+        self.assertLess(context["thresholdKw"], 4.0)
+        self.assertEqual("matching conditions", context["history"]["normalSource"])
+
+    def test_homekit_condition_signature_ignores_home_status_contact_duplicates(self) -> None:
+        signature = generate_alerts.homekit_condition_signature(
+            {
+                "virtual_slider": {
+                    "accessory": "Home Status Core 2",
+                    "service": "Family Slider",
+                    "characteristic": "ContactSensorState",
+                    "value": 1,
+                    "plugin": "homebridge-home-status",
+                },
+                "alarm_slider": {
+                    "accessory": "Family Slider",
+                    "service": "Family Slider",
+                    "characteristic": "ContactSensorState",
+                    "value": 0,
+                    "plugin": "homebridge-node-alarm-dot-com",
+                },
+                "garage": {
+                    "accessory": "East",
+                    "service": "East",
+                    "characteristic": "CurrentDoorState",
+                    "value": 1,
+                    "plugin": "homebridge-node-alarm-dot-com",
+                },
+                "thermostat": {
+                    "accessory": "Bar Thermostat",
+                    "service": "Bar Thermostat",
+                    "characteristic": "CurrentHeatingCoolingState",
+                    "value": 2,
+                    "plugin": "homebridge-node-alarm-dot-com",
+                },
+                "blind": {
+                    "accessory": "Office West Blinds",
+                    "service": "WindowCovering",
+                    "characteristic": "CurrentPosition",
+                    "value": 100,
+                },
+            }
+        )
+
+        self.assertEqual(
+            {"hvacMode": "cooling", "envelopeMode": "closed", "blindBand": "open"},
+            signature,
+        )
+
+    def test_matching_condition_history_filters_known_hvac_mismatch(self) -> None:
+        cooling_signature = generate_alerts.energy_condition_signature(
+            states={"EV charging", "Grid importing"},
+            production_kw=0.0,
+            grid_kw=12.0,
+            battery_charging=False,
+            battery_discharging=False,
+            hvac_mode="cooling",
+            envelope_mode="closed",
+            blind_band="open",
+        )
+        idle_history = [
+            {
+                "loadKw": 12.0,
+                "solarKw": 0.0,
+                "gridNetKw": 12.0,
+                "batteryCharging": False,
+                "batteryDischarging": False,
+                "activeStates": ["EV charging", "Grid importing"],
+                "condition": {"hvacMode": "idle", "envelopeMode": "closed", "blindBand": "open"},
+            }
+            for _ in range(30)
+        ]
+        cooling_history = [
+            {
+                "loadKw": 3.0,
+                "solarKw": 0.0,
+                "gridNetKw": 3.0,
+                "batteryCharging": False,
+                "batteryDischarging": False,
+                "activeStates": ["EV charging", "Grid importing"],
+                "condition": {"hvacMode": "cooling", "envelopeMode": "closed", "blindBand": "open"},
+            }
+            for _ in range(30)
+        ]
+
+        matching = generate_alerts.matching_condition_history(idle_history + cooling_history, cooling_signature)
+
+        self.assertEqual(30, len(matching))
+        self.assertEqual({3.0}, {item["loadKw"] for item in matching})
+
+    def test_energy_high_transition_log_records_only_state_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            events_path = Path(tmp) / "energy_high_events.jsonl"
+            report_path = Path(tmp) / "energy_high_events.md"
+            self.patch_module(
+                ENERGY_HIGH_EVENTS_PATH=events_path,
+                ENERGY_HIGH_EVENTS_REPORT_PATH=report_path,
+            )
+            off_context = {
+                "generatedAt": "2026-07-22T18:10:06-07:00",
+                "sampleAt": "2026-07-22T18:10:05-07:00",
+                "active": False,
+                "liveLoadKw": 0.9,
+                "thresholdKw": 3.5,
+                "reasons": ["live load 0.90 kW is below dynamic threshold 3.50 kW"],
+                "recommendedActions": [],
+                "candidates": [],
+            }
+            on_context = {
+                "generatedAt": "2026-07-22T18:30:06-07:00",
+                "sampleAt": "2026-07-22T18:30:05-07:00",
+                "active": True,
+                "liveLoadKw": 4.2,
+                "thresholdKw": 2.5,
+                "reasons": ["live load 4.20 kW is above dynamic threshold 2.50 kW", "Sense sees Central AC at 2920 W"],
+                "recommendedActions": ["Turn AC off or raise the cooling setpoint."],
+                "candidates": [
+                    {
+                        "source": "Sense",
+                        "devices": [
+                            {"id": "solar", "name": "Solar", "watts": 4300},
+                            {"id": "a68ac64b", "name": "Central AC", "watts": 2920},
+                        ],
+                    }
+                ],
+            }
+
+            first = generate_alerts.record_energy_high_transition(off_context)
+            duplicate = generate_alerts.record_energy_high_transition({**off_context, "sampleAt": "2026-07-22T18:12:05-07:00"})
+            second = generate_alerts.record_energy_high_transition(on_context)
+            third = generate_alerts.record_energy_high_transition({**off_context, "sampleAt": "2026-07-22T18:40:05-07:00"})
+
+            self.assertEqual("observed_off", first["eventType"])
+            self.assertIsNone(duplicate)
+            self.assertEqual("turned_on", second["eventType"])
+            self.assertEqual("Central AC", second["primaryLoad"]["name"])
+            self.assertEqual("turned_off", third["eventType"])
+            events = generate_alerts.load_energy_high_events()
+            self.assertEqual(["observed_off", "turned_on", "turned_off"], [event["eventType"] for event in events])
+            self.assertIn("Central AC 2920 W", report_path.read_text())
+
     def test_battery_charging_state_uses_envoy_signal(self) -> None:
         latest = latest_snapshot()
         latest["homebridge"]["logs"]["latestMetrics"] = {
@@ -562,6 +1120,19 @@ class GenerateAlertsTest(unittest.TestCase):
         titles = {item["title"] for item in alerts}
         self.assertIn("UniFi occupancy API is failing", titles)
         self.assertNotIn("UniFi occupancy authentication is failing", titles)
+
+    def test_display_presence_unavailable_is_critical_and_immediate(self) -> None:
+        self.patch_module(
+            load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
+            load_latest_characteristics=lambda: latest_characteristics(value=0),
+            load_combined_energy=lambda: {},
+            load_display_awake_status=lambda: {"unifi": {"ok": False, "cached": False}},
+        )
+
+        alerts = generate_alerts.build_alerts(base_config(), latest_snapshot(), [])
+        alert = next(item for item in alerts if item["title"] == "UniFi display presence is unavailable")
+
+        self.assertEqual(alert["severity"], "critical")
 
     def test_unifi_api_alert_suppresses_duplicate_high_warning_volume(self) -> None:
         latest = latest_snapshot()
@@ -917,6 +1488,7 @@ class GenerateAlertsTest(unittest.TestCase):
             load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
             load_latest_characteristics=lambda: latest_characteristics(value=0),
             load_combined_energy=lambda: {},
+            load_sense_trends=lambda: {},
             recent_component_home_events=lambda components, _limit=200: [
                 component_event(
                     "2026-07-12T05:43:43-07:00",
@@ -940,6 +1512,7 @@ class GenerateAlertsTest(unittest.TestCase):
             load_alarm_com=lambda: alarm_com_payload(activity_ok=True),
             load_latest_characteristics=lambda: latest_characteristics(value=0),
             load_combined_energy=lambda: {},
+            load_sense_trends=lambda: {},
             recent_component_home_events=lambda components, _limit=200: [
                 component_event("2026-07-12T05:44:10-07:00", "Sense Energy Meter", "Sense WebSocket Opened"),
                 component_event(

@@ -41,8 +41,9 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
                 "smart_home_smarthq_auth_failed_v2": "⚠️ SMARTHQ LOGIN",
                 "smart_home_sense_auth_failed_v2": "⚠️ SENSE OFFLINE",
                 "smart_home_tahoma_auth_failed_v2": "⚠️ TAHOMA LOGIN",
-                "smart_home_high_load_v2": "☀️ High Usage",
+                "smart_home_high_load_v2": "✅ ENERGY OK",
                 "smart_home_energy_budget_v2": "⚠️ ENERGY HIGH",
+                "smart_home_bill_high_v2": "⚠️ BILL HIGH",
                 "smart_home_energy_quality_v2": "⚠️ ENERGY CHECK",
                 "smart_home_grid_importing_v2": "☀️ From Grid",
                 "smart_home_grid_exporting_v2": "☀️ To Grid",
@@ -70,7 +71,7 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
         default_actions = action_source.split("];", 1)[0]
         action_names = re.findall(r'name: "([^"]+)"', default_actions)
 
-        alert_ids = {
+        uppercase_ids = {
             "smart_home_battery_critical_v2",
             "smart_home_battery_low_v2",
             "smart_home_alarm_degraded_v2",
@@ -79,13 +80,14 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             "smart_home_sense_auth_failed_v2",
             "smart_home_tahoma_auth_failed_v2",
             "smart_home_energy_data_stale_v2",
+            "smart_home_high_load_v2",
             "smart_home_energy_budget_v2",
+            "smart_home_bill_high_v2",
             "smart_home_energy_quality_v2",
             "smart_home_sce_data_stale_v2",
             "smart_home_alarm_media_missing_v2",
         }
         informational_ids = {
-            "smart_home_high_load_v2",
             "smart_home_grid_importing_v2",
             "smart_home_grid_exporting_v2",
             "smart_home_battery_charging_v2",
@@ -101,7 +103,7 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
         }
         for tile in tiles:
             visible_text = tile["name"].split(" ", 1)[1]
-            if tile["id"] in alert_ids:
+            if tile["id"] in uppercase_ids:
                 self.assertTrue(visible_text.isupper(), tile["name"])
             if tile["id"] in informational_ids:
                 self.assertFalse(visible_text.isupper(), tile["name"])
@@ -118,10 +120,10 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             )
 
         household_energy_ids = {
-            "smart_home_high_load_v2",
             "smart_home_grid_importing_v2",
             "smart_home_grid_exporting_v2",
         }
+        warning_ids = uppercase_ids - {"smart_home_high_load_v2"}
         charging_ids = {
             "smart_home_battery_charging_v2",
             "smart_home_battery_discharging_v2",
@@ -131,12 +133,14 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             if tile["id"] in household_energy_ids:
                 self.assertTrue(tile["name"].startswith("☀️ "), tile["name"])
                 self.assertEqual(tile["name"].count("☀️"), 1, tile["name"])
-            if tile["id"] in alert_ids:
+            if tile["id"] in warning_ids:
                 self.assertTrue(tile["name"].startswith("⚠️ "), tile["name"])
+            if tile["id"] == "smart_home_high_load_v2":
+                self.assertTrue(tile["name"].startswith("✅ "), tile["name"])
             if tile["id"] in charging_ids:
                 self.assertTrue(tile["name"].startswith("🔋 "), tile["name"])
 
-        approved_prefixes = {"⚠️", "☀️", "🔋", "🧺", "🌀", "⚙️", "🛡️", "📅", "🐠"}
+        approved_prefixes = {"✅", "⚠️", "☀️", "🔋", "🧺", "🌀", "⚙️", "🛡️", "📅", "🐠"}
         grouped_names = tile_names + action_names + [
             install_homekit_virtual_sensors.BUBBLER_NAME,
             f"{install_homekit_virtual_sensors.CALENDAR_PREFIX}Automation",

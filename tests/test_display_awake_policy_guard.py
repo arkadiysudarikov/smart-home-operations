@@ -23,6 +23,7 @@ def valid_config() -> dict:
         "display_awake": {
             "default_mode": "shadow",
             "unifi_observation_cache_seconds": 120,
+            "unifi_auth_backoff_seconds": 900,
             "access_point_rooms": dict(guard.REQUIRED_AP_ZONES),
             "targets": targets,
         }
@@ -35,13 +36,13 @@ class DisplayAwakePolicyGuardTest(unittest.TestCase):
 
     def test_missing_mapping_and_macbook_policy_are_detected(self) -> None:
         config = valid_config()
-        del config["display_awake"]["access_point_rooms"]["Express"]
+        del config["display_awake"]["access_point_rooms"]["Guest"]
         macbook = next(item for item in config["display_awake"]["targets"] if item["id"] == "m2-macbook-pro")
         del macbook["dynamic_zone_source"]
 
         violations = guard.policy_violations(config)
 
-        self.assertIn("ap_mapping:Express", violations)
+        self.assertIn("ap_mapping:Guest", violations)
         self.assertIn("target_policy:m2-macbook-pro:dynamic_zone_source", violations)
 
     def test_baseline_and_runtime_check_detect_code_and_dashboard_drift(self) -> None:
