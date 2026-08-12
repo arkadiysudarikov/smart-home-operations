@@ -276,6 +276,23 @@ class WasherNotifierTest(unittest.TestCase):
         )
         self.assertFalse(recovered["sourceStaleAlertSent"])
 
+    def test_stale_heartbeat_stays_silent_when_recovery_watchdog_owns_alert(self) -> None:
+        now = datetime(2026, 7, 22, 14, 0, tzinfo=TZ)
+        prior = {"lastInUse": True, "armed": True, "runningSamples": 8}
+        stale = {"fresh": False, "inUse": False, "doorOpen": None}
+
+        state, actions = washer_notifier.evolve_state(
+            prior,
+            stale,
+            now,
+            {**config(), "source_stale_alert_enabled": False},
+        )
+
+        self.assertEqual(actions, [])
+        self.assertTrue(state["armed"])
+        self.assertTrue(state["lastInUse"])
+        self.assertFalse(state.get("sourceStaleAlertSent", False))
+
     def test_physically_confirmed_manual_venting_rearms_fan_off_alert(self) -> None:
         now = datetime(2026, 7, 22, 15, 44, tzinfo=TZ)
         prior = {

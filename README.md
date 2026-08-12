@@ -71,11 +71,13 @@ service and monitored separately as the garage combo. Laundry finish alerts use
 an audible Mac sound plus a louder daytime announcement on every indoor HomePod
 (Primary, Bar, Bathroom, Entry, Kitchen, and Office).
 Successful per-appliance SmartHQ API reads also advance a heartbeat. A heartbeat
-older than five minutes pauses finish detection and sends one stale-data warning,
-preventing a failed API read or frozen HomeKit value from becoming a false finish.
-Two consecutive stale scheduled checks trigger a restart of only the SmartHQ
-child bridge. A 20-minute cooldown prevents restart loops, and the watchdog
-recaptures live state before the armed laundry notifiers continue.
+older than five minutes pauses finish detection, preventing a failed API read or
+frozen HomeKit value from becoming a false finish. The individual appliance
+notifiers stay quiet so one source failure cannot create three duplicate alerts.
+Two consecutive stale scheduled checks trigger one recovery notification and a
+restart of only the SmartHQ child bridge. A 20-minute cooldown prevents restart
+loops, and the watchdog recaptures live state before the armed laundry notifiers
+continue.
 Manually started washer venting can be armed from a physically confirmed state
 with `washer_notifier.py --confirm-venting-start`; the command refuses unless
 fresh SmartHQ data shows the washer active with its wash cycle inactive.
