@@ -263,6 +263,105 @@ class ActionServerTest(unittest.TestCase):
             self.assertEqual(events[-1]["type"], "activation")
             self.assertEqual(events[-1]["trigger"], "Garage Door Contact Opens")
 
+    def test_garage_occupancy_uses_any_phone_on_extender(self) -> None:
+        self.patch_module(
+            load_config=lambda: {
+                "garage_light": {
+                    "occupancy": {"enabled": True, "access_points": ["Extender"], "mode": "any_phone"}
+                }
+            },
+            json_run=lambda command, timeout: {
+                "ok": True,
+                "occupied": True,
+                "phoneCount": 2,
+                "accessPoints": ["extender"],
+                "matches": [{"accessPoint": "Extender"}, {"accessPoint": "Extender"}],
+            },
+        )
+
+        occupancy = action_server.garage_occupancy_status()
+
+        self.assertTrue(occupancy["occupied"])
+        self.assertEqual(occupancy["phoneCount"], 2)
+
+    def test_garage_occupancy_rejects_phones_on_other_access_points(self) -> None:
+        self.patch_module(
+            load_config=lambda: {
+                "garage_light": {
+                    "occupancy": {"enabled": True, "access_points": ["Extender"], "mode": "any_phone"}
+                }
+            },
+            json_run=lambda command, timeout: {"ok": True, "occupied": False, "phoneCount": 0, "matches": []},
+        )
+
+        self.assertFalse(action_server.garage_occupancy_status()["occupied"])
+
+    def test_garage_expiry_turns_off_even_when_direct_rule_was_already_on(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            now = action_server.local_now()
+            hold_path = Path(tmp) / "garage_light_hold.json"
+            event_path = Path(tmp) / "garage_activity_events.jsonl"
+            hold_path.write_text(
+                json.dumps(
+                    {
+                        "active": True,
+                        "lastActivityAt": (now - action_server.timedelta(seconds=301)).isoformat(),
+                        "holdSeconds": 300,
+                        "startedState": {"on": True, "brightness": 100},
+                    }
+                )
+            )
+            off = mock.Mock(return_value={"ok": True, "light": {"on": False, "brightness": 100}})
+            self.patch_module(
+                DATA_DIR=Path(tmp),
+                GARAGE_LIGHT_HOLD_STATUS_PATH=hold_path,
+                GARAGE_ACTIVITY_EVENTS_PATH=event_path,
+                garage_occupancy_status=lambda: {"occupied": False},
+                garage_light_status=lambda: {"ok": True, "light": {"on": True, "brightness": 100}},
+                garage_light_config=lambda: {"restore_started_state": False},
+                set_garage_light_off=off,
+            )
+
+            action_server.expire_garage_light_hold()
+
+            state = json.loads(hold_path.read_text())
+            off.assert_called_once()
+            self.assertFalse(state["active"])
+            self.assertEqual(state["restorePolicy"], "off-after-inactivity")
+
+    def test_garage_expiry_extends_hold_for_phone_on_extender(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            now = action_server.local_now()
+            hold_path = Path(tmp) / "garage_light_hold.json"
+            event_path = Path(tmp) / "garage_activity_events.jsonl"
+            hold_path.write_text(
+                json.dumps(
+                    {
+                        "active": True,
+                        "lastActivityAt": (now - action_server.timedelta(seconds=301)).isoformat(),
+                        "holdSeconds": 300,
+                    }
+                )
+            )
+            schedule = mock.Mock()
+            self.patch_module(
+                DATA_DIR=Path(tmp),
+                GARAGE_LIGHT_HOLD_STATUS_PATH=hold_path,
+                GARAGE_ACTIVITY_EVENTS_PATH=event_path,
+                garage_occupancy_status=lambda: {
+                    "occupied": True,
+                    "matches": [{"accessPoint": "Extender"}],
+                },
+                schedule_garage_light_hold_check=schedule,
+            )
+
+            action_server.expire_garage_light_hold()
+
+            state = json.loads(hold_path.read_text())
+            self.assertTrue(state["active"])
+            self.assertEqual(state["status"], "occupancy-hold")
+            schedule.assert_called_once()
+
     def test_read_json_status_preserves_refresh_failure_summary(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "latest_energy_refresh.json"

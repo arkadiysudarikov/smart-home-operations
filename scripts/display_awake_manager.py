@@ -309,6 +309,52 @@ def client_kind(client: dict[str, Any]) -> str | None:
     return None
 
 
+def is_phone_client(client: dict[str, Any]) -> bool:
+    if client_kind(client) == "iphone":
+        return True
+    blob = " ".join(
+        str(client.get(key) or "")
+        for key in ("display_name", "hostname", "name", "model_name", "model")
+    ).lower()
+    phone_tokens = (
+        "iphone",
+        "android",
+        "pixel",
+        "galaxy",
+        "samsung",
+        "oneplus",
+        "motorola",
+        "moto ",
+        " phone",
+    )
+    return any(token in blob for token in phone_tokens)
+
+
+def phone_occupancy(
+    clients: list[dict[str, Any]],
+    aliases: dict[str, str],
+    access_points: list[str],
+) -> dict[str, Any]:
+    selected = {str(value).strip().lower() for value in access_points if str(value).strip()}
+    matches: list[dict[str, Any]] = []
+    for client in clients:
+        access_point = client_ap_alias(client, aliases)
+        if (
+            is_phone_client(client)
+            and str(client.get("status") or "online").lower() == "online"
+            and str(access_point or "").lower() in selected
+        ):
+            matches.append({"accessPoint": access_point})
+    return {
+        "ok": True,
+        "occupied": bool(matches),
+        "phoneCount": len(matches),
+        "accessPoints": sorted(selected),
+        "matches": matches,
+        "checkedAt": iso_now(),
+    }
+
+
 def candidate_token(mac: str) -> str:
     return hashlib.sha256(mac.encode()).hexdigest()[:12]
 
@@ -1194,6 +1240,12 @@ def main() -> int:
     parser.add_argument("--force-outside-runtime", action="store_true")
     parser.add_argument("--once", action="store_true", help="run one policy cycle")
     parser.add_argument("--list-candidates", action="store_true", help="list sanitized active Watch/iPhone candidates")
+    parser.add_argument(
+        "--phone-occupancy-access-point",
+        action="append",
+        default=[],
+        help="report a privacy-safe count of active phones on an access-point alias",
+    )
     parser.add_argument("--enroll-watch")
     parser.add_argument("--enroll-iphone")
     parser.add_argument("--set-room-map", action="append", default=[])
@@ -1216,6 +1268,10 @@ def main() -> int:
         return 0
     if args.set_room_map:
         print(json.dumps(write_room_mapping(args.set_room_map), sort_keys=True))
+        return 0
+    if args.phone_occupancy_access_point:
+        clients, aliases = query_unifi_clients()
+        print(json.dumps(phone_occupancy(clients, aliases, args.phone_occupancy_access_point), sort_keys=True))
         return 0
     if args.list_candidates or args.enroll_watch or args.enroll_iphone:
         clients, aliases = query_unifi_clients()

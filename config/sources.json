@@ -177,6 +177,15 @@
     "alarm_child_bridge_port": 52230,
     "office_tahoma_child_bridge_port": 35854
   },
+  "garage_light": {
+    "hold_seconds": 300,
+    "restore_started_state": false,
+    "occupancy": {
+      "enabled": true,
+      "access_points": ["Garage", "Extender"],
+      "mode": "any_phone"
+    }
+  },
   "washer_notifications": {
     "enabled": true,
     "accessory": "Washer",
