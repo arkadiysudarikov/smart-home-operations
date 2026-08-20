@@ -440,10 +440,22 @@ def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]
     delay_seconds = max(2, min(30, int(config.get("homepod_clip_seconds", 5))))
     script = f'''tell application "Music"
 set originalDevices to current AirPlay devices
+set originalPlayerState to player state
+set originalPosition to 0
+set hadOriginalTrack to false
+try
+    set originalTrack to current track
+    set originalPosition to player position
+    if originalPlayerState is playing or originalPlayerState is paused then set hadOriginalTrack to true
+end try
 set targetNames to {target_list}
 set targetDevices to {{}}
+set targetVolumes to {{}}
 repeat with deviceItem in every AirPlay device
-    if (name of deviceItem is in targetNames) and (available of deviceItem) then set end of targetDevices to deviceItem
+    if (name of deviceItem is in targetNames) and (available of deviceItem) then
+        set end of targetDevices to deviceItem
+        set end of targetVolumes to sound volume of deviceItem
+    end if
 end repeat
 if (count of targetDevices) is 0 then error "No configured HomePod is available"
 try
@@ -455,11 +467,27 @@ try
     play POSIX file {json.dumps(str(audio_path))} once true
     delay {delay_seconds}
     stop
+    repeat with deviceIndex from 1 to count of targetDevices
+        set sound volume of item deviceIndex of targetDevices to item deviceIndex of targetVolumes
+    end repeat
     set current AirPlay devices to originalDevices
+    if hadOriginalTrack then
+        play originalTrack
+        set player position to originalPosition
+        if originalPlayerState is paused then pause
+    end if
 on error errorMessage number errorNumber
     try
         stop
+        repeat with deviceIndex from 1 to count of targetDevices
+            set sound volume of item deviceIndex of targetDevices to item deviceIndex of targetVolumes
+        end repeat
         set current AirPlay devices to originalDevices
+        if hadOriginalTrack then
+            play originalTrack
+            set player position to originalPosition
+            if originalPlayerState is paused then pause
+        end if
     end try
     error errorMessage number errorNumber
 end try
