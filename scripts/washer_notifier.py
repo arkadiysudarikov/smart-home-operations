@@ -440,10 +440,22 @@ def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]
     delay_seconds = max(2, min(30, int(config.get("homepod_clip_seconds", 5))))
     script = f'''tell application "Music"
 set originalDevices to current AirPlay devices
+set originalPlayerState to player state
+set originalPosition to 0
+set hadOriginalTrack to false
+try
+    set originalTrack to current track
+    set originalPosition to player position
+    if originalPlayerState is playing or originalPlayerState is paused then set hadOriginalTrack to true
+end try
 set targetNames to {target_list}
 set targetDevices to {{}}
+set targetVolumes to {{}}
 repeat with deviceItem in every AirPlay device
-    if (name of deviceItem is in targetNames) and (available of deviceItem) then set end of targetDevices to deviceItem
+    if (name of deviceItem is in targetNames) and (available of deviceItem) then
+        set end of targetDevices to deviceItem
+        set end of targetVolumes to sound volume of deviceItem
+    end if
 end repeat
 if (count of targetDevices) is 0 then error "No configured HomePod is available"
 try
@@ -455,11 +467,27 @@ try
     play POSIX file {json.dumps(str(audio_path))} once true
     delay {delay_seconds}
     stop
+    repeat with deviceIndex from 1 to count of targetDevices
+        set sound volume of item deviceIndex of targetDevices to item deviceIndex of targetVolumes
+    end repeat
     set current AirPlay devices to originalDevices
+    if hadOriginalTrack then
+        play originalTrack
+        set player position to originalPosition
+        if originalPlayerState is paused then pause
+    end if
 on error errorMessage number errorNumber
     try
         stop
+        repeat with deviceIndex from 1 to count of targetDevices
+            set sound volume of item deviceIndex of targetDevices to item deviceIndex of targetVolumes
+        end repeat
         set current AirPlay devices to originalDevices
+        if hadOriginalTrack then
+            play originalTrack
+            set player position to originalPosition
+            if originalPlayerState is paused then pause
+        end if
     end try
     error errorMessage number errorNumber
 end try
@@ -628,6 +656,8 @@ def main() -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--now", help="override the current local time for testing")
+    parser.add_argument("--announce-message", help="announce an arbitrary message using the configured indoor HomePods")
+    parser.add_argument("--announcement-id", help="audio filename identifier for an arbitrary announcement")
     args = parser.parse_args()
 
     full_config = load_json(CONFIG_PATH, {})
@@ -638,6 +668,14 @@ def main() -> int:
         print(f"{appliance_name} notifications are disabled.")
         return 0
     config = {"id": appliance_id, "display_name": appliance_name, **config}
+    if args.announce_message:
+        announcement_config = {
+            **config,
+            "id": str(args.announcement_id or appliance_id),
+        }
+        result = homepod_announcement(str(args.announce_message), announcement_config)
+        print(json.dumps(result, sort_keys=True))
+        return 0 if result.get("ok") else 1
     state_path = DATA_DIR / f"{appliance_id}_notifier_state.json"
     status_path = DATA_DIR / f"latest_{appliance_id}_notifier.json"
     power_log_path = DATA_DIR / f"{appliance_id}_power_shadow.jsonl"

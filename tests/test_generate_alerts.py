@@ -270,20 +270,20 @@ class GenerateAlertsTest(unittest.TestCase):
         self.assertEqual(restored["effectiveLevel"], "critical")
         self.assertEqual(restored["consecutiveFreshSamples"], 2)
 
-    def test_energy_budget_virtual_sensor_uses_stabilized_effective_level(self) -> None:
+    def test_energy_high_virtual_sensor_uses_live_house_load_state(self) -> None:
         accessory = {
             "id": "smart_home_energy_budget_v2",
-            "alert_titles": ["Energy projection is critical"],
+            "state_titles": ["House load is high"],
         }
 
         self.assertTrue(
             generate_alerts.virtual_sensor_should_be_active(
-                accessory, set(), set(), {"effectiveLevel": "critical"}
+                accessory, set(), {"House load is high"}, {"effectiveLevel": "clear"}
             )
         )
         self.assertFalse(
             generate_alerts.virtual_sensor_should_be_active(
-                accessory, {"Energy projection is critical"}, set(), {"effectiveLevel": "clear"}
+                accessory, set(), set(), {"effectiveLevel": "critical"}
             )
         )
 
@@ -387,6 +387,124 @@ class GenerateAlertsTest(unittest.TestCase):
             self.assertEqual(first["lastDecision"], "failed")
             self.assertIn("notifications denied", first["deliveries"][-1]["error"])
             self.assertEqual(second["lastProcessedEventKey"], first["lastProcessedEventKey"])
+
+    def test_energy_ok_off_announcement_seeds_without_speaking(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "energy_ok_announcement.json"
+            self.patch_module(DATA_DIR=Path(tmp), ENERGY_OK_ANNOUNCEMENT_PATH=path)
+            calls: list[list[str]] = []
+
+            state = generate_alerts.deliver_energy_ok_off_announcement(
+                {"alerts": {"energy_ok_off_homepod_announcement": True}},
+                [
+                    {"id": "smart_home_high_load_v2", "active": False, "ok": True, "verified": True},
+                    {"id": "smart_home_energy_budget_v2", "active": False, "ok": True, "verified": True},
+                ],
+                lambda command, **_kwargs: calls.append(command),
+                "2026-08-20T10:00:00-07:00",
+            )
+
+            self.assertFalse(state["active"])
+            self.assertEqual(state["lastDecision"], "no transition")
+            self.assertEqual(calls, [])
+
+    def test_energy_ok_off_announcement_is_delivered_once_per_transition(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "energy_ok_announcement.json"
+            path.write_text(json.dumps({"active": True}) + "\n")
+            self.patch_module(DATA_DIR=Path(tmp), ENERGY_OK_ANNOUNCEMENT_PATH=path)
+            calls: list[list[str]] = []
+
+            def runner(command: list[str], **_kwargs: Any) -> Any:
+                calls.append(command)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            update = [{"id": "smart_home_high_load_v2", "active": False, "ok": True, "verified": True}]
+            first = generate_alerts.deliver_energy_ok_off_announcement(
+                {
+                    "alerts": {
+                        "energy_ok_off_homepod_announcement": True,
+                        "energy_high_on_homepod_announcement": True,
+                        "energy_high_on_homepod_message": "Energy is high.",
+                    }
+                },
+                update + [{"id": "smart_home_energy_budget_v2", "active": True, "ok": True, "verified": True}],
+                runner,
+                "2026-08-20T10:05:00-07:00",
+            )
+            second = generate_alerts.deliver_energy_ok_off_announcement(
+                {"alerts": {"energy_ok_off_homepod_announcement": True}},
+                update + [{"id": "smart_home_energy_budget_v2", "active": True, "ok": True, "verified": True}],
+                runner,
+                "2026-08-20T10:10:00-07:00",
+            )
+
+            self.assertEqual(len(calls), 1)
+            self.assertIn("--announce-message", calls[0])
+            self.assertIn("--announcement-id", calls[0])
+            self.assertEqual(first["lastDecision"], "accepted")
+            self.assertEqual(first["lastDelivery"]["message"], "Energy is high.")
+            self.assertTrue(first["energyHighActive"])
+            self.assertEqual(second["lastDecision"], "no transition")
+
+    def test_energy_ok_off_announcement_ignores_unverified_sensor_update(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "energy_ok_announcement.json"
+            path.write_text(json.dumps({"active": True}) + "\n")
+            self.patch_module(DATA_DIR=Path(tmp), ENERGY_OK_ANNOUNCEMENT_PATH=path)
+
+            state = generate_alerts.deliver_energy_ok_off_announcement(
+                {"alerts": {"energy_ok_off_homepod_announcement": True}},
+                [
+                    {"id": "smart_home_high_load_v2", "active": False, "ok": False},
+                    {"id": "smart_home_energy_budget_v2", "active": True, "ok": True, "verified": True},
+                ],
+            )
+
+            self.assertTrue(state["active"])
+
+    def test_bubbler_on_announcement_is_delivered_once_per_transition(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bubbler_announcement.json"
+            path.write_text(json.dumps({"active": False}) + "\n")
+            self.patch_module(DATA_DIR=Path(tmp), BUBBLER_ANNOUNCEMENT_PATH=path)
+            calls: list[list[str]] = []
+
+            def runner(command: list[str], **_kwargs: Any) -> Any:
+                calls.append(command)
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            config = {
+                "alerts": {
+                    "bubbler_on_homepod_announcement": True,
+                    "bubbler_on_homepod_message": "The bubbler is back on.",
+                }
+            }
+            first = generate_alerts.deliver_bubbler_on_announcement(
+                config, runner, "2026-08-20T10:15:00-07:00", True
+            )
+            second = generate_alerts.deliver_bubbler_on_announcement(
+                config, runner, "2026-08-20T10:20:00-07:00", True
+            )
+
+            self.assertEqual(len(calls), 1)
+            self.assertIn("bubbler_on", calls[0])
+            self.assertEqual(first["lastDecision"], "accepted")
+            self.assertEqual(second["lastDecision"], "no transition")
+
+    def test_current_bubbler_active_reads_homebridge_characteristic(self) -> None:
+        self.patch_module(
+            load_latest_characteristics=lambda: {
+                "bubbler": {
+                    "accessory": "🐠 Bubbler",
+                    "service": "🐠 Bubbler",
+                    "characteristic": "On",
+                    "value": True,
+                }
+            }
+        )
+
+        self.assertTrue(generate_alerts.current_bubbler_active())
 
     def test_build_alerts_reports_wrong_homebridge_advertisement_ip(self) -> None:
         latest = latest_snapshot()

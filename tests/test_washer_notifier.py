@@ -570,7 +570,7 @@ class WasherNotifierTest(unittest.TestCase):
             [("Washer venting has finished. Turn off the laundry-room fan.", "Venting Finished")],
         )
 
-    def test_homepod_announcement_uses_all_configured_targets_and_restores_output(self) -> None:
+    def test_homepod_announcement_restores_music_output_volume_and_playback(self) -> None:
         completed = SimpleNamespace(returncode=0, stderr="", stdout="")
         with mock.patch.object(washer_notifier.subprocess, "run", side_effect=[completed, completed]) as run:
             result = washer_notifier.homepod_announcement(
@@ -588,8 +588,19 @@ class WasherNotifierTest(unittest.TestCase):
             'set targetNames to {"Primary HomePod", "Kitchen HomePod", "Office HomePod"}',
             apple_script,
         )
+        self.assertIn("set originalPlayerState to player state", apple_script)
+        self.assertIn("set originalTrack to current track", apple_script)
+        self.assertIn("set originalPosition to player position", apple_script)
+        self.assertIn("set end of targetVolumes to sound volume of deviceItem", apple_script)
         self.assertIn("set sound volume of deviceItem to 45", apple_script)
+        self.assertIn(
+            "set sound volume of item deviceIndex of targetDevices to item deviceIndex of targetVolumes",
+            apple_script,
+        )
         self.assertIn("set current AirPlay devices to originalDevices", apple_script)
+        self.assertIn("play originalTrack", apple_script)
+        self.assertIn("set player position to originalPosition", apple_script)
+        self.assertIn("if originalPlayerState is paused then pause", apple_script)
 
 
 if __name__ == "__main__":
