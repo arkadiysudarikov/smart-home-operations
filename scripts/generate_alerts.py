@@ -5,6 +5,7 @@ import json
 import re
 import sqlite3
 import subprocess
+import sys
 import urllib.parse
 import urllib.request
 from bisect import bisect_left
@@ -26,6 +27,8 @@ COMBINED_ENERGY_PATH = DATA_DIR / "latest_combined_energy_monitor.json"
 ENERGY_OBSERVABILITY_PATH = DATA_DIR / "latest_energy_observability.json"
 ENERGY_ALERT_STABILIZATION_PATH = DATA_DIR / "energy_alert_stabilization.json"
 ENERGY_ALERT_DELIVERY_PATH = DATA_DIR / "energy_alert_delivery.json"
+ENERGY_OK_ANNOUNCEMENT_PATH = DATA_DIR / "energy_ok_announcement.json"
+BUBBLER_ANNOUNCEMENT_PATH = DATA_DIR / "bubbler_announcement.json"
 ENERGY_HIGH_CONTEXT_PATH = DATA_DIR / "latest_energy_high_context.json"
 ENERGY_HIGH_CONTEXT_REPORT_PATH = REPORT_DIR / "energy_high_context.md"
 ENERGY_HIGH_EVENTS_PATH = DATA_DIR / "energy_high_events.jsonl"
@@ -333,6 +336,192 @@ def deliver_projection_notification(
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ENERGY_ALERT_DELIVERY_PATH.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
     return state
+
+
+def deliver_homepod_transition_announcement(
+    *,
+    state_path: Path,
+    active: bool | None,
+    notify_from: bool,
+    notify_to: bool,
+    enabled: bool,
+    message: str,
+    announcement_id: str,
+    runner: Any = None,
+    updated_at: str | None = None,
+) -> dict[str, Any]:
+    previous = load_json_file(state_path)
+    previous = previous if isinstance(previous, dict) else {}
+    if active is None:
+        return previous
+
+    now = updated_at or datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    state = {
+        **previous,
+        "version": 1,
+        "updatedAt": now,
+        "active": active,
+        "lastDecision": "no transition",
+    }
+    if enabled and previous.get("active") is notify_from and active is notify_to:
+        delivery = run_indoor_homepod_announcement(message, announcement_id, runner, now)
+        state.update(
+            {
+                "lastDecision": delivery["status"],
+                "lastTransitionAt": now,
+                "lastDelivery": delivery,
+            }
+        )
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    return state
+
+
+def run_indoor_homepod_announcement(
+    message: str,
+    announcement_id: str,
+    runner: Any = None,
+    updated_at: str | None = None,
+) -> dict[str, Any]:
+    now = updated_at or datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    command_runner = runner or subprocess.run
+    try:
+        result = command_runner(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "washer_notifier.py"),
+                "--announce-message",
+                message,
+                "--announcement-id",
+                announcement_id,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=45,
+            check=False,
+        )
+        ok = result.returncode == 0
+        error = None if ok else str(result.stderr or result.stdout or f"exit {result.returncode}").strip()
+    except Exception as exc:
+        ok = False
+        error = str(exc)
+    delivery = {
+        "at": now,
+        "status": "accepted" if ok else "failed",
+        "message": message,
+        "transport": "indoor HomePods via Music AirPlay",
+        "readReceipt": "unavailable",
+    }
+    if error:
+        delivery["error"] = error
+    return delivery
+
+
+def deliver_energy_ok_off_announcement(
+    config: dict[str, Any],
+    updates: list[dict[str, Any]],
+    runner: Any = None,
+    updated_at: str | None = None,
+) -> dict[str, Any]:
+    energy_ok = next(
+        (item for item in updates if item.get("id") == "smart_home_high_load_v2"),
+        None,
+    )
+    energy_high = next(
+        (item for item in updates if item.get("id") == "smart_home_energy_budget_v2"),
+        None,
+    )
+    if (
+        not energy_ok
+        or not energy_high
+        or not energy_ok.get("ok")
+        or not energy_high.get("ok")
+        or energy_ok.get("verified") is not True
+        or energy_high.get("verified") is not True
+    ):
+        previous = load_json_file(ENERGY_OK_ANNOUNCEMENT_PATH)
+        return previous if isinstance(previous, dict) else {}
+
+    alerts = config.get("alerts", {})
+    previous = load_json_file(ENERGY_OK_ANNOUNCEMENT_PATH)
+    previous = previous if isinstance(previous, dict) else {}
+    prior_ok = previous.get("energyOkActive", previous.get("active"))
+    prior_high = previous.get("energyHighActive")
+    if prior_high is None and isinstance(prior_ok, bool):
+        prior_high = not prior_ok
+    ok_active = bool(energy_ok.get("active"))
+    high_active = bool(energy_high.get("active"))
+    now = updated_at or datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
+    state = {
+        **previous,
+        "version": 2,
+        "updatedAt": now,
+        "active": ok_active,
+        "energyOkActive": ok_active,
+        "energyHighActive": high_active,
+        "lastDecision": "no transition",
+    }
+    incident_started = (prior_ok is True and not ok_active) or (prior_high is False and high_active)
+    if incident_started:
+        if high_active:
+            enabled = bool(alerts.get("energy_high_on_homepod_announcement", False))
+            message = str(alerts.get("energy_high_on_homepod_message", "Energy is high. Check current energy use."))
+            announcement_id = "energy_high_on"
+        else:
+            enabled = bool(alerts.get("energy_ok_off_homepod_announcement", False))
+            message = str(
+                alerts.get(
+                    "energy_ok_off_homepod_message",
+                    "Energy OK has turned off. Current energy status is unavailable.",
+                )
+            )
+            announcement_id = "energy_ok_off"
+        if enabled:
+            delivery = run_indoor_homepod_announcement(message, announcement_id, runner, now)
+            state.update(
+                {
+                    "lastDecision": delivery["status"],
+                    "lastTransitionAt": now,
+                    "lastDelivery": delivery,
+                }
+            )
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    ENERGY_OK_ANNOUNCEMENT_PATH.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    return state
+
+
+def current_bubbler_active() -> bool | None:
+    for item in load_latest_characteristics().values():
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("accessory") or item.get("service") or "").replace("🐠", "").strip()
+        if name == "Bubbler" and item.get("characteristic") == "On":
+            value = item.get("value")
+            return value if isinstance(value, bool) else None
+    return None
+
+
+def deliver_bubbler_on_announcement(
+    config: dict[str, Any],
+    runner: Any = None,
+    updated_at: str | None = None,
+    active: bool | None = None,
+) -> dict[str, Any]:
+    active = current_bubbler_active() if active is None else active
+    alerts = config.get("alerts", {})
+    return deliver_homepod_transition_announcement(
+        state_path=BUBBLER_ANNOUNCEMENT_PATH,
+        active=active,
+        notify_from=False,
+        notify_to=True,
+        enabled=bool(alerts.get("bubbler_on_homepod_announcement", False)),
+        message=str(alerts.get("bubbler_on_homepod_message", "The bubbler is back on.")),
+        announcement_id="bubbler_on",
+        runner=runner,
+        updated_at=updated_at,
+    )
 
 
 def load_sce_api_status() -> dict[str, Any]:
@@ -857,7 +1046,7 @@ def recommended_action_for_sense_device(name: str) -> str | None:
         return "Pause the washer if practical, or avoid starting another large load."
     if "hot tub" in normalized or "spa" in normalized:
         return "Delay hot tub heating."
-    if "ac" in name.upper() or "air conditioner" in normalized:
+    if "AC" in name.upper() or "air conditioner" in normalized:
         return "Turn AC off or raise the cooling setpoint."
     return None
 
@@ -2785,8 +2974,6 @@ def virtual_sensor_should_be_active(
     state_titles: set[str],
     projection_stabilization: dict[str, Any] | None = None,
 ) -> bool:
-    if accessory.get("id") == "smart_home_energy_budget_v2" and projection_stabilization:
-        return projection_stabilization.get("effectiveLevel") != "clear"
     return (
         any(title in active_titles for title in accessory.get("alert_titles", []))
         or any(title in state_titles for title in accessory.get("state_titles", []))
@@ -3055,6 +3242,8 @@ def write_homekit_report(
     updates: list[dict[str, Any]],
     projection_stabilization: dict[str, Any] | None = None,
     projection_delivery: dict[str, Any] | None = None,
+    energy_ok_announcement: dict[str, Any] | None = None,
+    bubbler_announcement: dict[str, Any] | None = None,
 ) -> None:
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     alarm_com = load_alarm_com()
@@ -3077,6 +3266,8 @@ def write_homekit_report(
         "freshness": freshness,
         "projectionAlertStabilization": projection_stabilization or {},
         "projectionAlertDelivery": projection_delivery or {},
+        "energyOkOffAnnouncement": energy_ok_announcement or {},
+        "bubblerOnAnnouncement": bubbler_announcement or {},
         "updates": updates,
         "surfaceAudit": audit_homekit_surface(updates),
     }
@@ -3194,7 +3385,15 @@ def main() -> int:
     )
     write_reports(alerts, latest)
     updates = update_homekit_virtual_sensors(config, alerts, projection_stabilization)
-    write_homekit_report(updates, projection_stabilization, projection_delivery)
+    energy_ok_announcement = deliver_energy_ok_off_announcement(config, updates)
+    bubbler_announcement = deliver_bubbler_on_announcement(config)
+    write_homekit_report(
+        updates,
+        projection_stabilization,
+        projection_delivery,
+        energy_ok_announcement,
+        bubbler_announcement,
+    )
     print(REPORT_DIR / "alerts.md")
     return 0
 

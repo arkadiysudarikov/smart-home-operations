@@ -656,6 +656,8 @@ def main() -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--now", help="override the current local time for testing")
+    parser.add_argument("--announce-message", help="announce an arbitrary message using the configured indoor HomePods")
+    parser.add_argument("--announcement-id", help="audio filename identifier for an arbitrary announcement")
     args = parser.parse_args()
 
     full_config = load_json(CONFIG_PATH, {})
@@ -666,6 +668,14 @@ def main() -> int:
         print(f"{appliance_name} notifications are disabled.")
         return 0
     config = {"id": appliance_id, "display_name": appliance_name, **config}
+    if args.announce_message:
+        announcement_config = {
+            **config,
+            "id": str(args.announcement_id or appliance_id),
+        }
+        result = homepod_announcement(str(args.announce_message), announcement_config)
+        print(json.dumps(result, sort_keys=True))
+        return 0 if result.get("ok") else 1
     state_path = DATA_DIR / f"{appliance_id}_notifier_state.json"
     status_path = DATA_DIR / f"latest_{appliance_id}_notifier.json"
     power_log_path = DATA_DIR / f"{appliance_id}_power_shadow.jsonl"

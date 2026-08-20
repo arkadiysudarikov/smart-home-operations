@@ -92,7 +92,12 @@ real completion edge remains armed. Each appliance sends one
 unload reminder after 20 minutes when the door remains closed and suppresses
 spoken announcements outside the configured daytime window. The spoken clip is
 generated locally and played on the configured HomePod through Music's AirPlay
-interface; the previous Music output selection is restored afterward. Sense/Envoy power
+interface; the previous Music track, position, play/pause state, output selection,
+and HomePod volumes are restored afterward. The same indoor announcement path
+speaks once when `✅ ENERGY OK` turns off, distinguishes `⚠️ ENERGY HIGH` from
+unavailable energy status, and speaks when `🐠 Bubbler` turns back on. Persisted
+transition state prevents repeat announcements on later refreshes.
+Sense/Envoy power
 data stays in `shadow` mode until multiple SmartHQ-labeled cycles have been
 reviewed; it cannot generate a fallback alert while shadowed.
 
