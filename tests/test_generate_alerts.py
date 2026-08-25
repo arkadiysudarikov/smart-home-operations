@@ -408,6 +408,30 @@ class GenerateAlertsTest(unittest.TestCase):
             self.assertEqual(state["lastDecision"], "no transition")
             self.assertEqual(calls, [])
 
+    def test_homepod_runner_records_playback_protection_skip(self) -> None:
+        def runner(_command: list[str], **_kwargs: Any) -> Any:
+            return SimpleNamespace(
+                returncode=0,
+                stderr="",
+                stdout=json.dumps(
+                    {
+                        "ok": True,
+                        "skipped": True,
+                        "protectedPlayback": True,
+                        "reason": "Music does not own a restorable playback session",
+                        "preflight": "restorable=false;state=stopped",
+                    }
+                ),
+            )
+
+        delivery = generate_alerts.run_indoor_homepod_announcement(
+            "Energy is high.", "energy_high_on", runner, "2026-08-24T14:00:00-07:00"
+        )
+
+        self.assertEqual(delivery["status"], "skipped")
+        self.assertTrue(delivery["protectedPlayback"])
+        self.assertEqual(delivery["preflight"], "restorable=false;state=stopped")
+
     def test_energy_ok_off_announcement_is_delivered_once_per_transition(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "energy_ok_announcement.json"
@@ -462,6 +486,68 @@ class GenerateAlertsTest(unittest.TestCase):
             )
 
             self.assertTrue(state["active"])
+
+    def test_energy_high_announcement_is_suppressed_during_quiet_hours(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "energy_ok_announcement.json"
+            path.write_text(json.dumps({"energyOkActive": True, "energyHighActive": False}) + "\n")
+            self.patch_module(DATA_DIR=Path(tmp), ENERGY_OK_ANNOUNCEMENT_PATH=path)
+            calls: list[list[str]] = []
+
+            state = generate_alerts.deliver_energy_ok_off_announcement(
+                {
+                    "alerts": {
+                        "energy_high_on_homepod_announcement": True,
+                        "energy_homepod_announcement_start_hour": 8,
+                        "energy_homepod_announcement_end_hour": 21,
+                    }
+                },
+                [
+                    {"id": "smart_home_high_load_v2", "active": False, "ok": True, "verified": True},
+                    {"id": "smart_home_energy_budget_v2", "active": True, "ok": True, "verified": True},
+                ],
+                lambda command, **_kwargs: calls.append(command),
+                "2026-08-21T01:45:42-07:00",
+            )
+
+            self.assertEqual(calls, [])
+            self.assertEqual(state["lastDecision"], "skipped: quiet hours")
+            self.assertEqual(state["lastSuppression"]["allowedHours"], "08:00-21:00")
+
+    def test_energy_high_announcement_has_two_hour_cooldown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "energy_ok_announcement.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "energyOkActive": True,
+                        "energyHighActive": False,
+                        "lastDelivery": {"at": "2026-08-21T09:00:00-07:00", "status": "accepted"},
+                    }
+                )
+                + "\n"
+            )
+            self.patch_module(DATA_DIR=Path(tmp), ENERGY_OK_ANNOUNCEMENT_PATH=path)
+            calls: list[list[str]] = []
+
+            state = generate_alerts.deliver_energy_ok_off_announcement(
+                {
+                    "alerts": {
+                        "energy_high_on_homepod_announcement": True,
+                        "energy_homepod_announcement_cooldown_minutes": 120,
+                    }
+                },
+                [
+                    {"id": "smart_home_high_load_v2", "active": False, "ok": True, "verified": True},
+                    {"id": "smart_home_energy_budget_v2", "active": True, "ok": True, "verified": True},
+                ],
+                lambda command, **_kwargs: calls.append(command),
+                "2026-08-21T09:44:29-07:00",
+            )
+
+            self.assertEqual(calls, [])
+            self.assertEqual(state["lastDecision"], "skipped: cooldown")
+            self.assertEqual(state["lastSuppression"]["cooldownMinutes"], 120)
 
     def test_bubbler_on_announcement_is_delivered_once_per_transition(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -402,20 +402,62 @@ def run_indoor_homepod_announcement(
             check=False,
         )
         ok = result.returncode == 0
+        result_payload: dict[str, Any] = {}
+        try:
+            parsed = json.loads(str(result.stdout or ""))
+            result_payload = parsed if isinstance(parsed, dict) else {}
+        except json.JSONDecodeError:
+            pass
+        skipped = ok and result_payload.get("skipped") is True
         error = None if ok else str(result.stderr or result.stdout or f"exit {result.returncode}").strip()
     except Exception as exc:
         ok = False
+        skipped = False
+        result_payload = {}
         error = str(exc)
     delivery = {
         "at": now,
-        "status": "accepted" if ok else "failed",
+        "status": "skipped" if skipped else ("accepted" if ok else "failed"),
         "message": message,
         "transport": "indoor HomePods via Music AirPlay",
         "readReceipt": "unavailable",
     }
     if error:
         delivery["error"] = error
+    if skipped:
+        delivery["reason"] = result_payload.get("reason")
+        delivery["protectedPlayback"] = bool(result_payload.get("protectedPlayback"))
+        delivery["preflight"] = result_payload.get("preflight")
     return delivery
+
+
+def within_local_hours(timestamp: str, start_hour: int, end_hour: int) -> bool:
+    try:
+        local = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).astimezone(LOCAL_TZ)
+    except (TypeError, ValueError):
+        local = datetime.now(LOCAL_TZ)
+    start_hour = max(0, min(23, int(start_hour)))
+    end_hour = max(0, min(24, int(end_hour)))
+    if start_hour == end_hour:
+        return True
+    if start_hour < end_hour:
+        return start_hour <= local.hour < end_hour
+    return local.hour >= start_hour or local.hour < end_hour
+
+
+def elapsed_minutes(earlier: Any, later: str) -> float | None:
+    if not isinstance(earlier, str) or not earlier:
+        return None
+    try:
+        before = datetime.fromisoformat(earlier.replace("Z", "+00:00"))
+        after = datetime.fromisoformat(later.replace("Z", "+00:00"))
+        if before.tzinfo is None:
+            before = before.replace(tzinfo=LOCAL_TZ)
+        if after.tzinfo is None:
+            after = after.replace(tzinfo=LOCAL_TZ)
+        return (after - before).total_seconds() / 60.0
+    except (TypeError, ValueError):
+        return None
 
 
 def deliver_energy_ok_off_announcement(
@@ -455,7 +497,7 @@ def deliver_energy_ok_off_announcement(
     now = updated_at or datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
     state = {
         **previous,
-        "version": 2,
+        "version": 3,
         "updatedAt": now,
         "active": ok_active,
         "energyOkActive": ok_active,
@@ -478,14 +520,47 @@ def deliver_energy_ok_off_announcement(
             )
             announcement_id = "energy_ok_off"
         if enabled:
-            delivery = run_indoor_homepod_announcement(message, announcement_id, runner, now)
-            state.update(
-                {
-                    "lastDecision": delivery["status"],
-                    "lastTransitionAt": now,
-                    "lastDelivery": delivery,
-                }
+            start_hour = int(alerts.get("energy_homepod_announcement_start_hour", 8))
+            end_hour = int(alerts.get("energy_homepod_announcement_end_hour", 21))
+            cooldown_minutes = max(0, int(alerts.get("energy_homepod_announcement_cooldown_minutes", 120)))
+            minutes_since_delivery = elapsed_minutes(
+                (previous.get("lastDelivery") or {}).get("at"), now
             )
+            suppression: dict[str, Any] | None = None
+            if not within_local_hours(now, start_hour, end_hour):
+                suppression = {
+                    "at": now,
+                    "status": "skipped",
+                    "reason": "quiet hours",
+                    "allowedHours": f"{start_hour:02d}:00-{end_hour:02d}:00",
+                    "message": message,
+                }
+            elif minutes_since_delivery is not None and minutes_since_delivery < cooldown_minutes:
+                suppression = {
+                    "at": now,
+                    "status": "skipped",
+                    "reason": "cooldown",
+                    "cooldownMinutes": cooldown_minutes,
+                    "minutesSinceLastDelivery": round(minutes_since_delivery, 1),
+                    "message": message,
+                }
+            if suppression:
+                state.update(
+                    {
+                        "lastDecision": f"skipped: {suppression['reason']}",
+                        "lastTransitionAt": now,
+                        "lastSuppression": suppression,
+                    }
+                )
+            else:
+                delivery = run_indoor_homepod_announcement(message, announcement_id, runner, now)
+                state.update(
+                    {
+                        "lastDecision": delivery["status"],
+                        "lastTransitionAt": now,
+                        "lastDelivery": delivery,
+                    }
+                )
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ENERGY_OK_ANNOUNCEMENT_PATH.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")

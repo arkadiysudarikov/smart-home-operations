@@ -110,7 +110,13 @@ def current_appliance_state(
         return direct
     captured_at = parse_time(latest.get("captured_at"))
     max_age_minutes = int(config.get("max_snapshot_age_minutes", 10))
-    fresh = bool(captured_at and timedelta(0) <= now - captured_at <= timedelta(minutes=max_age_minutes))
+    cache_recent = bool(captured_at and timedelta(0) <= now - captured_at <= timedelta(minutes=max_age_minutes))
+    heartbeat_required = bool(config.get("require_smarthq_heartbeat", False))
+    # The persisted Homebridge cache can contain internally inconsistent SmartHQ
+    # characteristics during a child-bridge discovery failure. When a live API
+    # heartbeat is required, keep cache values diagnostic-only so they cannot
+    # create a false completion edge.
+    fresh = cache_recent and not heartbeat_required
     accessory = str(config.get("accessory", "Washer"))
     cycle_service = str(config.get("cycle_service", accessory))
     door_service = str(config.get("door_service", f"{accessory} Door"))
@@ -125,6 +131,8 @@ def current_appliance_state(
         "inUse": in_use,
         "cycleActive": cycle_active,
         "doorOpen": door_open,
+        "heartbeatFresh": False,
+        "cacheRecent": cache_recent,
         "source": "homebridge-cache",
     }
 
@@ -419,11 +427,70 @@ def mac_notification(message: str, title: str, sound_name: str | None = None) ->
     return {"ok": proc.returncode == 0, "returncode": proc.returncode, "error": proc.stderr.strip() or None}
 
 
+def record_homepod_announcement(result: dict[str, Any], message: str, appliance_id: str) -> dict[str, Any]:
+    event = {
+        "at": datetime.now(timezone.utc).astimezone(LOCAL_TZ).isoformat(timespec="seconds"),
+        "announcementId": appliance_id,
+        "message": message,
+        **result,
+    }
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with (DATA_DIR / "homepod_announcement_events.jsonl").open("a") as handle:
+            handle.write(json.dumps(event, sort_keys=True) + "\n")
+    except OSError:
+        pass
+    return result
+
+
 def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]:
     targets = [str(item) for item in config.get("homepod_targets", []) if str(item).strip()]
-    if not targets:
-        return {"ok": False, "skipped": True, "error": "no HomePod targets configured"}
     appliance_id = str(config.get("id", "washer"))
+    if not targets:
+        return record_homepod_announcement(
+            {"ok": True, "skipped": True, "reason": "no HomePod targets configured"},
+            message,
+            appliance_id,
+        )
+
+    require_restorable = bool(config.get("homepod_require_restorable_music_session", True))
+    if require_restorable:
+        preflight_script = '''tell application "Music"
+set originalPlayerState to player state
+if originalPlayerState is stopped then return "restorable=false;state=stopped"
+try
+    set originalTrackName to name of current track
+on error
+    return "restorable=false;state=" & (originalPlayerState as text) & ";track=unavailable"
+end try
+return "restorable=true;state=" & (originalPlayerState as text) & ";track=" & originalTrackName
+end tell'''
+        try:
+            preflight = subprocess.run(
+                ["osascript", "-e", preflight_script],
+                text=True,
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+            preflight_result = preflight.stdout.strip()
+        except Exception as exc:
+            preflight = None
+            preflight_result = f"preflight-error={exc}"
+        if preflight is None or preflight.returncode != 0 or not preflight_result.startswith("restorable=true;"):
+            return record_homepod_announcement(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "protectedPlayback": True,
+                    "reason": "Music does not own a restorable playback session",
+                    "preflight": preflight_result or (preflight.stderr.strip() if preflight else None),
+                    "targets": targets,
+                },
+                message,
+                appliance_id,
+            )
+
     audio_path = DATA_DIR / f"{appliance_id}_finished.aiff"
     speech = subprocess.run(
         ["say", "-o", str(audio_path), message],
@@ -433,12 +500,19 @@ def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]
         check=False,
     )
     if speech.returncode != 0:
-        return {"ok": False, "returncode": speech.returncode, "error": speech.stderr.strip() or "say failed"}
+        return record_homepod_announcement(
+            {"ok": False, "returncode": speech.returncode, "error": speech.stderr.strip() or "say failed"},
+            message,
+            appliance_id,
+        )
 
     target_list = "{" + ", ".join(json.dumps(name) for name in targets) + "}"
     volume = max(0, min(100, int(config.get("homepod_volume", 45))))
     delay_seconds = max(2, min(30, int(config.get("homepod_clip_seconds", 5))))
-    script = f'''tell application "Music"
+    script = f'''set originalVolumeSettings to get volume settings
+set originalOutputVolume to output volume of originalVolumeSettings
+set originalOutputMuted to output muted of originalVolumeSettings
+tell application "Music"
 set originalDevices to current AirPlay devices
 set originalPlayerState to player state
 set originalPosition to 0
@@ -459,8 +533,14 @@ repeat with deviceItem in every AirPlay device
 end repeat
 if (count of targetDevices) is 0 then error "No configured HomePod is available"
 try
+    set volume with output muted
     set current AirPlay devices to targetDevices
     delay 1
+    set selectedTargetNames to {{}}
+    repeat with deviceItem in targetDevices
+        if selected of deviceItem then set end of selectedTargetNames to name of deviceItem
+    end repeat
+    if (count of selectedTargetNames) is 0 then error "Music did not select a configured HomePod"
     repeat with deviceItem in targetDevices
         set sound volume of deviceItem to {volume}
     end repeat
@@ -471,10 +551,23 @@ try
         set sound volume of item deviceIndex of targetDevices to item deviceIndex of targetVolumes
     end repeat
     set current AirPlay devices to originalDevices
+    delay 1
+    set volume output volume originalOutputVolume
+    if originalOutputMuted then
+        set volume with output muted
+    else
+        set volume without output muted
+    end if
     if hadOriginalTrack then
         play originalTrack
         set player position to originalPosition
-        if originalPlayerState is paused then pause
+        if originalPlayerState is paused then
+            pause
+        else if originalPlayerState is playing then
+            play
+            delay 1
+            if player state is not playing then error "Music playback did not resume"
+        end if
     end if
 on error errorMessage number errorNumber
     try
@@ -483,22 +576,34 @@ on error errorMessage number errorNumber
             set sound volume of item deviceIndex of targetDevices to item deviceIndex of targetVolumes
         end repeat
         set current AirPlay devices to originalDevices
+        delay 1
         if hadOriginalTrack then
             play originalTrack
             set player position to originalPosition
             if originalPlayerState is paused then pause
         end if
     end try
+    try
+        set volume output volume originalOutputVolume
+        if originalOutputMuted then
+            set volume with output muted
+        else
+            set volume without output muted
+        end if
+    end try
     error errorMessage number errorNumber
 end try
+return "selectedTargets=" & (selectedTargetNames as text)
 end tell'''
     proc = subprocess.run(["osascript", "-e", script], text=True, capture_output=True, timeout=45, check=False)
-    return {
+    return record_homepod_announcement({
         "ok": proc.returncode == 0,
         "returncode": proc.returncode,
         "targets": targets,
+        "routeVerification": proc.stdout.strip() or None,
         "error": proc.stderr.strip() or None,
-    }
+        "preflight": preflight_result if require_restorable else "disabled",
+    }, message, appliance_id)
 
 
 def power_observation(current: dict[str, Any], now: datetime, appliance_id: str) -> dict[str, Any]:

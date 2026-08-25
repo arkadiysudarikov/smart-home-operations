@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import importlib.util
+import json
+import tempfile
 import unittest
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -173,6 +175,53 @@ class WasherNotifierTest(unittest.TestCase):
         )
         self.assertFalse(current["inUse"])
         self.assertEqual(current["source"], "homebridge-cache")
+
+    def test_failed_live_capture_cannot_make_required_heartbeat_cache_alertable(self) -> None:
+        now = datetime(2026, 8, 25, 10, 50, tzinfo=TZ)
+        latest = {
+            "captured_at": now.isoformat(),
+            "homeEvents": {
+                "currentCharacteristics": {
+                    "in-use": {"accessory": "Washer", "service": "Washer", "characteristic": "InUse", "value": 1},
+                    "cycle": {
+                        "accessory": "Washer",
+                        "service": "Cycle Status",
+                        "characteristic": "MotionDetected",
+                        "value": 0,
+                    },
+                }
+            },
+        }
+        failed_direct = {
+            "ok": False,
+            "capturedAt": now.isoformat(),
+            "error": "washer or dryer HAP services were not discovered",
+        }
+
+        current = washer_notifier.current_appliance_state(
+            latest,
+            {
+                **config(),
+                "id": "washer",
+                "accessory": "Washer",
+                "require_smarthq_heartbeat": True,
+            },
+            now,
+            failed_direct,
+        )
+        state, actions = washer_notifier.evolve_state(
+            {"lastInUse": True, "lastCycleActive": True, "primaryArmed": True, "runningSamples": 10},
+            current,
+            now,
+            {**config(), "finish_signal": "cycleActive"},
+        )
+
+        self.assertEqual(current["source"], "homebridge-cache")
+        self.assertTrue(current["cacheRecent"])
+        self.assertFalse(current["fresh"])
+        self.assertEqual(actions, [])
+        self.assertTrue(state["lastCycleActive"])
+        self.assertTrue(state["primaryArmed"])
 
     def test_reads_combo_state_from_live_hap_payload(self) -> None:
         now = datetime(2026, 7, 22, 13, 43, tzinfo=TZ)
@@ -571,28 +620,39 @@ class WasherNotifierTest(unittest.TestCase):
         )
 
     def test_homepod_announcement_restores_music_output_volume_and_playback(self) -> None:
+        preflight = SimpleNamespace(returncode=0, stderr="", stdout="restorable=true;state=playing;track=Test Song\n")
         completed = SimpleNamespace(returncode=0, stderr="", stdout="")
-        with mock.patch.object(washer_notifier.subprocess, "run", side_effect=[completed, completed]) as run:
-            result = washer_notifier.homepod_announcement(
-                "The washer has finished.",
-                {
-                    "homepod_targets": ["Primary HomePod", "Kitchen HomePod", "Office HomePod"],
-                    "homepod_volume": 45,
-                    "homepod_clip_seconds": 5,
-                },
-            )
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(washer_notifier, "DATA_DIR", Path(tmp)), mock.patch.object(
+                washer_notifier.subprocess, "run", side_effect=[preflight, completed, completed]
+            ) as run:
+                result = washer_notifier.homepod_announcement(
+                    "The washer has finished.",
+                    {
+                        "homepod_targets": ["Primary HomePod", "Kitchen HomePod", "Office HomePod"],
+                        "homepod_volume": 45,
+                        "homepod_clip_seconds": 5,
+                    },
+                )
         self.assertTrue(result["ok"])
-        self.assertEqual(run.call_args_list[0].args[0][0], "say")
-        apple_script = run.call_args_list[1].args[0][2]
+        self.assertEqual(run.call_args_list[0].args[0][0], "osascript")
+        self.assertEqual(run.call_args_list[1].args[0][0], "say")
+        apple_script = run.call_args_list[2].args[0][2]
         self.assertIn(
             'set targetNames to {"Primary HomePod", "Kitchen HomePod", "Office HomePod"}',
             apple_script,
         )
         self.assertIn("set originalPlayerState to player state", apple_script)
+        self.assertIn("set originalVolumeSettings to get volume settings", apple_script)
+        self.assertIn("set volume with output muted", apple_script)
+        self.assertIn("set volume output volume originalOutputVolume", apple_script)
+        self.assertIn("set volume without output muted", apple_script)
         self.assertIn("set originalTrack to current track", apple_script)
         self.assertIn("set originalPosition to player position", apple_script)
         self.assertIn("set end of targetVolumes to sound volume of deviceItem", apple_script)
         self.assertIn("set sound volume of deviceItem to 45", apple_script)
+        self.assertIn("if selected of deviceItem then set end of selectedTargetNames", apple_script)
+        self.assertIn('error "Music did not select a configured HomePod"', apple_script)
         self.assertIn(
             "set sound volume of item deviceIndex of targetDevices to item deviceIndex of targetVolumes",
             apple_script,
@@ -601,6 +661,25 @@ class WasherNotifierTest(unittest.TestCase):
         self.assertIn("play originalTrack", apple_script)
         self.assertIn("set player position to originalPosition", apple_script)
         self.assertIn("if originalPlayerState is paused then pause", apple_script)
+        self.assertIn('error "Music playback did not resume"', apple_script)
+
+    def test_homepod_announcement_protects_independent_playback_when_music_is_stopped(self) -> None:
+        preflight = SimpleNamespace(returncode=0, stderr="", stdout="restorable=false;state=stopped\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(washer_notifier, "DATA_DIR", Path(tmp)), mock.patch.object(
+                washer_notifier.subprocess, "run", return_value=preflight
+            ) as run:
+                result = washer_notifier.homepod_announcement(
+                    "The washer has finished.",
+                    {"id": "washer", "homepod_targets": ["Primary HomePod"]},
+                )
+
+            self.assertTrue(result["ok"])
+            self.assertTrue(result["skipped"])
+            self.assertTrue(result["protectedPlayback"])
+            self.assertEqual(run.call_count, 1)
+            event = json.loads((Path(tmp) / "homepod_announcement_events.jsonl").read_text())
+            self.assertEqual(event["preflight"], "restorable=false;state=stopped")
 
 
 if __name__ == "__main__":
