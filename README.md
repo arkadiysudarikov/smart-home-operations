@@ -92,10 +92,11 @@ real completion edge remains armed. Each appliance sends one
 unload reminder after 20 minutes when the door remains closed and suppresses
 spoken announcements outside the configured daytime window. The configured
 announcement transport runs the Mac shortcut `Relay Home Announcement`, which
-sends a prefixed self-message. An iPhone personal automation matching
-`homeannounce` immediately runs `Announce Washer Finished`; that shortcut uses
-Apple's native Intercom action for the Home zone `Indoors`. Music and its AirPlay
-device selection are never changed, so HomePod playback is not paused or replaced.
+sends the announcement text in a self-addressed email with subject
+`Homeannounce`. An iPhone personal email automation matching that subject
+extracts the message text and uses Apple's native Intercom action for the Home
+zone `Indoors`. Music and its AirPlay device selection are never changed, so
+HomePod playback is not paused or replaced.
 Each relay attempt is appended to `data/homepod_announcement_events.jsonl`. The
 same indoor announcement path speaks once when `✅ ENERGY OK` turns off,
 distinguishes `⚠️ ENERGY HIGH` from unavailable energy status, and speaks when

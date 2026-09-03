@@ -699,7 +699,6 @@ class WasherNotifierTest(unittest.TestCase):
                         "id": "washer",
                         "homepod_announcement_transport": "iphone_intercom",
                         "iphone_intercom_relay_shortcut": "Relay Home Announcement",
-                        "iphone_intercom_trigger_prefix": "homeannounce",
                         "homepod_targets": ["Primary HomePod", "Kitchen HomePod"],
                     },
                 )
@@ -710,7 +709,7 @@ class WasherNotifierTest(unittest.TestCase):
         self.assertEqual(result["transport"], "iphone_intercom")
         self.assertEqual(captured["command"][:3], ["/usr/bin/shortcuts", "run", "Relay Home Announcement"])
         self.assertEqual(captured["command"][3], "--input-path")
-        self.assertEqual(captured["message"], "homeannounce The washer has finished.\n")
+        self.assertEqual(captured["message"], "The washer has finished.\n")
         self.assertEqual(event["transport"], "iphone_intercom")
 
     def test_homepod_announcement_rejects_missing_targets(self) -> None:

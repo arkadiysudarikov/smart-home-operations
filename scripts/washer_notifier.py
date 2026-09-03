@@ -457,12 +457,10 @@ def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]
     transport = str(config.get("homepod_announcement_transport", "music_airplay"))
     if transport == "iphone_intercom":
         shortcut_name = str(config.get("iphone_intercom_relay_shortcut", "Relay Home Announcement"))
-        trigger_prefix = str(config.get("iphone_intercom_trigger_prefix", "homeannounce")).strip()
-        relay_message = f"{trigger_prefix} {message}".strip()
         try:
             with tempfile.TemporaryDirectory(prefix="smart-home-intercom-") as temp_dir:
                 input_path = Path(temp_dir) / "announcement.txt"
-                input_path.write_text(relay_message + "\n")
+                input_path.write_text(message.strip() + "\n")
                 proc = subprocess.run(
                     [
                         "/usr/bin/shortcuts",

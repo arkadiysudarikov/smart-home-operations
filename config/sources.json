@@ -217,8 +217,7 @@
   },
   "homepod_announcements": {
     "homepod_announcement_transport": "iphone_intercom",
-    "iphone_intercom_relay_shortcut": "Relay Home Announcement",
-    "iphone_intercom_trigger_prefix": "homeannounce"
+    "iphone_intercom_relay_shortcut": "Relay Home Announcement"
   },
   "washer_notifications": {
     "enabled": true,
