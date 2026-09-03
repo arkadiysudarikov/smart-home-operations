@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import tempfile
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -448,7 +449,60 @@ def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]
     appliance_id = str(config.get("id", "washer"))
     if not targets:
         return record_homepod_announcement(
-            {"ok": True, "skipped": True, "reason": "no HomePod targets configured"},
+            {"ok": False, "error": "no HomePod targets configured"},
+            message,
+            appliance_id,
+        )
+
+    transport = str(config.get("homepod_announcement_transport", "music_airplay"))
+    if transport == "iphone_intercom":
+        shortcut_name = str(config.get("iphone_intercom_relay_shortcut", "Relay Home Announcement"))
+        trigger_prefix = str(config.get("iphone_intercom_trigger_prefix", "homeannounce")).strip()
+        relay_message = f"{trigger_prefix} {message}".strip()
+        try:
+            with tempfile.TemporaryDirectory(prefix="smart-home-intercom-") as temp_dir:
+                input_path = Path(temp_dir) / "announcement.txt"
+                input_path.write_text(relay_message + "\n")
+                proc = subprocess.run(
+                    [
+                        "/usr/bin/shortcuts",
+                        "run",
+                        shortcut_name,
+                        "--input-path",
+                        str(input_path),
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+        except Exception as exc:
+            return record_homepod_announcement(
+                {
+                    "ok": False,
+                    "transport": transport,
+                    "targets": targets,
+                    "error": str(exc),
+                },
+                message,
+                appliance_id,
+            )
+        return record_homepod_announcement(
+            {
+                "ok": proc.returncode == 0,
+                "returncode": proc.returncode,
+                "transport": transport,
+                "targets": targets,
+                "relayShortcut": shortcut_name,
+                "error": proc.stderr.strip() or None,
+            },
+            message,
+            appliance_id,
+        )
+
+    if transport != "music_airplay":
+        return record_homepod_announcement(
+            {"ok": False, "transport": transport, "error": "unsupported HomePod announcement transport"},
             message,
             appliance_id,
         )
@@ -772,7 +826,12 @@ def main() -> int:
     if not config.get("enabled", False):
         print(f"{appliance_name} notifications are disabled.")
         return 0
-    config = {"id": appliance_id, "display_name": appliance_name, **config}
+    config = {
+        "id": appliance_id,
+        "display_name": appliance_name,
+        **full_config.get("homepod_announcements", {}),
+        **config,
+    }
     if args.announce_message:
         announcement_config = {
             **config,

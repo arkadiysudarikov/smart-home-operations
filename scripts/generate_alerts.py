@@ -349,6 +349,9 @@ def deliver_homepod_transition_announcement(
     announcement_id: str,
     runner: Any = None,
     updated_at: str | None = None,
+    start_hour: int = 8,
+    end_hour: int = 21,
+    cooldown_minutes: int = 120,
 ) -> dict[str, Any]:
     previous = load_json_file(state_path)
     previous = previous if isinstance(previous, dict) else {}
@@ -364,14 +367,44 @@ def deliver_homepod_transition_announcement(
         "lastDecision": "no transition",
     }
     if enabled and previous.get("active") is notify_from and active is notify_to:
-        delivery = run_indoor_homepod_announcement(message, announcement_id, runner, now)
-        state.update(
-            {
-                "lastDecision": delivery["status"],
-                "lastTransitionAt": now,
-                "lastDelivery": delivery,
+        previous_delivery = previous.get("lastDelivery") or {}
+        last_accepted_at = previous_delivery.get("at") if previous_delivery.get("status") == "accepted" else None
+        minutes_since_delivery = elapsed_minutes(last_accepted_at, now)
+        suppression: dict[str, Any] | None = None
+        if not within_local_hours(now, start_hour, end_hour):
+            suppression = {
+                "at": now,
+                "status": "skipped",
+                "reason": "quiet hours",
+                "allowedHours": f"{start_hour:02d}:00-{end_hour:02d}:00",
+                "message": message,
             }
-        )
+        elif minutes_since_delivery is not None and minutes_since_delivery < max(0, cooldown_minutes):
+            suppression = {
+                "at": now,
+                "status": "skipped",
+                "reason": "cooldown",
+                "cooldownMinutes": max(0, cooldown_minutes),
+                "minutesSinceLastDelivery": round(minutes_since_delivery, 1),
+                "message": message,
+            }
+        if suppression:
+            state.update(
+                {
+                    "lastDecision": f"skipped: {suppression['reason']}",
+                    "lastTransitionAt": now,
+                    "lastSuppression": suppression,
+                }
+            )
+        else:
+            delivery = run_indoor_homepod_announcement(message, announcement_id, runner, now)
+            state.update(
+                {
+                    "lastDecision": delivery["status"],
+                    "lastTransitionAt": now,
+                    "lastDelivery": delivery,
+                }
+            )
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
@@ -419,7 +452,7 @@ def run_indoor_homepod_announcement(
         "at": now,
         "status": "skipped" if skipped else ("accepted" if ok else "failed"),
         "message": message,
-        "transport": "indoor HomePods via Music AirPlay",
+        "transport": str(result_payload.get("transport") or "indoor HomePods"),
         "readReceipt": "unavailable",
     }
     if error:
@@ -523,9 +556,9 @@ def deliver_energy_ok_off_announcement(
             start_hour = int(alerts.get("energy_homepod_announcement_start_hour", 8))
             end_hour = int(alerts.get("energy_homepod_announcement_end_hour", 21))
             cooldown_minutes = max(0, int(alerts.get("energy_homepod_announcement_cooldown_minutes", 120)))
-            minutes_since_delivery = elapsed_minutes(
-                (previous.get("lastDelivery") or {}).get("at"), now
-            )
+            previous_delivery = previous.get("lastDelivery") or {}
+            last_accepted_at = previous_delivery.get("at") if previous_delivery.get("status") == "accepted" else None
+            minutes_since_delivery = elapsed_minutes(last_accepted_at, now)
             suppression: dict[str, Any] | None = None
             if not within_local_hours(now, start_hour, end_hour):
                 suppression = {
@@ -596,6 +629,9 @@ def deliver_bubbler_on_announcement(
         announcement_id="bubbler_on",
         runner=runner,
         updated_at=updated_at,
+        start_hour=int(alerts.get("bubbler_homepod_announcement_start_hour", 8)),
+        end_hour=int(alerts.get("bubbler_homepod_announcement_end_hour", 21)),
+        cooldown_minutes=int(alerts.get("bubbler_homepod_announcement_cooldown_minutes", 120)),
     )
 
 

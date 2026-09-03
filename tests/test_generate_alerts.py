@@ -549,6 +549,49 @@ class GenerateAlertsTest(unittest.TestCase):
             self.assertEqual(state["lastDecision"], "skipped: cooldown")
             self.assertEqual(state["lastSuppression"]["cooldownMinutes"], 120)
 
+    def test_energy_skipped_delivery_does_not_start_cooldown(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "energy_ok_announcement.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "energyOkActive": True,
+                        "energyHighActive": False,
+                        "lastDelivery": {"at": "2026-08-21T09:00:00-07:00", "status": "skipped"},
+                    }
+                )
+                + "\n"
+            )
+            self.patch_module(DATA_DIR=Path(tmp), ENERGY_OK_ANNOUNCEMENT_PATH=path)
+            calls: list[list[str]] = []
+
+            def runner(command: list[str], **_kwargs: Any) -> Any:
+                calls.append(command)
+                return SimpleNamespace(
+                    returncode=0,
+                    stdout=json.dumps({"ok": True, "transport": "iphone_intercom"}),
+                    stderr="",
+                )
+
+            state = generate_alerts.deliver_energy_ok_off_announcement(
+                {
+                    "alerts": {
+                        "energy_high_on_homepod_announcement": True,
+                        "energy_homepod_announcement_cooldown_minutes": 120,
+                    }
+                },
+                [
+                    {"id": "smart_home_high_load_v2", "active": False, "ok": True, "verified": True},
+                    {"id": "smart_home_energy_budget_v2", "active": True, "ok": True, "verified": True},
+                ],
+                runner,
+                "2026-08-21T09:44:29-07:00",
+            )
+
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(state["lastDecision"], "accepted")
+            self.assertEqual(state["lastDelivery"]["transport"], "iphone_intercom")
+
     def test_bubbler_on_announcement_is_delivered_once_per_transition(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bubbler_announcement.json"
@@ -577,6 +620,30 @@ class GenerateAlertsTest(unittest.TestCase):
             self.assertIn("bubbler_on", calls[0])
             self.assertEqual(first["lastDecision"], "accepted")
             self.assertEqual(second["lastDecision"], "no transition")
+
+    def test_bubbler_on_announcement_is_suppressed_during_quiet_hours(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "bubbler_announcement.json"
+            path.write_text(json.dumps({"active": False}) + "\n")
+            self.patch_module(DATA_DIR=Path(tmp), BUBBLER_ANNOUNCEMENT_PATH=path)
+            calls: list[list[str]] = []
+
+            state = generate_alerts.deliver_bubbler_on_announcement(
+                {
+                    "alerts": {
+                        "bubbler_on_homepod_announcement": True,
+                        "bubbler_homepod_announcement_start_hour": 8,
+                        "bubbler_homepod_announcement_end_hour": 21,
+                    }
+                },
+                lambda command, **_kwargs: calls.append(command),
+                "2026-08-20T02:15:00-07:00",
+                True,
+            )
+
+            self.assertEqual(calls, [])
+            self.assertEqual(state["lastDecision"], "skipped: quiet hours")
+            self.assertEqual(state["lastSuppression"]["allowedHours"], "08:00-21:00")
 
     def test_current_bubbler_active_reads_homebridge_characteristic(self) -> None:
         self.patch_module(

@@ -90,16 +90,19 @@ venting beyond the configured eight-hour maximum, the notifier sends one
 separate check-the-washer warning without claiming that venting finished; the
 real completion edge remains armed. Each appliance sends one
 unload reminder after 20 minutes when the door remains closed and suppresses
-spoken announcements outside the configured daytime window. The spoken clip is
-generated locally and played on the configured HomePod through Music's AirPlay
-interface only when Mac Music owns a playing or paused track that can be restored.
-Independently started HomePod playback cannot be reconstructed by Mac Music, so
-the spoken clip is safely skipped instead of taking over that session. For
-Mac-owned playback, restoration is verified. Each attempt is appended to
-`data/homepod_announcement_events.jsonl`. The same indoor announcement path
-speaks once when `✅ ENERGY OK` turns off, distinguishes `⚠️ ENERGY HIGH` from
-unavailable energy status, and speaks when `🐠 Bubbler` turns back on. Persisted
-transition state prevents repeat announcements on later refreshes.
+spoken announcements outside the configured daytime window. The configured
+announcement transport runs the Mac shortcut `Relay Home Announcement`, which
+sends a prefixed self-message. An iPhone personal automation matching
+`homeannounce` immediately runs `Announce Washer Finished`; that shortcut uses
+Apple's native Intercom action for the Home zone `Indoors`. Music and its AirPlay
+device selection are never changed, so HomePod playback is not paused or replaced.
+Each relay attempt is appended to `data/homepod_announcement_events.jsonl`. The
+same indoor announcement path speaks once when `✅ ENERGY OK` turns off,
+distinguishes `⚠️ ENERGY HIGH` from unavailable energy status, and speaks when
+`🐠 Bubbler` turns back on. Energy and bubbler announcements are limited to
+08:00-21:00 with a two-hour cooldown based only on accepted deliveries; skipped
+attempts do not consume the cooldown. Persisted transition state prevents repeat
+announcements on later refreshes.
 Sense/Envoy power
 data stays in `shadow` mode until multiple SmartHQ-labeled cycles have been
 reviewed; it cannot generate a fallback alert while shadowed.

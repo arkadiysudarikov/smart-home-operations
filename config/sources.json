@@ -190,6 +190,9 @@
     "energy_homepod_announcement_cooldown_minutes": 120,
     "bubbler_on_homepod_announcement": true,
     "bubbler_on_homepod_message": "The bubbler is back on.",
+    "bubbler_homepod_announcement_start_hour": 8,
+    "bubbler_homepod_announcement_end_hour": 21,
+    "bubbler_homepod_announcement_cooldown_minutes": 120,
     "energy_balance_residual_alert_percent": 5,
     "solar_parity_alert_percent": 10
   },
@@ -211,6 +214,11 @@
       "access_points": ["Garage", "Extender"],
       "mode": "any_phone"
     }
+  },
+  "homepod_announcements": {
+    "homepod_announcement_transport": "iphone_intercom",
+    "iphone_intercom_relay_shortcut": "Relay Home Announcement",
+    "iphone_intercom_trigger_prefix": "homeannounce"
   },
   "washer_notifications": {
     "enabled": true,

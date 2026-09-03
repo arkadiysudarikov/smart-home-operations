@@ -681,6 +681,49 @@ class WasherNotifierTest(unittest.TestCase):
             event = json.loads((Path(tmp) / "homepod_announcement_events.jsonl").read_text())
             self.assertEqual(event["preflight"], "restorable=false;state=stopped")
 
+    def test_homepod_announcement_relays_to_iphone_intercom_without_using_music(self) -> None:
+        captured: dict[str, Any] = {}
+
+        def run(command: list[str], **_kwargs: Any) -> Any:
+            captured["command"] = command
+            captured["message"] = Path(command[-1]).read_text()
+            return SimpleNamespace(returncode=0, stderr="", stdout="")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(washer_notifier, "DATA_DIR", Path(tmp)), mock.patch.object(
+                washer_notifier.subprocess, "run", side_effect=run
+            ):
+                result = washer_notifier.homepod_announcement(
+                    "The washer has finished.",
+                    {
+                        "id": "washer",
+                        "homepod_announcement_transport": "iphone_intercom",
+                        "iphone_intercom_relay_shortcut": "Relay Home Announcement",
+                        "iphone_intercom_trigger_prefix": "homeannounce",
+                        "homepod_targets": ["Primary HomePod", "Kitchen HomePod"],
+                    },
+                )
+
+            event = json.loads((Path(tmp) / "homepod_announcement_events.jsonl").read_text())
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["transport"], "iphone_intercom")
+        self.assertEqual(captured["command"][:3], ["/usr/bin/shortcuts", "run", "Relay Home Announcement"])
+        self.assertEqual(captured["command"][3], "--input-path")
+        self.assertEqual(captured["message"], "homeannounce The washer has finished.\n")
+        self.assertEqual(event["transport"], "iphone_intercom")
+
+    def test_homepod_announcement_rejects_missing_targets(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(washer_notifier, "DATA_DIR", Path(tmp)):
+                result = washer_notifier.homepod_announcement(
+                    "The washer has finished.",
+                    {"homepod_announcement_transport": "iphone_intercom", "homepod_targets": []},
+                )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"], "no HomePod targets configured")
+
 
 if __name__ == "__main__":
     unittest.main()
