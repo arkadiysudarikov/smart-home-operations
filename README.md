@@ -112,6 +112,17 @@ distinguishes `⚠️ ENERGY HIGH` from unavailable energy status, and speaks wh
 08:00-21:00 with a two-hour cooldown based only on accepted deliveries; skipped
 attempts do not consume the cooldown. Persisted transition state prevents repeat
 announcements on later refreshes.
+Additional household reminders use fresh successful Alarm.com portal captures:
+garage doors and the Sideyard Gate left open for 15 continuously observed minutes
+produce one combined indoor Intercom reminder, only between 08:00 and 21:00.
+Unknown/stale readings break the timer, and an attempted reminder is not repeated
+until the device is observed closed. No door, lock, or Alarm.com automation is changed.
+For an on-request bedtime summary, run `python3 scripts/generate_alerts.py
+--bedtime-check` from the deployed runtime; add `--speak` to announce it.
+Only reporting sensors are covered. Gate-unlocked, leak/smoke/CO and missed-charge
+alerts are not enabled without corresponding reliable telemetry and, for charging,
+an explicit expected start time. Charging-finished announcements are excluded.
+
 Sense/Envoy power
 data stays in `shadow` mode until multiple SmartHQ-labeled cycles have been
 reviewed; it cannot generate a fallback alert while shadowed.

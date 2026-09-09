@@ -196,6 +196,17 @@
     "energy_balance_residual_alert_percent": 5,
     "solar_parity_alert_percent": 10
   },
+  "household_announcements": {
+    "enabled": true,
+    "start_hour": 8,
+    "end_hour": 21,
+    "source_max_age_minutes": 5,
+    "rules": [
+      {"key": "garages:104430779-2207", "active_state": "open", "after_minutes": 15, "message": "A garage door has been open for at least fifteen minutes. Please check the garage."},
+      {"key": "garages:104430779-2210", "active_state": "open", "after_minutes": 15, "message": "A garage door has been open for at least fifteen minutes. Please check the garage."},
+      {"key": "sensors:104430779-26896", "active_state": "open", "after_minutes": 15, "message": "The sideyard gate has been open for at least fifteen minutes."}
+    ]
+  },
   "actions": {
     "bind_host": "127.0.0.1",
     "port": 18765,

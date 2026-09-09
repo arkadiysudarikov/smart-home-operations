@@ -29,6 +29,7 @@ ENERGY_ALERT_STABILIZATION_PATH = DATA_DIR / "energy_alert_stabilization.json"
 ENERGY_ALERT_DELIVERY_PATH = DATA_DIR / "energy_alert_delivery.json"
 ENERGY_OK_ANNOUNCEMENT_PATH = DATA_DIR / "energy_ok_announcement.json"
 BUBBLER_ANNOUNCEMENT_PATH = DATA_DIR / "bubbler_announcement.json"
+HOUSEHOLD_ANNOUNCEMENT_PATH = DATA_DIR / "household_announcements.json"
 ENERGY_HIGH_CONTEXT_PATH = DATA_DIR / "latest_energy_high_context.json"
 ENERGY_HIGH_CONTEXT_REPORT_PATH = REPORT_DIR / "energy_high_context.md"
 ENERGY_HIGH_EVENTS_PATH = DATA_DIR / "energy_high_events.jsonl"
@@ -3474,8 +3475,107 @@ def write_homekit_report(
     (REPORT_DIR / "homekit_virtual_sensors.md").write_text("\n".join(lines) + "\n")
 
 
+def household_observations(alarm: dict[str, Any], now: str, max_age: float = 5) -> dict[str, dict[str, Any]]:
+    """Only a successful, recent portal capture may establish a door state."""
+    age = elapsed_minutes(alarm.get("generatedAt"), now)
+    alarm_state = alarm.get("alarmState") or {}
+    if age is None or age < 0 or age > max_age or alarm_state.get("ok") is not True:
+        return {}
+    observations = {}
+    for system in alarm_state.get("systems") or []:
+        for group in ("garages", "sensors", "locks"):
+            for item in (system.get("components") or {}).get(group) or []:
+                device_id = str(item.get("id") or "")
+                if not device_id:
+                    continue
+                state = str(item.get("stateText") or "").lower()
+                valid = ("locked", "unlocked") if group == "locks" else ("open", "closed")
+                if state not in valid:
+                    continue
+                observations[f"{group}:{device_id}"] = {
+                    "name": str(item.get("description") or "Unnamed device"),
+                    "group": group, "state": state,
+                }
+    return observations
+
+
+def evaluate_household_reminders(config: dict[str, Any], alarm: dict[str, Any],
+                                 previous: dict[str, Any], now: str) -> tuple[dict[str, Any], list[str]]:
+    policy = config.get("household_announcements") or {}
+    max_age = float(policy.get("source_max_age_minutes", 5))
+    observations = household_observations(alarm, now, max_age)
+    episodes = {}
+    pending = []
+    for rule in policy.get("rules") or []:
+        key = rule["key"]
+        observation = observations.get(key)
+        old = (previous.get("episodes") or {}).get(key) or {}
+        if not observation:
+            # Break timing continuity, but preserve an already attempted reminder until closed.
+            if old:
+                episodes[key] = {**old, "lastObservedAt": None}
+            continue
+        if observation["state"] != rule["active_state"]:
+            continue
+        gap = elapsed_minutes(old.get("lastObservedAt"), now)
+        continuous = gap is not None and 0 <= gap <= max_age
+        episode = dict(old) if continuous else {"since": now, "attempted": bool(old.get("attempted"))}
+        episode["lastObservedAt"] = now
+        episodes[key] = episode
+        duration = elapsed_minutes(episode["since"], now) or 0
+        if (policy.get("enabled") and not episode.get("attempted")
+                and duration >= float(rule.get("after_minutes", 15))
+                and within_local_hours(now, policy.get("start_hour", 8), policy.get("end_hour", 21))):
+            pending.append(key)
+    return {"updatedAt": now, "episodes": episodes, "sourceAvailable": bool(observations)}, pending
+
+
+def deliver_household_reminders(config: dict[str, Any], alarm: dict[str, Any],
+                                runner: Any = None, updated_at: str | None = None) -> dict[str, Any]:
+    now = updated_at or datetime.now(LOCAL_TZ).isoformat(timespec="seconds")
+    previous = load_json_file(HOUSEHOLD_ANNOUNCEMENT_PATH) or {}
+    state, pending = evaluate_household_reminders(config, alarm, previous, now)
+    if pending:
+        rules = {rule["key"]: rule for rule in config["household_announcements"]["rules"]}
+        # Combine simultaneous openings into one Intercom, and never retry uncertain delivery.
+        message = " ".join(dict.fromkeys(rules[key]["message"] for key in pending))
+        for key in pending:
+            state["episodes"][key]["attempted"] = True
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        HOUSEHOLD_ANNOUNCEMENT_PATH.write_text(json.dumps(state, indent=2) + "\n")
+        state["lastDelivery"] = run_indoor_homepod_announcement(message, "household_reminder", runner, now)
+    elif previous.get("lastDelivery"):
+        state["lastDelivery"] = previous["lastDelivery"]
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    HOUSEHOLD_ANNOUNCEMENT_PATH.write_text(json.dumps(state, indent=2) + "\n")
+    return state
+
+
+def bedtime_message(alarm: dict[str, Any], now: str) -> str:
+    observations = household_observations(alarm, now)
+    if not observations:
+        return "I cannot check the doors and locks because current home status is unavailable."
+    opened = [o["name"] for o in observations.values() if o["state"] == "open"]
+    unlocked = [o["name"] for o in observations.values() if o["state"] == "unlocked"]
+    parts = ["Bedtime check."]
+    parts.append("Open: " + ", ".join(opened) + "." if opened else "The reported doors and windows are closed.")
+    parts.append("Unlocked: " + ", ".join(unlocked) + "." if unlocked else "No unlocked locks were reported.")
+    parts.append("This covers reporting sensors only.")
+    return " ".join(parts)
+
+
 def main() -> int:
     config = load_config()
+    if "--bedtime-check" in sys.argv:
+        now = datetime.now(LOCAL_TZ).isoformat(timespec="seconds")
+        message = bedtime_message(load_alarm_com(), now)
+        if "--speak" in sys.argv:
+            if not running_from_runtime_root():
+                raise SystemExit("Run spoken bedtime checks from the deployed runtime.")
+            print(json.dumps(run_indoor_homepod_announcement(message, "bedtime_check")))
+        else:
+            print(message)
+        return 0
     latest = load_latest()
     window = max(
         int(config["alerts"]["alarm_websocket_recent_window"]),
@@ -3498,6 +3598,8 @@ def main() -> int:
     updates = update_homekit_virtual_sensors(config, alerts, projection_stabilization)
     energy_ok_announcement = deliver_energy_ok_off_announcement(config, updates)
     bubbler_announcement = deliver_bubbler_on_announcement(config)
+    if running_from_runtime_root():
+        deliver_household_reminders(config, load_alarm_com())
     write_homekit_report(
         updates,
         projection_stabilization,
