@@ -94,9 +94,15 @@ spoken announcements outside the configured daytime window. The configured
 announcement transport runs the Mac shortcut `Relay Home Announcement`, which
 sends the announcement text in a self-addressed email with subject
 `Homeannounce`. An iPhone personal email automation matching that subject
-extracts the message text and uses Apple's native Intercom action for the Home
-zone `Indoors`. Music and its AirPlay device selection are never changed, so
-HomePod playback is not paused or replaced.
+must bind `Get text from` to `Shortcut Input` and select the email's `Content`
+property, then pass the resulting `Text` to Apple's native Intercom action for
+the Home zone `Indoors`. Leaving the pale `Input` placeholder unassigned does
+not supply the received email. Set the automation to `Run Immediately`.
+The relay does not manipulate Mac Music or AirPlay selection. HomePod music
+continuation/resumption must be verified separately from audible speech.
+After correcting this input binding on September 9, 2026, the user confirmed
+hearing the automatic `green lighthouse` test on the HomePods; music resumption
+remains unverified.
 Each relay attempt is appended to `data/homepod_announcement_events.jsonl`. The
 same indoor announcement path speaks once when `✅ ENERGY OK` turns off,
 distinguishes `⚠️ ENERGY HIGH` from unavailable energy status, and speaks when
