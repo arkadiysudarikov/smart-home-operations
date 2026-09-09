@@ -101,8 +101,10 @@ not supply the received email. Set the automation to `Run Immediately`.
 The relay does not manipulate Mac Music or AirPlay selection. HomePod music
 continuation/resumption must be verified separately from audible speech.
 After correcting this input binding on September 9, 2026, the user confirmed
-hearing the automatic `green lighthouse` test on the HomePods; music resumption
-remains unverified.
+hearing the automatic `green lighthouse` test on the HomePods. The subsequent
+automatic `purple penguin` test was also heard, and the user confirmed music
+resumed afterward. Timing against the next real laundry cycle remains a
+separate follow-up check.
 Each relay attempt is appended to `data/homepod_announcement_events.jsonl`. The
 same indoor announcement path speaks once when `✅ ENERGY OK` turns off,
 distinguishes `⚠️ ENERGY HIGH` from unavailable energy status, and speaks when
