@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import subprocess
+import tempfile
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -110,7 +111,13 @@ def current_appliance_state(
         return direct
     captured_at = parse_time(latest.get("captured_at"))
     max_age_minutes = int(config.get("max_snapshot_age_minutes", 10))
-    fresh = bool(captured_at and timedelta(0) <= now - captured_at <= timedelta(minutes=max_age_minutes))
+    cache_recent = bool(captured_at and timedelta(0) <= now - captured_at <= timedelta(minutes=max_age_minutes))
+    heartbeat_required = bool(config.get("require_smarthq_heartbeat", False))
+    # The persisted Homebridge cache can contain internally inconsistent SmartHQ
+    # characteristics during a child-bridge discovery failure. When a live API
+    # heartbeat is required, keep cache values diagnostic-only so they cannot
+    # create a false completion edge.
+    fresh = cache_recent and not heartbeat_required
     accessory = str(config.get("accessory", "Washer"))
     cycle_service = str(config.get("cycle_service", accessory))
     door_service = str(config.get("door_service", f"{accessory} Door"))
@@ -125,6 +132,8 @@ def current_appliance_state(
         "inUse": in_use,
         "cycleActive": cycle_active,
         "doorOpen": door_open,
+        "heartbeatFresh": False,
+        "cacheRecent": cache_recent,
         "source": "homebridge-cache",
     }
 
@@ -419,11 +428,121 @@ def mac_notification(message: str, title: str, sound_name: str | None = None) ->
     return {"ok": proc.returncode == 0, "returncode": proc.returncode, "error": proc.stderr.strip() or None}
 
 
+def record_homepod_announcement(result: dict[str, Any], message: str, appliance_id: str) -> dict[str, Any]:
+    event = {
+        "at": datetime.now(timezone.utc).astimezone(LOCAL_TZ).isoformat(timespec="seconds"),
+        "announcementId": appliance_id,
+        "message": message,
+        **result,
+    }
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        with (DATA_DIR / "homepod_announcement_events.jsonl").open("a") as handle:
+            handle.write(json.dumps(event, sort_keys=True) + "\n")
+    except OSError:
+        pass
+    return result
+
+
 def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]:
     targets = [str(item) for item in config.get("homepod_targets", []) if str(item).strip()]
-    if not targets:
-        return {"ok": False, "skipped": True, "error": "no HomePod targets configured"}
     appliance_id = str(config.get("id", "washer"))
+    if not targets:
+        return record_homepod_announcement(
+            {"ok": False, "error": "no HomePod targets configured"},
+            message,
+            appliance_id,
+        )
+
+    transport = str(config.get("homepod_announcement_transport", "music_airplay"))
+    if transport == "iphone_intercom":
+        shortcut_name = str(config.get("iphone_intercom_relay_shortcut", "Relay Home Announcement"))
+        try:
+            with tempfile.TemporaryDirectory(prefix="smart-home-intercom-") as temp_dir:
+                input_path = Path(temp_dir) / "announcement.txt"
+                input_path.write_text(message.strip() + "\n")
+                proc = subprocess.run(
+                    [
+                        "/usr/bin/shortcuts",
+                        "run",
+                        shortcut_name,
+                        "--input-path",
+                        str(input_path),
+                    ],
+                    text=True,
+                    capture_output=True,
+                    timeout=30,
+                    check=False,
+                )
+        except Exception as exc:
+            return record_homepod_announcement(
+                {
+                    "ok": False,
+                    "transport": transport,
+                    "targets": targets,
+                    "error": str(exc),
+                },
+                message,
+                appliance_id,
+            )
+        return record_homepod_announcement(
+            {
+                "ok": proc.returncode == 0,
+                "returncode": proc.returncode,
+                "transport": transport,
+                "targets": targets,
+                "relayShortcut": shortcut_name,
+                "error": proc.stderr.strip() or None,
+            },
+            message,
+            appliance_id,
+        )
+
+    if transport != "music_airplay":
+        return record_homepod_announcement(
+            {"ok": False, "transport": transport, "error": "unsupported HomePod announcement transport"},
+            message,
+            appliance_id,
+        )
+
+    require_restorable = bool(config.get("homepod_require_restorable_music_session", True))
+    if require_restorable:
+        preflight_script = '''tell application "Music"
+set originalPlayerState to player state
+if originalPlayerState is stopped then return "restorable=false;state=stopped"
+try
+    set originalTrackName to name of current track
+on error
+    return "restorable=false;state=" & (originalPlayerState as text) & ";track=unavailable"
+end try
+return "restorable=true;state=" & (originalPlayerState as text) & ";track=" & originalTrackName
+end tell'''
+        try:
+            preflight = subprocess.run(
+                ["osascript", "-e", preflight_script],
+                text=True,
+                capture_output=True,
+                timeout=10,
+                check=False,
+            )
+            preflight_result = preflight.stdout.strip()
+        except Exception as exc:
+            preflight = None
+            preflight_result = f"preflight-error={exc}"
+        if preflight is None or preflight.returncode != 0 or not preflight_result.startswith("restorable=true;"):
+            return record_homepod_announcement(
+                {
+                    "ok": True,
+                    "skipped": True,
+                    "protectedPlayback": True,
+                    "reason": "Music does not own a restorable playback session",
+                    "preflight": preflight_result or (preflight.stderr.strip() if preflight else None),
+                    "targets": targets,
+                },
+                message,
+                appliance_id,
+            )
+
     audio_path = DATA_DIR / f"{appliance_id}_finished.aiff"
     speech = subprocess.run(
         ["say", "-o", str(audio_path), message],
@@ -433,44 +552,110 @@ def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]
         check=False,
     )
     if speech.returncode != 0:
-        return {"ok": False, "returncode": speech.returncode, "error": speech.stderr.strip() or "say failed"}
+        return record_homepod_announcement(
+            {"ok": False, "returncode": speech.returncode, "error": speech.stderr.strip() or "say failed"},
+            message,
+            appliance_id,
+        )
 
     target_list = "{" + ", ".join(json.dumps(name) for name in targets) + "}"
     volume = max(0, min(100, int(config.get("homepod_volume", 45))))
     delay_seconds = max(2, min(30, int(config.get("homepod_clip_seconds", 5))))
-    script = f'''tell application "Music"
+    script = f'''set originalVolumeSettings to get volume settings
+set originalOutputVolume to output volume of originalVolumeSettings
+set originalOutputMuted to output muted of originalVolumeSettings
+tell application "Music"
 set originalDevices to current AirPlay devices
+set originalPlayerState to player state
+set originalPosition to 0
+set hadOriginalTrack to false
+try
+    set originalTrack to current track
+    set originalPosition to player position
+    if originalPlayerState is playing or originalPlayerState is paused then set hadOriginalTrack to true
+end try
 set targetNames to {target_list}
 set targetDevices to {{}}
+set targetVolumes to {{}}
 repeat with deviceItem in every AirPlay device
-    if (name of deviceItem is in targetNames) and (available of deviceItem) then set end of targetDevices to deviceItem
+    if (name of deviceItem is in targetNames) and (available of deviceItem) then
+        set end of targetDevices to deviceItem
+        set end of targetVolumes to sound volume of deviceItem
+    end if
 end repeat
 if (count of targetDevices) is 0 then error "No configured HomePod is available"
 try
+    set volume with output muted
     set current AirPlay devices to targetDevices
     delay 1
+    set selectedTargetNames to {{}}
+    repeat with deviceItem in targetDevices
+        if selected of deviceItem then set end of selectedTargetNames to name of deviceItem
+    end repeat
+    if (count of selectedTargetNames) is 0 then error "Music did not select a configured HomePod"
     repeat with deviceItem in targetDevices
         set sound volume of deviceItem to {volume}
     end repeat
     play POSIX file {json.dumps(str(audio_path))} once true
     delay {delay_seconds}
     stop
+    repeat with deviceIndex from 1 to count of targetDevices
+        set sound volume of item deviceIndex of targetDevices to item deviceIndex of targetVolumes
+    end repeat
     set current AirPlay devices to originalDevices
+    delay 1
+    set volume output volume originalOutputVolume
+    if originalOutputMuted then
+        set volume with output muted
+    else
+        set volume without output muted
+    end if
+    if hadOriginalTrack then
+        play originalTrack
+        set player position to originalPosition
+        if originalPlayerState is paused then
+            pause
+        else if originalPlayerState is playing then
+            play
+            delay 1
+            if player state is not playing then error "Music playback did not resume"
+        end if
+    end if
 on error errorMessage number errorNumber
     try
         stop
+        repeat with deviceIndex from 1 to count of targetDevices
+            set sound volume of item deviceIndex of targetDevices to item deviceIndex of targetVolumes
+        end repeat
         set current AirPlay devices to originalDevices
+        delay 1
+        if hadOriginalTrack then
+            play originalTrack
+            set player position to originalPosition
+            if originalPlayerState is paused then pause
+        end if
+    end try
+    try
+        set volume output volume originalOutputVolume
+        if originalOutputMuted then
+            set volume with output muted
+        else
+            set volume without output muted
+        end if
     end try
     error errorMessage number errorNumber
 end try
+return "selectedTargets=" & (selectedTargetNames as text)
 end tell'''
     proc = subprocess.run(["osascript", "-e", script], text=True, capture_output=True, timeout=45, check=False)
-    return {
+    return record_homepod_announcement({
         "ok": proc.returncode == 0,
         "returncode": proc.returncode,
         "targets": targets,
+        "routeVerification": proc.stdout.strip() or None,
         "error": proc.stderr.strip() or None,
-    }
+        "preflight": preflight_result if require_restorable else "disabled",
+    }, message, appliance_id)
 
 
 def power_observation(current: dict[str, Any], now: datetime, appliance_id: str) -> dict[str, Any]:
@@ -628,6 +813,8 @@ def main() -> int:
     )
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--now", help="override the current local time for testing")
+    parser.add_argument("--announce-message", help="announce an arbitrary message using the configured indoor HomePods")
+    parser.add_argument("--announcement-id", help="audio filename identifier for an arbitrary announcement")
     args = parser.parse_args()
 
     full_config = load_json(CONFIG_PATH, {})
@@ -637,7 +824,20 @@ def main() -> int:
     if not config.get("enabled", False):
         print(f"{appliance_name} notifications are disabled.")
         return 0
-    config = {"id": appliance_id, "display_name": appliance_name, **config}
+    config = {
+        "id": appliance_id,
+        "display_name": appliance_name,
+        **full_config.get("homepod_announcements", {}),
+        **config,
+    }
+    if args.announce_message:
+        announcement_config = {
+            **config,
+            "id": str(args.announcement_id or appliance_id),
+        }
+        result = homepod_announcement(str(args.announce_message), announcement_config)
+        print(json.dumps(result, sort_keys=True))
+        return 0 if result.get("ok") else 1
     state_path = DATA_DIR / f"{appliance_id}_notifier_state.json"
     status_path = DATA_DIR / f"latest_{appliance_id}_notifier.json"
     power_log_path = DATA_DIR / f"{appliance_id}_power_shadow.jsonl"

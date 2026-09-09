@@ -67,6 +67,7 @@ DRIFT_CHECK_FILES = [
     "scripts/set_alarm_light.js",
     "scripts/set_alarm_panel.js",
     "scripts/smart_home_snapshot.py",
+    "scripts/sync_display_awake_policy.py",
     "scripts/update_office_tahoma_ip.js",
     "scripts/washer_notifier.py",
 ]
