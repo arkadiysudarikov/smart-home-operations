@@ -3505,6 +3505,15 @@ def household_observations(alarm: dict[str, Any], now: str, max_age: float = 20)
         for key, item in list(observations.items()):
             if item["group"] == "sensors" and any(word in item["name"].lower() for word in ("door", "slider", "window")):
                 observations["cooling:" + key] = {**item, "state": "open" if cooling and item["state"] == "open" else "closed"}
+    for thermostat in thermostats:
+        temperature = thermostat.get("ambientTemp")
+        if (not thermostat.get("id") or thermostat.get("isMalfunctioning") or not isinstance(temperature, (float, int))
+                or isinstance(temperature, bool) or not 32 <= temperature <= 120):
+            continue
+        for condition, abnormal in (("hot", temperature >= 85), ("cold", temperature <= 55)):
+            observations[f"temperature:{condition}:{thermostat['id']}"] = {
+                "name": "Indoor temperature", "group": "temperature",
+                "state": "open" if abnormal else "closed"}
     return observations
 
 
@@ -3515,6 +3524,10 @@ def household_rules(config: dict[str, Any], observations: dict[str, Any]) -> lis
         rules += [{"key": key, "active_state": "open", "after_minutes": 5,
                    "message": f"The air conditioning is running while {item['name']} is open."}
                   for key, item in observations.items() if key.startswith("cooling:")]
+    if policy.get("temperature_enabled"):
+        rules += [{"key": key, "active_state": "open", "after_minutes": 30,
+                   "message": "The house has stayed " + ("at or above eighty five" if ":hot:" in key else "at or below fifty five") + " degrees for thirty minutes. Please check the temperature."}
+                  for key in observations if key.startswith("temperature:")]
     return rules
 
 
@@ -3525,7 +3538,7 @@ def evaluate_household_reminders(config: dict[str, Any], alarm: dict[str, Any],
     observations = household_observations(alarm, now, max_age)
     sample_at = str(alarm.get("generatedAt") or now)
     episodes = {key: {**value, "lastObservedAt": None} for key, value in
-                (previous.get("episodes") or {}).items() if key.startswith("cooling:") and key not in observations}
+                (previous.get("episodes") or {}).items() if key.startswith(("cooling:", "temperature:")) and key not in observations}
     pending = []
     for rule in household_rules(config, observations):
         key = rule["key"]
@@ -3625,6 +3638,18 @@ def deliver_household_reminders(config: dict[str, Any], alarm: dict[str, Any],
     state, pending = evaluate_household_reminders(config, alarm, previous, now)
     daily_state, daily_messages = daily_household_messages(config, alarm, envoy or {}, previous, now)
     state.update(daily_state)
+    policy = config.get("household_announcements") or {}
+    if policy.get("enabled") and policy.get("rain_open_enabled"):
+        from household_weather import check
+        state["rain"], rain_message = check(previous.get("rain") or {}, household_observations(alarm, now), datetime.fromisoformat(now.replace("Z", "+00:00")).timestamp())
+        if rain_message and within_local_hours(now, policy.get("start_hour", 8), policy.get("end_hour", 21)):
+            daily_messages["rain_open"] = rain_message
+    if policy.get("enabled") and policy.get("internet_restored_enabled"):
+        from internet_restored import evaluate, reachable
+        network, restored = evaluate(previous.get("internet") or {}, reachable(), datetime.fromisoformat(now.replace("Z", "+00:00")).timestamp())
+        state["internet"] = network
+        if restored and within_local_hours(now, policy.get("start_hour", 8), policy.get("end_hour", 21)):
+            daily_messages["internet_restored"] = "Internet access is back after a confirmed connectivity outage."
     if pending or daily_messages:
         rules = {rule["key"]: rule for rule in household_rules(config, household_observations(alarm, now))}
         # Combine simultaneous openings into one Intercom, and never retry uncertain delivery.
@@ -3647,7 +3672,7 @@ def bedtime_message(alarm: dict[str, Any], now: str) -> str:
     observations = household_observations(alarm, now)
     if not observations:
         return "I cannot check the doors and locks because current home status is unavailable."
-    observations = {key: item for key, item in observations.items() if not key.startswith("cooling:")}
+    observations = {key: item for key, item in observations.items() if not key.startswith(("cooling:", "temperature:"))}
     opened = [o["name"] for o in observations.values() if o["state"] == "open"]
     unlocked = [o["name"] for o in observations.values() if o["state"] == "unlocked"]
     parts = ["Bedtime check."]
@@ -3659,6 +3684,17 @@ def bedtime_message(alarm: dict[str, Any], now: str) -> str:
 
 def main() -> int:
     config = load_config()
+    if "--help-announcement" in sys.argv:
+        message = "Someone at home needs help. Please check on them."
+        if "--speak" in sys.argv:
+            if not running_from_runtime_root():
+                raise SystemExit("Spoken help requires the deployed runtime.")
+            delivery = run_indoor_homepod_announcement(message, "help_request")
+            print(json.dumps(delivery))
+            return 0 if delivery.get("status") == "accepted" else 1
+        else:
+            print(message)
+        return 0
     if "--bedtime-check" in sys.argv or "--leaving-home-check" in sys.argv:
         now = datetime.now(LOCAL_TZ).isoformat(timespec="seconds")
         message = bedtime_message(load_alarm_com(), now)

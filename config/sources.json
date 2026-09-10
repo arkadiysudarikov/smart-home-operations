@@ -197,6 +197,9 @@
     "solar_parity_alert_percent": 10
   },
   "household_announcements": {
+    "temperature_enabled": true,
+    "rain_open_enabled": true,
+    "internet_restored_enabled": true,
     "enabled": true,
     "start_hour": 8,
     "end_hour": 21,

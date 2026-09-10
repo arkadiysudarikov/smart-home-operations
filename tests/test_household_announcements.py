@@ -1,5 +1,7 @@
 import importlib.util
 import unittest
+import tempfile
+from unittest import mock
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -9,6 +11,28 @@ spec.loader.exec_module(alerts)
 
 
 class HouseholdTests(unittest.TestCase):
+    def test_disabled_policy_does_not_probe_or_announce(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(alerts, "DATA_DIR", Path(tmp)), mock.patch.object(alerts, "HOUSEHOLD_ANNOUNCEMENT_PATH", Path(tmp) / "state.json"), mock.patch("internet_restored.reachable") as probe, mock.patch("household_weather.check") as weather, mock.patch.object(alerts, "run_indoor_homepod_announcement") as speak:
+            alerts.deliver_household_reminders({"household_announcements": {"enabled": False, "rain_open_enabled": True, "internet_restored_enabled": True}}, {}, updated_at="2026-09-10T18:00:00Z")
+            probe.assert_not_called()
+            weather.assert_not_called()
+            speak.assert_not_called()
+
+    def test_help_failure_is_not_reported_as_success(self):
+        with mock.patch.object(alerts.sys, "argv", ["generate_alerts.py", "--help-announcement", "--speak"]), mock.patch.object(alerts, "running_from_runtime_root", return_value=True), mock.patch.object(alerts, "load_config", return_value={}), mock.patch.object(alerts, "run_indoor_homepod_announcement", return_value={"status": "failed"}), mock.patch("builtins.print"):
+            self.assertEqual(alerts.main(), 1)
+
+    def test_temperature_requires_fresh_sustained_readings(self):
+        config = {"household_announcements": {"enabled": True, "temperature_enabled": True}}
+        state = {}
+        for minute in (0, 15, 30):
+            now = (datetime(2026, 9, 10, 18, tzinfo=timezone.utc) + timedelta(minutes=minute)).isoformat()
+            alarm = {"generatedAt": now, "alarmState": {"ok": True, "systems": [{"components": {"thermostats": [{"id": "test", "ambientTemp": 86, "stateText": "Cooling"}]}}]}}
+            state, pending = alerts.evaluate_household_reminders(config, alarm, state, now)
+            self.assertEqual(bool(pending), minute == 30)
+        alarm["alarmState"]["systems"][0]["components"]["thermostats"][0]["ambientTemp"] = 73
+        self.assertEqual(alerts.evaluate_household_reminders(config, alarm, state, now)[1], [])
+
     def setUp(self):
         self.start = datetime(2026, 9, 9, 20, tzinfo=timezone.utc)
         self.config = {"household_announcements": {"enabled": True, "rules": [

@@ -70,6 +70,9 @@ DRIFT_CHECK_FILES = [
     "scripts/sync_display_awake_policy.py",
     "scripts/update_office_tahoma_ip.js",
     "scripts/washer_notifier.py",
+    "scripts/calendar_announcements.py",
+    "scripts/internet_restored.py",
+    "scripts/household_weather.py",
 ]
 DRIFT_CHECK_EXTERNAL_FILES = [
     (
