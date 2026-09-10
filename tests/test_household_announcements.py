@@ -38,11 +38,61 @@ class HouseholdTests(unittest.TestCase):
     def test_stale_gap_restarts_timer(self):
         state, _ = self.evaluate(0)
         state, _ = self.evaluate(3, state)
-        state, pending = self.evaluate(16, state, stale=True)
+        state, pending = self.evaluate(26, state, stale=True)
         self.assertEqual(pending, [])
-        state, pending = self.evaluate(18, state)
+        state, pending = self.evaluate(28, state)
         self.assertEqual(pending, [])
-        self.assertEqual(state["episodes"]["garages:1"]["since"], (self.start + timedelta(minutes=18)).isoformat())
+        self.assertEqual(state["episodes"]["garages:1"]["since"], (self.start + timedelta(minutes=28)).isoformat())
+
+    def test_duplicate_capture_does_not_advance_timer(self):
+        state, _ = self.evaluate(0)
+        state, pending = self.evaluate(15, state, stale=True)
+        self.assertEqual(pending, [])
+
+    def test_cooling_needs_actual_cooling_and_two_samples(self):
+        self.config["household_announcements"]["cooling_open_enabled"] = True
+        def capture(minute, mode):
+            return {"generatedAt": (self.start + timedelta(minutes=minute)).isoformat(),
+                    "alarmState": {"ok": True, "systems": [{"components": {
+                        "thermostats": [{"stateText": mode, "desiredState": 3}],
+                        "sensors": [{"id": "door", "description": "Entry Door", "stateText": "Open"}]
+                    }}]}}
+        stamp = self.start.isoformat()
+        state, pending = alerts.evaluate_household_reminders(self.config, capture(0, "Idle"), {}, stamp)
+        self.assertEqual(pending, [])
+        state, _ = alerts.evaluate_household_reminders(self.config, capture(0, "Cooling"), state, stamp)
+        state, pending = alerts.evaluate_household_reminders(self.config, capture(6, "Cooling"), state,
+                                                           (self.start + timedelta(minutes=6)).isoformat())
+        self.assertEqual(pending, ["cooling:sensors:door"])
+
+    def test_solar_requires_fresh_meter_readings_and_ten_minutes(self):
+        self.config["household_announcements"]["solar_surplus_enabled"] = True
+        state = {}
+        for minute in (0, 3, 6, 9, 12):
+            now = self.start + timedelta(minutes=minute)
+            def meter(kind, watts):
+                return {"type": "eim", "activeCount": 1, "readingTime": now.timestamp(),
+                        "measurementType": kind, "wNow": watts}
+            envoy = {"ok": True, "probes": [{"productionStatus": 200, "production": {
+                "production": [meter("production", 5000)],
+                "consumption": [meter("total-consumption", 3000), meter("net-consumption", -2000)]}}]}
+            state, messages = alerts.daily_household_messages(self.config, {}, envoy, state, now.isoformat())
+            self.assertEqual("solar" in messages, minute == 12)
+        state["dailyAttempts"] = {"solar": now.date().isoformat()}
+        _, messages = alerts.daily_household_messages(self.config, {}, envoy, state, now.isoformat())
+        self.assertEqual(messages, {})
+        self.assertIsNone(alerts.solar_surplus_sample(envoy, (now + timedelta(minutes=6)).isoformat()))
+
+    def test_security_digest_after_five_once_daily(self):
+        self.config["household_announcements"]["security_digest_enabled"] = True
+        now = "2026-09-09T17:00:00-07:00"
+        alarm = {"troubleConditions": {"checkedAt": now, "ok": True,
+                 "rows": [{"description": "Sideyard sensor low battery"}]}}
+        state, messages = alerts.daily_household_messages(self.config, alarm, {}, {}, now)
+        self.assertIn("security", messages)
+        state["dailyAttempts"] = {"security": "2026-09-09"}
+        _, messages = alerts.daily_household_messages(self.config, alarm, {}, state, now)
+        self.assertEqual(messages, {})
 
     def test_unknown_does_not_rearm_delivered_episode(self):
         state, _ = self.evaluate(0)

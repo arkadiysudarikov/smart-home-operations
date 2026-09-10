@@ -113,15 +113,29 @@ distinguishes `⚠️ ENERGY HIGH` from unavailable energy status, and speaks wh
 attempts do not consume the cooldown. Persisted transition state prevents repeat
 announcements on later refreshes.
 Additional household reminders use fresh successful Alarm.com portal captures:
-garage doors and the Sideyard Gate left open for 15 continuously observed minutes
+garage doors and the Sideyard Gate left open across readings spanning 15 minutes
 produce one combined indoor Intercom reminder, only between 08:00 and 21:00.
 Unknown/stale readings break the timer, and an attempted reminder is not repeated
 until the device is observed closed. No door, lock, or Alarm.com automation is changed.
+Alarm.com captures are approximately 15 minutes apart, so reminders follow that
+cadence rather than promising exact minute delivery; captures expire after 20 minutes.
+Repeated copies of a capture never advance a timer. Open doors/windows/sliders
+while the thermostat actually reports cooling also get one reminder after readings
+span at least five minutes. Requested cooling alone does not count.
+Fresh Envoy meter readings showing at least 1 kW of solar surplus and export for
+ten minutes trigger one daytime heavy-appliance opportunity per day. Missing or
+stale meter readings reset the duration. A security trouble digest runs at most
+once daily between 17:00 and 21:00, quoting current Alarm.com battery/offline/tamper
+reports without claiming that the underlying device was independently tested.
 For an on-request bedtime summary, run `python3 scripts/generate_alerts.py
 --bedtime-check` from the deployed runtime; add `--speak` to announce it.
+Use `--leaving-home-check` for the same on-request coverage before leaving home.
 Only reporting sensors are covered. Gate-unlocked, leak/smoke/CO and missed-charge
 alerts are not enabled without corresponding reliable telemetry and, for charging,
 an explicit expected start time. Charging-finished announcements are excluded.
+Power-outage/restored announcements remain unavailable: the current capture has
+power-flow measurements but no explicit grid-connected state. Zero import/export
+or an unreachable gateway is not treated as an outage or restoration.
 
 Sense/Envoy power
 data stays in `shadow` mode until multiple SmartHQ-labeled cycles have been

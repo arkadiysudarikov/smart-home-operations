@@ -3475,7 +3475,7 @@ def write_homekit_report(
     (REPORT_DIR / "homekit_virtual_sensors.md").write_text("\n".join(lines) + "\n")
 
 
-def household_observations(alarm: dict[str, Any], now: str, max_age: float = 5) -> dict[str, dict[str, Any]]:
+def household_observations(alarm: dict[str, Any], now: str, max_age: float = 20) -> dict[str, dict[str, Any]]:
     """Only a successful, recent portal capture may establish a door state."""
     age = elapsed_minutes(alarm.get("generatedAt"), now)
     alarm_state = alarm.get("alarmState") or {}
@@ -3496,17 +3496,38 @@ def household_observations(alarm: dict[str, Any], now: str, max_age: float = 5) 
                     "name": str(item.get("description") or "Unnamed device"),
                     "group": group, "state": state,
                 }
+    thermostats = [t for s in alarm_state.get("systems") or []
+                   for t in (s.get("components") or {}).get("thermostats") or []]
+    cooling = any(str(t.get("stateText", "")).lower() == "cooling" for t in thermostats)
+    thermostat_known = bool(thermostats) and all(str(t.get("stateText", "")).lower()
+                                               in ("cooling", "heating", "off", "idle") for t in thermostats)
+    if thermostat_known:
+        for key, item in list(observations.items()):
+            if item["group"] == "sensors" and any(word in item["name"].lower() for word in ("door", "slider", "window")):
+                observations["cooling:" + key] = {**item, "state": "open" if cooling and item["state"] == "open" else "closed"}
     return observations
+
+
+def household_rules(config: dict[str, Any], observations: dict[str, Any]) -> list[dict[str, Any]]:
+    policy = config.get("household_announcements") or {}
+    rules = list(policy.get("rules") or [])
+    if policy.get("cooling_open_enabled"):
+        rules += [{"key": key, "active_state": "open", "after_minutes": 5,
+                   "message": f"The air conditioning is running while {item['name']} is open."}
+                  for key, item in observations.items() if key.startswith("cooling:")]
+    return rules
 
 
 def evaluate_household_reminders(config: dict[str, Any], alarm: dict[str, Any],
                                  previous: dict[str, Any], now: str) -> tuple[dict[str, Any], list[str]]:
     policy = config.get("household_announcements") or {}
-    max_age = float(policy.get("source_max_age_minutes", 5))
+    max_age = float(policy.get("source_max_age_minutes", 20))
     observations = household_observations(alarm, now, max_age)
-    episodes = {}
+    sample_at = str(alarm.get("generatedAt") or now)
+    episodes = {key: {**value, "lastObservedAt": None} for key, value in
+                (previous.get("episodes") or {}).items() if key.startswith("cooling:") and key not in observations}
     pending = []
-    for rule in policy.get("rules") or []:
+    for rule in household_rules(config, observations):
         key = rule["key"]
         observation = observations.get(key)
         old = (previous.get("episodes") or {}).get(key) or {}
@@ -3517,12 +3538,12 @@ def evaluate_household_reminders(config: dict[str, Any], alarm: dict[str, Any],
             continue
         if observation["state"] != rule["active_state"]:
             continue
-        gap = elapsed_minutes(old.get("lastObservedAt"), now)
+        gap = elapsed_minutes(old.get("lastObservedAt"), sample_at)
         continuous = gap is not None and 0 <= gap <= max_age
-        episode = dict(old) if continuous else {"since": now, "attempted": bool(old.get("attempted"))}
-        episode["lastObservedAt"] = now
+        episode = dict(old) if continuous else {"since": sample_at, "attempted": bool(old.get("attempted"))}
+        episode["lastObservedAt"] = sample_at
         episodes[key] = episode
-        duration = elapsed_minutes(episode["since"], now) or 0
+        duration = elapsed_minutes(episode["since"], sample_at) or 0
         if (policy.get("enabled") and not episode.get("attempted")
                 and duration >= float(rule.get("after_minutes", 15))
                 and within_local_hours(now, policy.get("start_hour", 8), policy.get("end_hour", 21))):
@@ -3530,15 +3551,86 @@ def evaluate_household_reminders(config: dict[str, Any], alarm: dict[str, Any],
     return {"updatedAt": now, "episodes": episodes, "sourceAvailable": bool(observations)}, pending
 
 
+def solar_surplus_sample(envoy: dict[str, Any], now: str) -> tuple[str, bool] | None:
+    """Require fresh meter timestamps, not merely a fresh snapshot of cached values."""
+    if envoy.get("ok") is not True:
+        return None
+    for probe in envoy.get("probes") or []:
+        if probe.get("productionStatus") != 200:
+            continue
+        payload = probe.get("production") or {}
+        readings = {}
+        for item in (payload.get("production") or []) + (payload.get("consumption") or []):
+            if item.get("type") == "eim" and item.get("activeCount", 0) > 0:
+                readings[item.get("measurementType")] = item
+        kinds = ("production", "total-consumption", "net-consumption")
+        if not all(kind in readings for kind in kinds):
+            continue
+        times, watts = [], []
+        for kind in kinds:
+            item = readings[kind]
+            try:
+                stamp = datetime.fromtimestamp(float(item["readingTime"]), timezone.utc).isoformat()
+                watts.append(float(item["wNow"]))
+            except (KeyError, TypeError, ValueError, OverflowError):
+                return None
+            age = elapsed_minutes(stamp, now)
+            if age is None or not 0 <= age <= 5:
+                return None
+            times.append(stamp)
+        production, consumption, net = watts
+        return min(times), production - consumption >= 1000 and net <= -1000
+    return None
+
+
+def daily_household_messages(config: dict[str, Any], alarm: dict[str, Any], envoy: dict[str, Any],
+                             previous: dict[str, Any], now: str) -> tuple[dict[str, Any], dict[str, str]]:
+    policy = config.get("household_announcements") or {}
+    day = datetime.fromisoformat(now.replace("Z", "+00:00")).astimezone(LOCAL_TZ).date().isoformat()
+    attempts = {k: v for k, v in (previous.get("dailyAttempts") or {}).items() if v == day}
+    state = {"dailyAttempts": attempts}
+    messages = {}
+    sample = solar_surplus_sample(envoy, now)
+    if sample and sample[1]:
+        stamp = sample[0]
+        old = previous.get("solar") or {}
+        gap = elapsed_minutes(old.get("lastReadingAt"), stamp)
+        since = old.get("since") if gap is not None and 0 <= gap <= 5 else stamp
+        state["solar"] = {"since": since, "lastReadingAt": stamp}
+        if (policy.get("solar_surplus_enabled") and "solar" not in attempts
+                and (elapsed_minutes(since, stamp) or 0) >= 10):
+            messages["solar"] = "There has been at least one kilowatt of surplus solar for ten minutes. This is a good time to run a heavy appliance."
+    trouble = alarm.get("troubleConditions") or {}
+    age = elapsed_minutes(trouble.get("checkedAt"), now)
+    if (policy.get("security_digest_enabled") and "security" not in attempts
+            and within_local_hours(now, 17, 21) and trouble.get("ok") is True
+            and age is not None and 0 <= age <= 20):
+        descriptions = sorted(set(str(r.get("description") or "") for r in trouble.get("rows") or []
+                                  if any(t in str(r.get("description") or "").lower()
+                                         for t in ("battery", "not responding", "offline", "malfunction", "tamper"))))
+        if descriptions:
+            messages["security"] = "Security status. Alarm.com reports: " + "; ".join(descriptions[:4]) + "."
+            if len(descriptions) > 4:
+                messages["security"] += f" There are {len(descriptions) - 4} additional issues in Alarm.com."
+    if not policy.get("enabled") or not within_local_hours(now, policy.get("start_hour", 8), policy.get("end_hour", 21)):
+        messages = {}
+    return state, messages
+
+
 def deliver_household_reminders(config: dict[str, Any], alarm: dict[str, Any],
-                                runner: Any = None, updated_at: str | None = None) -> dict[str, Any]:
+                                runner: Any = None, updated_at: str | None = None,
+                                envoy: dict[str, Any] | None = None) -> dict[str, Any]:
     now = updated_at or datetime.now(LOCAL_TZ).isoformat(timespec="seconds")
     previous = load_json_file(HOUSEHOLD_ANNOUNCEMENT_PATH) or {}
     state, pending = evaluate_household_reminders(config, alarm, previous, now)
-    if pending:
-        rules = {rule["key"]: rule for rule in config["household_announcements"]["rules"]}
+    daily_state, daily_messages = daily_household_messages(config, alarm, envoy or {}, previous, now)
+    state.update(daily_state)
+    if pending or daily_messages:
+        rules = {rule["key"]: rule for rule in household_rules(config, household_observations(alarm, now))}
         # Combine simultaneous openings into one Intercom, and never retry uncertain delivery.
-        message = " ".join(dict.fromkeys(rules[key]["message"] for key in pending))
+        message = " ".join(dict.fromkeys([rules[key]["message"] for key in pending] + list(daily_messages.values())))
+        day = datetime.fromisoformat(now.replace("Z", "+00:00")).astimezone(LOCAL_TZ).date().isoformat()
+        state["dailyAttempts"].update({key: day for key in daily_messages})
         for key in pending:
             state["episodes"][key]["attempted"] = True
         DATA_DIR.mkdir(parents=True, exist_ok=True)
@@ -3555,6 +3647,7 @@ def bedtime_message(alarm: dict[str, Any], now: str) -> str:
     observations = household_observations(alarm, now)
     if not observations:
         return "I cannot check the doors and locks because current home status is unavailable."
+    observations = {key: item for key, item in observations.items() if not key.startswith("cooling:")}
     opened = [o["name"] for o in observations.values() if o["state"] == "open"]
     unlocked = [o["name"] for o in observations.values() if o["state"] == "unlocked"]
     parts = ["Bedtime check."]
@@ -3566,9 +3659,11 @@ def bedtime_message(alarm: dict[str, Any], now: str) -> str:
 
 def main() -> int:
     config = load_config()
-    if "--bedtime-check" in sys.argv:
+    if "--bedtime-check" in sys.argv or "--leaving-home-check" in sys.argv:
         now = datetime.now(LOCAL_TZ).isoformat(timespec="seconds")
         message = bedtime_message(load_alarm_com(), now)
+        if "--leaving-home-check" in sys.argv:
+            message = message.replace("Bedtime check.", "Leaving home check.")
         if "--speak" in sys.argv:
             if not running_from_runtime_root():
                 raise SystemExit("Run spoken bedtime checks from the deployed runtime.")
@@ -3599,7 +3694,7 @@ def main() -> int:
     energy_ok_announcement = deliver_energy_ok_off_announcement(config, updates)
     bubbler_announcement = deliver_bubbler_on_announcement(config)
     if running_from_runtime_root():
-        deliver_household_reminders(config, load_alarm_com())
+        deliver_household_reminders(config, load_alarm_com(), envoy=load_json_file(DATA_DIR / "latest_envoy_direct.json"))
     write_homekit_report(
         updates,
         projection_stabilization,

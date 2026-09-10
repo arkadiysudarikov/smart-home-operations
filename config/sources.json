@@ -200,7 +200,10 @@
     "enabled": true,
     "start_hour": 8,
     "end_hour": 21,
-    "source_max_age_minutes": 5,
+    "source_max_age_minutes": 20,
+    "cooling_open_enabled": true,
+    "solar_surplus_enabled": true,
+    "security_digest_enabled": true,
     "rules": [
       {"key": "garages:104430779-2207", "active_state": "open", "after_minutes": 15, "message": "A garage door has been open for at least fifteen minutes. Please check the garage."},
       {"key": "garages:104430779-2210", "active_state": "open", "after_minutes": 15, "message": "A garage door has been open for at least fifteen minutes. Please check the garage."},
