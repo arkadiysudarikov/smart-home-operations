@@ -185,6 +185,8 @@
     "energy_ok_off_homepod_message": "Energy OK has turned off. Current energy status is unavailable.",
     "energy_high_on_homepod_announcement": true,
     "energy_high_on_homepod_message": "Energy is high. Check current energy use.",
+    "energy_high_clear_homepod_announcement": true,
+    "energy_high_clear_homepod_message": "Energy use is back to normal. The Energy High alert has cleared.",
     "energy_homepod_announcement_start_hour": 8,
     "energy_homepod_announcement_end_hour": 21,
     "energy_homepod_announcement_cooldown_minutes": 120,

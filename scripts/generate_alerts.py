@@ -539,8 +539,13 @@ def deliver_energy_ok_off_announcement(
         "lastDecision": "no transition",
     }
     incident_started = (prior_ok is True and not ok_active) or (prior_high is False and high_active)
-    if incident_started:
-        if high_active:
+    recovered = previous.get("energyHighActive") is True and not high_active and ok_active
+    if incident_started or recovered:
+        if recovered:
+            enabled = bool(alerts.get("energy_high_clear_homepod_announcement", False))
+            message = str(alerts.get("energy_high_clear_homepod_message", "Energy use is back to normal. The Energy High alert has cleared."))
+            announcement_id = "energy_high_clear"
+        elif high_active:
             enabled = bool(alerts.get("energy_high_on_homepod_announcement", False))
             message = str(alerts.get("energy_high_on_homepod_message", "Energy is high. Check current energy use."))
             announcement_id = "energy_high_on"
@@ -557,7 +562,8 @@ def deliver_energy_ok_off_announcement(
             start_hour = int(alerts.get("energy_homepod_announcement_start_hour", 8))
             end_hour = int(alerts.get("energy_homepod_announcement_end_hour", 21))
             cooldown_minutes = max(0, int(alerts.get("energy_homepod_announcement_cooldown_minutes", 120)))
-            previous_delivery = previous.get("lastDelivery") or {}
+            # A warning must not suppress its own recovery. Rate-limit recoveries separately.
+            previous_delivery = previous.get("lastRecoveryDelivery" if recovered else "lastDelivery") or {}
             last_accepted_at = previous_delivery.get("at") if previous_delivery.get("status") == "accepted" else None
             minutes_since_delivery = elapsed_minutes(last_accepted_at, now)
             suppression: dict[str, Any] | None = None
@@ -587,6 +593,10 @@ def deliver_energy_ok_off_announcement(
                     }
                 )
             else:
+                # Persist the transition before sending; uncertain delivery must not repeat.
+                state["lastDecision"] = "attempting"
+                DATA_DIR.mkdir(parents=True, exist_ok=True)
+                ENERGY_OK_ANNOUNCEMENT_PATH.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")
                 delivery = run_indoor_homepod_announcement(message, announcement_id, runner, now)
                 state.update(
                     {
@@ -595,6 +605,8 @@ def deliver_energy_ok_off_announcement(
                         "lastDelivery": delivery,
                     }
                 )
+                if recovered:
+                    state["lastRecoveryDelivery"] = delivery
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ENERGY_OK_ANNOUNCEMENT_PATH.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n")

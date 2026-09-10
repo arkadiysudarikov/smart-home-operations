@@ -432,6 +432,32 @@ class GenerateAlertsTest(unittest.TestCase):
         self.assertTrue(delivery["protectedPlayback"])
         self.assertEqual(delivery["preflight"], "restorable=false;state=stopped")
 
+    def test_energy_high_recovery_guards(self) -> None:
+        for case in ("normal", "startup", "unknown", "quiet", "unverified", "cooldown"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "energy.json"
+                prior = {"energyHighActive": True, "energyOkActive": False,
+                         "lastDelivery": {"status": "accepted", "at": "2026-09-10T10:00:00-07:00"}}
+                if case == "startup":
+                    prior = {}
+                if case == "cooldown":
+                    prior["lastRecoveryDelivery"] = prior["lastDelivery"]
+                path.write_text(json.dumps(prior))
+                self.patch_module(DATA_DIR=Path(tmp), ENERGY_OK_ANNOUNCEMENT_PATH=path)
+                calls = []
+                def runner(command, **kwargs):
+                    calls.append(command)
+                    return SimpleNamespace(returncode=0, stdout="", stderr="")
+                updates = [{"id": "smart_home_high_load_v2", "active": case != "unknown", "ok": True, "verified": case != "unverified"},
+                           {"id": "smart_home_energy_budget_v2", "active": False, "ok": True, "verified": True}]
+                config = {"alerts": {"energy_high_clear_homepod_announcement": True}}
+                now = "2026-09-10T23:05:00-07:00" if case == "quiet" else "2026-09-10T10:05:00-07:00"
+                for _ in range(2):
+                    generate_alerts.deliver_energy_ok_off_announcement(config, updates, runner, now)
+                self.assertEqual(len(calls), 1 if case == "normal" else 0)
+                if calls:
+                    self.assertIn("energy_high_clear", calls[0])
+
     def test_energy_ok_off_announcement_is_delivered_once_per_transition(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "energy_ok_announcement.json"
