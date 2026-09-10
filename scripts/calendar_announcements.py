@@ -75,7 +75,7 @@ def due(event, seconds, now, buffer_minutes):
 
 
 def invoke(*args):
-    result = subprocess.run([str(READER), *args], capture_output=True, text=True, timeout=45, check=True)
+    result = subprocess.run([str(READER), *(args or ("--snapshot",))], capture_output=True, text=True, timeout=45, check=True)
     data = json.loads(result.stdout)
     if data.get("ok") is not True:
         raise RuntimeError(data.get("error", "Reader unavailable"))

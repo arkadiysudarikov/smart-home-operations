@@ -71,7 +71,7 @@ if arguments.count == 5 && arguments[1] == "--eta",
         }
     }
     RunLoop.main.run()
-} else if arguments.contains("--request-access") {
+} else if arguments.contains("--request-access") || arguments.count == 1 {
     store.requestFullAccessToEvents { granted, error in
         emit(["granted": granted, "error": error?.localizedDescription ?? ""])
         exit(granted ? 0 : 1)
