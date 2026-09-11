@@ -2084,7 +2084,7 @@ table {{ width:100%;border-collapse:collapse }} th,td {{ padding:8px;border-bott
 <section class='panel alert-panel'><h2>Active energy alerts</h2>{alert_markup}</section>
 {sce_recovery_markup}
 <section class='grid projection-grid'><div class='panel'>{projection_chart}</div><div class='panel'><h2>Projection alert history</h2><p class='muted'>First appearance, severity changes, and clears within the selected range.</p>{stabilization_markup}<h3>Raw severity history</h3><ul class='transition-list'>{transition_markup}</ul></div></section>
-<div class='actions'><button data-action='/action/reconcile-energy' data-status-key='reconcileEnergy'>Refresh all</button><button class='secondary' data-action='/action/refresh-sce' data-status-key='refreshSce'>Refresh SCE</button><button class='secondary' data-action='/action/refresh-alarm-cache' data-status-key='alarmRefresh'>Refresh Alarm.com</button><span id='result' class='muted' role='status' aria-live='polite'></span></div>
+<div class='actions'><button data-action='/action/reconcile-energy' data-status-key='reconcileEnergy'>Refresh all</button><button class='secondary' data-action='/action/refresh-sce' data-status-key='refreshSce'>Refresh SCE</button><button class='secondary' data-action='/action/refresh-alarm-cache' data-status-key='alarmRefresh'>Refresh Alarm.com</button><button class='secondary' data-action='/action/announce-help'>Announce help indoors</button><span id='result' class='muted' role='status' aria-live='polite'></span></div>
 <p class='muted'>{html_escape(range_summary)}</p>
 <section class='grid'><div class='panel'>{load_chart}</div><div class='panel'>{live_chart}</div></section>
 <section class='grid'><div class='panel'><h2>Source definitions</h2><table><thead><tr><th>Source</th><th>Measures</th><th>Use</th></tr></thead><tbody>{semantics_rows}</tbody></table></div>
@@ -2118,6 +2118,7 @@ document.querySelectorAll('button[data-action]').forEach(button=>button.addEvent
     const response=await fetch(button.dataset.action,{{method:'POST',headers:{{'Accept':'application/json'}}}});
     const payload=await response.json();
     if(!response.ok||!payload.ok) throw new Error(payload.error||JSON.stringify(payload));
+    if(!button.dataset.statusKey){{result.textContent='Help announcement accepted by the relay; this does not contact emergency services.';return;}}
     result.textContent=payload.alreadyRunning?'Refresh already running…':'Refresh accepted…';
     await pollAction(button.dataset.statusKey,payload.startedAt||'');
   }}catch(error){{result.textContent=String(error)}}finally{{button.disabled=false}}
@@ -3322,6 +3323,13 @@ class Handler(BaseHTTPRequestHandler):
             return 403, {"ok": False, "error": "request origin is not allowed"}
         if path == "/action/run-check":
             payload = run_smart_home_check()
+            return (200 if payload["ok"] else 500), payload
+        if path == "/action/announce-help":
+            payload = run([str(python_bin()), str(ROOT / "scripts/generate_alerts.py"), "--help-announcement", "--speak"], timeout=55)
+            return (200 if payload["ok"] else 500), payload
+        if path in {"/action/dr-house-status", "/action/dr-house-energy"}:
+            mode = "energy" if path.endswith("energy") else "status"
+            payload = run([str(python_bin()), str(ROOT / "scripts/house_briefing.py"), "--mode", mode, "--speak"], timeout=120)
             return (200 if payload["ok"] else 500), payload
         if path == "/action/refresh-sce":
             payload = refresh_sce_data()

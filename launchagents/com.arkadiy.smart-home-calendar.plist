@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.arkadiy.smart-home-calendar</string>
+<key>ProgramArguments</key><array>
+<string>/usr/bin/python3</string>
+<string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/scripts/calendar_announcements.py</string>
+<string>--deliver</string>
+</array>
+<key>StartInterval</key><integer>60</integer>
+<key>RunAtLoad</key><true/>
+<key>ProcessType</key><string>Background</string>
+<key>StandardOutPath</key><string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/data/calendar-check.log</string>
+<key>StandardErrorPath</key><string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/data/calendar-check-error.log</string>
+</dict></plist>
