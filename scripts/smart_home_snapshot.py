@@ -73,6 +73,7 @@ DRIFT_CHECK_FILES = [
     "scripts/calendar_announcements.py",
     "scripts/internet_restored.py",
     "scripts/household_weather.py",
+    "scripts/house_briefing.py",
 ]
 DRIFT_CHECK_EXTERNAL_FILES = [
     (
