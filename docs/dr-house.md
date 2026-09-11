@@ -5,12 +5,14 @@ Two local Mac shortcuts POST to the existing loopback-only action server:
 - `Dr. House, status report`: `/action/dr-house-status`
 - `Dr. House, why is energy high`: `/action/dr-house-energy`
 
-Verification on September 11: both backend endpoints returned relay acceptance in
-live tests. Both shortcut entries were created, but the energy shortcut's Get Contents
-of URL action stalled before contacting the server, with both loopback IP and hostname.
-Voice invocation is therefore NOT verified or ready. Script execution is disabled in
-Shortcuts; enabling it as an alternate entry path requires user approval. No permission
-or network exposure was changed. The stalled shortcut run was stopped.
+Verification on September 11: with explicit user approval, Allow Running Scripts was
+enabled in Shortcuts. The stalled Get Contents of URL actions were replaced with Run
+Shell Script using `/usr/bin/curl --fail --silent --show-error --max-time 120 -X POST`
+against the corresponding `http://127.0.0.1:18765` endpoint. Run as Administrator is off.
+Both shortcuts completed from the Shortcuts UI with HTTP success and Intercom relay
+acceptance (energy at 16:47, status at 16:48 Pacific). Their saved output and the relay
+event log agree. Siri speech recognition and acoustic output were not separately tested.
+No network exposure was changed.
 
 Both use the existing indoor iPhone Intercom relay. This does not change device
 settings, music routing, scheduled announcements, or the server's network exposure.
