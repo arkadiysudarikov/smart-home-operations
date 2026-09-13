@@ -32,3 +32,31 @@ and never invents the cause of an alert that is no longer active.
 Tone: short clinical house rounds, not medical advice or fictional emergency claims.
 On-demand requests are not restricted by automatic-announcement quiet hours.
 No microphone-based or individual-speaker acoustic verification is implied by relay acceptance.
+
+## Additional commands
+
+The backend accepts these modes, with matching `/action/dr-house-<mode>` POST routes:
+
+- `complications`: Any complications? Only reported openings/unlocked locks, high
+  energy, or unavailable critical readings. No speech when those readings are normal.
+- `discharge`: Discharge summary. Read-only departure check, running laundry, and
+  the existing presence-gated appointment/departure summary. Does not lock or arm.
+- `night`: Night rounds. Reporting openings/locks and running laundry; no scene changes.
+- `changes`: What changed? Compare equipment states against the last successful
+  rounds, at most 24 hours old. Missing readings are never treated as normal. No
+  calendar titles or locations are persisted in the comparison baseline.
+- `explain`: Explain that. Use the last accepted, nonsuppressed non-Dr-House
+  announcement within two hours. Energy gets a current evidence-based assessment;
+  personal appointments are re-gated by current presence; other supported events
+  distinguish the recorded message from fresh evidence and state missing provenance.
+- `hold`: Hold my calls. One-hour pause of known routine Intercom identifiers only;
+  on-demand Dr. House, help requests, and unknown safety identifiers bypass the pause.
+  No detector settings or alarms are changed. Suppressed events are not queued for replay.
+
+The iPhone screenshot confirms Run Shell Script cannot execute there. A draft
+`Dr. House connection setup` uses Run Script Over SSH to the existing Mac SSH service.
+`dr_house_ssh.py` is a forced-command dispatcher allowing only the eight mode names,
+with no command evaluation. The Shortcuts public key must be explicitly authorized
+using forced-command and no-forwarding restrictions before these can work on iPhone.
+No new SSH key has yet been authorized. Cross-device key availability must be verified;
+the Mac Shortcuts key must not be assumed to be the iPhone key.

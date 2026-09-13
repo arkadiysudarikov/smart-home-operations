@@ -445,6 +445,9 @@ def record_homepod_announcement(result: dict[str, Any], message: str, appliance_
 
 
 def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]:
+    from announcement_pause import active
+    if active(str(config.get("id", "washer"))):
+        return record_homepod_announcement({"ok": True, "skipped": True, "reason": "one-hour routine announcement pause"}, message, str(config.get("id", "washer")))
     targets = [str(item) for item in config.get("homepod_targets", []) if str(item).strip()]
     appliance_id = str(config.get("id", "washer"))
     if not targets:

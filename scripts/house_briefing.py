@@ -2,10 +2,71 @@
 import argparse
 import json
 import math
+import fcntl
 from datetime import datetime, timezone
 from pathlib import Path
 
 import generate_alerts as alerts
+
+MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold")
+BASELINE = alerts.DATA_DIR / "dr_house_baseline.json"
+
+
+def observations(now):
+    items = alerts.household_observations(alerts.load_alarm_com(), now)
+    values = {key: {"name": value["name"], "state": value["state"]} for key, value in items.items() if not key.startswith(("cooling:", "temperature:"))}
+    energy = alerts.load_json_file(alerts.ENERGY_HIGH_CONTEXT_PATH) or {}
+    if fresh(energy, "generatedAt", now) and fresh(energy, "sampleAt", now) and isinstance(energy.get("active"), bool):
+        values["energy"] = {"name": "Energy High", "state": "active" if energy["active"] else "clear"}
+    laundry = alerts.load_json_file(alerts.DATA_DIR / "latest_smarthq_laundry_state.json") or {}
+    if laundry.get("ok") is True and fresh(laundry, "capturedAt", now):
+        for key, device in (laundry.get("devices") or {}).items():
+            if fresh(device, "apiLastSuccessAt", now, 300) and isinstance(device.get("cycleActive"), bool):
+                values["laundry:" + key] = {"name": key, "state": "running" if device["cycleActive"] else "idle"}
+    return values
+
+
+def changes_message(previous, current, now):
+    if not fresh(previous, "at", now, 86400):
+        return "Dr. House. No recent rounds to compare against. This check establishes the baseline."
+    old = previous.get("observations") or {}
+    changes = [f"{v['name']} is now {v['state']}" for k, v in current.items() if k in old and old[k].get("state") != v["state"]]
+    missing = set(old) - set(current)
+    text = "Dr. House. Interval changes: " + "; ".join(changes[:6]) + "." if changes else "Dr. House. No significant changes in the comparable readings."
+    if missing:
+        text += " Some previous readings are unavailable; they are not assumed normal."
+    return text
+
+
+def explanation(now, energy):
+    path = alerts.DATA_DIR / "homepod_announcement_events.jsonl"
+    try:
+        # Bounded tail; don't replay old or failed announcements.
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            handle.seek(max(0, size - 262144))
+            rows = handle.read().decode("utf-8", errors="replace").splitlines()
+        for line in reversed(rows):
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            identifier = str(event.get("announcementId", ""))
+            if event.get("ok") is not True or event.get("skipped") or identifier.startswith("dr_house_"):
+                continue
+            if not fresh(event, "at", now, 7200):
+                break
+            if identifier.startswith("calendar-"):
+                return "Dr. House. The last alert was an appointment reminder. " + (calendar_summary(now) or "I cannot repeat personal details without a current eligible appointment and verified home presence.")
+            if identifier.startswith("energy_"):
+                return "Dr. House. The last alert concerned energy. Current assessment: " + energy_message(energy, now, True)
+            if identifier in ("washer", "dryer", "combo", "bubbler_on", "household_reminder"):
+                return "Dr. House. The last accepted alert said: " + str(event.get("message", ""))[:600] + " That was the recorded alert, not a new sensor check. I do not have additional trigger evidence attached to that event."
+            return "Dr. House. I cannot reliably explain the last alert from the recorded evidence."
+    except OSError:
+        pass
+    return "Dr. House. There is no recent accepted announcement to explain."
 
 
 def fresh(data, key, now, seconds=600):
@@ -114,6 +175,28 @@ def calendar_summary(now):
 def build(mode):
     now = datetime.now(timezone.utc).isoformat()
     energy = alerts.load_json_file(alerts.ENERGY_HIGH_CONTEXT_PATH) or {}
+    if mode == "hold":
+        return "Dr. House. Routine announcements are on hold for one hour. Detector alarms are unchanged."
+    if mode == "changes":
+        return changes_message(alerts.load_json_file(BASELINE) or {}, observations(now), now)
+    if mode == "explain":
+        return explanation(now, energy)
+    if mode == "complications":
+        current = observations(now)
+        problems = [f"{v['name']} is {v['state']}" for k, v in current.items() if v["state"] in ("open", "unlocked") or (k == "energy" and v["state"] == "active")]
+        if not any(k.startswith(("sensors:", "garages:", "locks:")) for k in current):
+            problems.append("door and lock readings are unavailable")
+        if "energy" not in current:
+            problems.append("energy readings are unavailable")
+        return "Dr. House. Needs attention: " + "; ".join(problems[:6]) + "." if problems else ""
+    if mode in ("discharge", "night"):
+        text = alerts.bedtime_message(alerts.load_alarm_com(), now).replace("Bedtime check.", "Dr. House. Discharge summary." if mode == "discharge" else "Dr. House. Night rounds.")
+        running = [v["name"] for k, v in observations(now).items() if k.startswith("laundry:") and v["state"] == "running"]
+        if running:
+            text += " Laundry still running: " + ", ".join(running) + "."
+        if mode == "discharge":
+            text += " " + calendar_summary(now)
+        return text
     if mode == "energy":
         return "Dr. House. " + energy_message(energy, now, explain=True)
     weather_text = ""
@@ -129,14 +212,32 @@ def build(mode):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--mode", choices=("status", "energy"), default="status")
+    parser.add_argument("--mode", choices=MODES, default="status")
     parser.add_argument("--speak", action="store_true")
     args = parser.parse_args()
+    if args.speak and not alerts.running_from_runtime_root():
+        raise SystemExit("Spoken briefings require deployed runtime")
+    if args.speak:
+        lock = (alerts.DATA_DIR / "dr_house.lock").open("a")
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(json.dumps({"status": "skipped", "reason": "A briefing is already running"}))
+            return 0
+        if args.mode == "hold":
+            from announcement_pause import hold
+            hold()
     message = build(args.mode)
     if args.speak:
         if not alerts.running_from_runtime_root():
             raise SystemExit("Spoken briefings require deployed runtime")
+        if not message:
+            print(json.dumps({"status": "skipped", "reason": "No complications in available readings"}))
+            return 0
         delivery = alerts.run_indoor_homepod_announcement(message, "dr_house_" + args.mode)
+        if delivery.get("status") == "accepted" and args.mode in ("status", "night", "discharge", "changes", "complications"):
+            now = datetime.now(timezone.utc).isoformat()
+            BASELINE.write_text(json.dumps({"at": now, "observations": observations(now)}))
         print(json.dumps(delivery))
         return 0 if delivery.get("status") == "accepted" else 1
     print(message)

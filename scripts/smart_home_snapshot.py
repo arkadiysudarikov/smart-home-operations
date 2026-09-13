@@ -74,6 +74,8 @@ DRIFT_CHECK_FILES = [
     "scripts/internet_restored.py",
     "scripts/household_weather.py",
     "scripts/house_briefing.py",
+    "scripts/announcement_pause.py",
+    "scripts/dr_house_ssh.py",
 ]
 DRIFT_CHECK_EXTERNAL_FILES = [
     (
