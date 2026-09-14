@@ -1,6 +1,7 @@
 """Bounded pause for known routine announcements, never unknown safety alerts."""
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 
 PATH = Path.home() / "Library/Application Support/SmartHomeMonitor/data/announcement_pause.json"
@@ -13,7 +14,10 @@ def paused(identifier, state, now):
     try:
         start = float(state["startedAt"])
         end = float(state["until"])
-        return start <= now < end <= start + 3600
+        limit = 90000 if state.get("mode") == "morning" else 3600
+        if state.get("mode") == "morning" and end != morning_end(start):
+            return False
+        return start <= now < end <= start + limit
     except (KeyError, ValueError, TypeError):
         return False
 
@@ -29,3 +33,17 @@ def hold():
     now = datetime.now(timezone.utc).timestamp()
     PATH.parent.mkdir(parents=True, exist_ok=True)
     PATH.write_text(json.dumps({"startedAt": now, "until": now + 3600}))
+
+
+def morning_end(now):
+    local = datetime.fromtimestamp(now, ZoneInfo("America/Los_Angeles"))
+    end = local.replace(hour=8, minute=0, second=0, microsecond=0)
+    if end <= local:
+        end += timedelta(days=1)
+    return end.timestamp()
+
+
+def quiet_until_morning():
+    now = datetime.now(timezone.utc).timestamp()
+    PATH.parent.mkdir(parents=True, exist_ok=True)
+    PATH.write_text(json.dumps({"startedAt": now, "until": morning_end(now), "mode": "morning"}))

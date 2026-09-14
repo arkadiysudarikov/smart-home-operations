@@ -11,6 +11,34 @@ NOW = "2026-09-11T16:00:00-07:00"
 
 
 class BriefingTests(unittest.TestCase):
+    def test_morning_pause_is_bounded_and_safety_exempt(self):
+        from datetime import datetime
+        start = datetime.fromisoformat("2026-09-14T22:00:00-07:00").timestamp()
+        end = datetime.fromisoformat("2026-09-15T08:00:00-07:00").timestamp()
+        self.assertEqual(pause.morning_end(start), end)
+        state = {"startedAt": start, "until": end, "mode": "morning"}
+        self.assertTrue(pause.paused("washer", state, start + 7200))
+        self.assertFalse(pause.paused("washer", state, end))
+        for identifier in ("smoke", "co", "help_request", "dr_house_morning"):
+            self.assertFalse(pause.paused(identifier, state, start + 10))
+        self.assertFalse(pause.paused("washer", {**state, "until": end + 3600}, start + 10))
+
+    def test_new_modes_are_whitelisted(self):
+        for mode in ("leave", "unusual", "departure", "quiet", "morning"):
+            self.assertIn(mode, house.MODES)
+            self.assertIn(mode, dr_house_ssh.MODES)
+
+    def test_unusual_ignores_normal_temperature(self):
+        data = self.context()
+        data["liveLoadKw"] = 1
+        with mock.patch.object(house.alerts, "load_json_file", return_value=data), mock.patch.object(house, "fresh", return_value=True), mock.patch.object(house.alerts, "load_alarm_com", return_value={}), mock.patch.object(house.alerts, "household_observations", return_value={"temperature:hot:1": {"state": "closed"}}):
+            self.assertIn("Nothing unusual", house.build("unusual"))
+
+    def test_quiet_build_does_not_mute(self):
+        with mock.patch.object(pause, "quiet_until_morning") as mute:
+            self.assertIn("8 AM", house.build("quiet"))
+            mute.assert_not_called()
+
     def test_ssh_dispatcher_rejects_arbitrary_commands(self):
         with mock.patch.object(dr_house_ssh.urllib.request, "urlopen") as send:
             for command in ("", "status; whoami", "status\n", "cat /etc/passwd", "sftp", "../status"):

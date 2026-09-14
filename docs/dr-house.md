@@ -1,5 +1,18 @@
 # Dr. House on-demand briefings
 
+## September 14 added voice phrases
+
+- `Can I leave` -> `leave`: read-only reported doors/windows/locks and running laundry.
+- `Why did you announce that` -> `explain`: last accepted alert, with explicit missing-trigger evidence rather than an invented cause.
+- `Anything unusual` -> `unusual`: current high energy and hot/cold readings (85F/55F); not a learned anomaly detector. Unavailable readings are stated.
+- `When should I leave` -> `departure`: nearest eligible appointment within three hours, verified owner phone at home, mapped destination and fresh driving ETA. Names the owner, not an assumed Siri speaker.
+- `Quiet until morning` -> `quiet`: known routine announcements only, expiring at the next 8 AM Pacific. Safety/help/unknown identifiers bypass this pause. Dry runs never activate it.
+- `House, good morning` -> `morning`: current forecast, next presence-eligible appointment within three hours, and reported problems.
+
+All six were created in the Mac Shortcuts library with their SSH action text verified.
+390 tests passed. Device sync, first-run permissions and acoustic verification are
+separate from saved-library/backend tests; do not infer those from this record.
+
 The voice shortcuts use Run Script Over SSH to the existing Mac SSH service.
 The restricted dispatcher POSTs to the loopback-only action server:
 

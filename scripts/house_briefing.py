@@ -8,7 +8,7 @@ from pathlib import Path
 
 import generate_alerts as alerts
 
-MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold")
+MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning")
 BASELINE = alerts.DATA_DIR / "dr_house_baseline.json"
 
 
@@ -60,9 +60,9 @@ def explanation(now, energy):
             if identifier.startswith("calendar-"):
                 return "The last alert was an appointment reminder. " + (calendar_summary(now) or "I cannot repeat personal details without a current eligible appointment and verified home presence.")
             if identifier.startswith("energy_"):
-                return "The last alert concerned energy. Current assessment: " + energy_message(energy, now, True)
+                return energy_message(energy, now, True)
             if identifier in ("washer", "dryer", "combo", "bubbler_on", "household_reminder"):
-                return "The last accepted alert said: " + str(event.get("message", ""))[:600] + " That was the recorded alert, not a new sensor check. I do not have additional trigger evidence attached to that event."
+                return "Last alert: " + str(event.get("message", ""))[:240] + " No additional trigger details were recorded."
             return "I cannot reliably explain the last alert from the recorded evidence."
     except OSError:
         pass
@@ -128,7 +128,7 @@ def status_message(alarm, laundry, energy, now, calendar_text="", weather_text="
     return " ".join(parts)
 
 
-def calendar_summary(now):
+def calendar_summary(now, departure_only=False):
     # Query the authorized helper and actual phones; never use a tablet as presence.
     import calendar_announcements as cal
     try:
@@ -163,6 +163,10 @@ def calendar_summary(now):
                 pass
         if not cal.is_home(cal.active_clients(), config["phones"][owner], datetime.now(timezone.utc).timestamp()):
             return ""
+        if departure_only:
+            if cal.video_event(event, current):
+                return f"{owner}, your next appointment is online; no drive needed."
+            return f"{owner}," + departure_text if departure_text else "I cannot estimate departure without a mapped destination and current travel time."
         return f"{owner}, {str(event.get('title') or 'your appointment')[:100]} starts in about {max(1, math.ceil((start-current)/60))} minutes." + departure_text
     except Exception:
         return ""
@@ -171,6 +175,36 @@ def calendar_summary(now):
 def build(mode):
     now = datetime.now(timezone.utc).isoformat()
     energy = alerts.load_json_file(alerts.ENERGY_HIGH_CONTEXT_PATH) or {}
+    if mode == "quiet":
+        return "Routine announcements muted until 8 AM. Safety alerts stay on."
+    if mode == "departure":
+        return calendar_summary(now, departure_only=True) or "No departure estimate is available for a verified person at home."
+    if mode == "leave":
+        text = alerts.bedtime_message(alerts.load_alarm_com(), now).replace("Bedtime check.", "Departure check.")
+        running = [v["name"] for k, v in observations(now).items() if k.startswith("laundry:") and v["state"] == "running"]
+        return text + (" Running: " + ", ".join(running) + "." if running else "")
+    if mode == "unusual":
+        issues = []
+        summary = energy_message(energy, now, explain=True)
+        if summary != "Energy use is normal.":
+            issues.append(summary)
+        temperatures = alerts.household_observations(alerts.load_alarm_com(), now)
+        issues.extend(f"Indoor temperature is unusually {k.split(':')[1]}." for k, v in temperatures.items() if k.startswith("temperature:") and v["state"] == "open")
+        if not any(k.startswith("temperature:") for k in temperatures):
+            issues.append("Temperature readings unavailable.")
+        return " ".join(issues[:3]) or "Nothing unusual in the available energy and temperature readings."
+    if mode == "morning":
+        from household_weather import check, stamp
+        current = datetime.now(timezone.utc).timestamp()
+        forecast = check({}, {}, current)[0].get("forecast", {})
+        weather = "Weather unavailable."
+        try:
+            if 0 <= current - stamp(forecast["updateTime"]) <= 21600:
+                period = next(p for p in forecast["periods"] if stamp(p["startTime"]) <= current < stamp(p["endTime"]))
+                weather = f"{period['shortForecast']}, {period['temperature']} degrees {period['temperatureUnit']}."
+        except (KeyError, ValueError, TypeError, StopIteration):
+            pass
+        return " ".join(filter(None, ("Good morning.", weather, calendar_summary(now), build("complications"))))
     if mode == "hold":
         return "Routine announcements are on hold for one hour. Detector alarms are unchanged."
     if mode == "changes":
@@ -223,6 +257,9 @@ def main():
         if args.mode == "hold":
             from announcement_pause import hold
             hold()
+        if args.mode == "quiet":
+            from announcement_pause import quiet_until_morning
+            quiet_until_morning()
     message = build(args.mode)
     if args.speak:
         if not alerts.running_from_runtime_root():

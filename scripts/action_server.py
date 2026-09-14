@@ -3327,7 +3327,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/action/announce-help":
             payload = run([str(python_bin()), str(ROOT / "scripts/generate_alerts.py"), "--help-announcement", "--speak"], timeout=55)
             return (200 if payload["ok"] else 500), payload
-        if path in {"/action/dr-house-" + mode for mode in ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold")}:
+        if path in {"/action/dr-house-" + mode for mode in ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning")}:
             mode = path.removeprefix("/action/dr-house-")
             payload = run([str(python_bin()), str(ROOT / "scripts/house_briefing.py"), "--mode", mode, "--speak"], timeout=120)
             return (200 if payload["ok"] else 500), payload
