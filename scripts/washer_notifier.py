@@ -703,6 +703,13 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
         if dry_run:
             results.append({"action": action, "ok": True, "dryRun": True})
         elif action in {"finish_on", "finish_off", "reminder_on", "reminder_off", "venting_on", "venting_off"}:
+            if action == "finish_off" and config.get("id", "washer") == "washer":
+                # Do not carry a request across the next cycle's reset/start.
+                from washer_free_reminder import update
+                try:
+                    update()
+                except OSError:
+                    pass  # Optional reminder must not break normal laundry actions.
             if action.startswith("finish"):
                 sensor_id = finish_id
             elif action.startswith("reminder"):
@@ -727,6 +734,13 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
                 ),
             })
         elif action == "announce_finish" and config.get("homepod_enabled", False):
+            if config.get("id", "washer") == "washer":
+                from washer_free_reminder import update
+                try:
+                    if update():
+                        announcement_message = "Your washer reminder: the cycle has finished."
+                except OSError:
+                    pass  # Keep the standard confirmed-finish announcement.
             results.append({"action": action, **homepod_announcement(announcement_message, config)})
         elif action == "notify_venting":
             message = str(config.get("venting_message", "Washer venting has finished. Turn off the laundry-room fan."))

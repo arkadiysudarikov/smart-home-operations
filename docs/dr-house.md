@@ -1,5 +1,25 @@
 # Dr. House on-demand briefings
 
+## Additional short voice commands
+
+- `What’s still running` -> `running`: fresh active laundry and up to three fresh
+  Sense consumers over 200W, excluding solar/unknown/other. Reports known readings,
+  never claims a complete inventory.
+- `Did I leave anything open` -> `openings`: reported open doors/windows/garages;
+  missing sensor coverage is not an all-clear.
+- `Resume announcements` -> `resume`: clears the routine pause only; does not
+  override ordinary quiet hours or replay suppressed announcements.
+- `Remind me when the washer is free` -> `washerfree`: arms only with a fresh,
+  active washer cycle. The existing confirmed finish event consumes the request
+  and substitutes one reminder message for the ordinary finish announcement.
+  No second announcement, no inference from low power, and no claim that laundry
+  has been unloaded. Requests expire after 12 hours or the next cycle reset;
+  quiet-mode suppression consumes the reminder without a later replay.
+
+All four SSH shortcut action mappings were saved and verified in the Mac library.
+Creating them does not arm a reminder or cancel an existing pause. Phone sync and
+audible completion remain separate acceptance checks.
+
 ## September 14 added voice phrases
 
 - `Can I leave` -> `leave`: read-only reported doors/windows/locks and running laundry.

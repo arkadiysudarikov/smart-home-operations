@@ -11,6 +11,31 @@ NOW = "2026-09-11T16:00:00-07:00"
 
 
 class BriefingTests(unittest.TestCase):
+    def test_washer_request_is_one_shot_and_expires(self):
+        import tempfile
+        import washer_free_reminder as reminder
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(reminder, "PATH", Path(directory) / "request.json"):
+            self.assertFalse(reminder.update(now=1000))
+            reminder.update(arm=True, now=1000)
+            self.assertTrue(reminder.update(now=1100))
+            self.assertFalse(reminder.update(now=1101))
+            reminder.update(arm=True, now=1000)
+            self.assertFalse(reminder.update(now=44201))
+
+    def test_resume_clears_only_pause_state(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(pause, "PATH", Path(directory) / "pause.json"):
+            pause.hold()
+            self.assertTrue(pause.active("washer"))
+            pause.resume()
+            self.assertFalse(pause.active("washer"))
+
+    def test_washer_request_requires_fresh_running_cycle(self):
+        import washer_free_reminder as reminder
+        with mock.patch.object(house.alerts, "load_json_file", return_value={}), mock.patch.object(reminder, "update") as arm:
+            self.assertIn("no reminder set", house.build("washerfree"))
+            arm.assert_not_called()
+
     def test_morning_pause_is_bounded_and_safety_exempt(self):
         from datetime import datetime
         start = datetime.fromisoformat("2026-09-14T22:00:00-07:00").timestamp()

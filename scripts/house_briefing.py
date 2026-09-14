@@ -8,7 +8,7 @@ from pathlib import Path
 
 import generate_alerts as alerts
 
-MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning")
+MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree")
 BASELINE = alerts.DATA_DIR / "dr_house_baseline.json"
 
 
@@ -175,6 +175,37 @@ def calendar_summary(now, departure_only=False):
 def build(mode):
     now = datetime.now(timezone.utc).isoformat()
     energy = alerts.load_json_file(alerts.ENERGY_HIGH_CONTEXT_PATH) or {}
+    if mode == "resume":
+        return "Routine announcements resumed."
+    if mode == "washerfree":
+        laundry = alerts.load_json_file(alerts.DATA_DIR / "latest_smarthq_laundry_state.json") or {}
+        device = (laundry.get("devices") or {}).get("washer", {})
+        if laundry.get("ok") is not True or not fresh(laundry, "capturedAt", now) or not fresh(device, "apiLastSuccessAt", now, 300):
+            return "Washer status unavailable; no reminder set."
+        if device.get("cycleActive") is not True:
+            return "No active wash cycle reported; no reminder set."
+        return "I’ll remind you when this wash cycle finishes."
+    if mode == "openings":
+        items = alerts.household_observations(alerts.load_alarm_com(), now)
+        items = {k: v for k, v in items.items() if k.startswith(("sensors:", "garages:"))}
+        if not items:
+            return "Door, window and garage readings unavailable."
+        names = list(dict.fromkeys(v["name"] for v in items.values() if v["state"] == "open"))
+        return "Open: " + ", ".join(names) + "." if names else "No openings among reporting doors, windows and garages."
+    if mode == "running":
+        items = observations(now)
+        names = [v["name"] for k, v in items.items() if k.startswith("laundry:") and v["state"] == "running"]
+        if fresh(energy, "generatedAt", now) and fresh(energy, "sampleAt", now):
+            loads = []
+            for source in energy.get("candidates") or []:
+                if source.get("source") == "Sense" and fresh(source, "capturedAt", now):
+                    for device in source.get("devices") or []:
+                        name, watts = str(device.get("name") or ""), device.get("watts")
+                        if name and name.lower() not in ("solar", "other", "unknown", "always on") and str(device.get("id", "")).lower() != "solar" and number(watts) and watts >= 200:
+                            loads.append((watts, name))
+            names.extend(name for watts, name in sorted(loads, reverse=True)[:3])
+        names = list(dict.fromkeys(n.lower() for n in names))
+        return "Reported running: " + ", ".join(names) + "." if names else "No running appliances identified in available readings."
     if mode == "quiet":
         return "Routine announcements muted until 8 AM. Safety alerts stay on."
     if mode == "departure":
@@ -261,6 +292,12 @@ def main():
             from announcement_pause import quiet_until_morning
             quiet_until_morning()
     message = build(args.mode)
+    if args.speak and args.mode == "resume":
+        from announcement_pause import resume
+        resume()
+    if args.speak and args.mode == "washerfree" and message == "I’ll remind you when this wash cycle finishes.":
+        from washer_free_reminder import update
+        update(arm=True)
     if args.speak:
         if not alerts.running_from_runtime_root():
             raise SystemExit("Spoken briefings require deployed runtime")

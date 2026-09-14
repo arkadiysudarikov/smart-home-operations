@@ -35,6 +35,11 @@ def hold():
     PATH.write_text(json.dumps({"startedAt": now, "until": now + 3600}))
 
 
+def resume():
+    PATH.parent.mkdir(parents=True, exist_ok=True)
+    PATH.write_text("{}")
+
+
 def morning_end(now):
     local = datetime.fromtimestamp(now, ZoneInfo("America/Los_Angeles"))
     end = local.replace(hour=8, minute=0, second=0, microsecond=0)
