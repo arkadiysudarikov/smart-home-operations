@@ -28,11 +28,11 @@ def observations(now):
 
 def changes_message(previous, current, now):
     if not fresh(previous, "at", now, 86400):
-        return "Dr. House. No recent rounds to compare against. This check establishes the baseline."
+        return "No recent rounds to compare against. This check establishes the baseline."
     old = previous.get("observations") or {}
     changes = [f"{v['name']} is now {v['state']}" for k, v in current.items() if k in old and old[k].get("state") != v["state"]]
     missing = set(old) - set(current)
-    text = "Dr. House. Interval changes: " + "; ".join(changes[:6]) + "." if changes else "Dr. House. No significant changes in the comparable readings."
+    text = "Interval changes: " + "; ".join(changes[:6]) + "." if changes else "No significant changes in the comparable readings."
     if missing:
         text += " Some previous readings are unavailable; they are not assumed normal."
     return text
@@ -58,15 +58,15 @@ def explanation(now, energy):
             if not fresh(event, "at", now, 7200):
                 break
             if identifier.startswith("calendar-"):
-                return "Dr. House. The last alert was an appointment reminder. " + (calendar_summary(now) or "I cannot repeat personal details without a current eligible appointment and verified home presence.")
+                return "The last alert was an appointment reminder. " + (calendar_summary(now) or "I cannot repeat personal details without a current eligible appointment and verified home presence.")
             if identifier.startswith("energy_"):
-                return "Dr. House. The last alert concerned energy. Current assessment: " + energy_message(energy, now, True)
+                return "The last alert concerned energy. Current assessment: " + energy_message(energy, now, True)
             if identifier in ("washer", "dryer", "combo", "bubbler_on", "household_reminder"):
-                return "Dr. House. The last accepted alert said: " + str(event.get("message", ""))[:600] + " That was the recorded alert, not a new sensor check. I do not have additional trigger evidence attached to that event."
-            return "Dr. House. I cannot reliably explain the last alert from the recorded evidence."
+                return "The last accepted alert said: " + str(event.get("message", ""))[:600] + " That was the recorded alert, not a new sensor check. I do not have additional trigger evidence attached to that event."
+            return "I cannot reliably explain the last alert from the recorded evidence."
     except OSError:
         pass
-    return "Dr. House. There is no recent accepted announcement to explain."
+    return "There is no recent accepted announcement to explain."
 
 
 def fresh(data, key, now, seconds=600):
@@ -80,16 +80,15 @@ def number(value):
 
 def energy_message(context, now, explain=False):
     if not fresh(context, "generatedAt", now) or not fresh(context, "sampleAt", now):
-        return "Energy assessment deferred. Current readings are unavailable."
+        return "Energy readings are unavailable."
     load, threshold = context.get("liveLoadKw"), context.get("thresholdKw")
     if not number(load) or not number(threshold) or threshold <= 0:
         return "Current energy readings are unavailable."
     high = load >= threshold
     if not explain:
         return "Energy use is high." if high else "Energy use is within the current normal range."
-    text = f"Energy assessment: {'elevated demand' if high else 'stable'}. House load is {load:.1f} kilowatts, {'above' if high else 'below'} the current {threshold:.1f} kilowatt alert threshold."
     if not high:
-        return text + " Energy High is not currently active."
+        return "Energy use is normal."
     loads = []
     for candidate in context.get("candidates") or []:
         if candidate.get("source") != "Sense" or not fresh(candidate, "capturedAt", now):
@@ -99,17 +98,14 @@ def energy_message(context, now, explain=False):
             if name.lower() not in ("solar", "other", "unknown", "always on") and str(device.get("id", "")).lower() != "solar" and number(watts) and watts >= 200:
                 loads.append((watts, name))
     if loads:
-        text += " Suspected contributors, based on Sense estimates: " + "; ".join(f"{name} at {watts / 1000:.1f} kilowatts" for watts, name in sorted(loads, reverse=True)[:2]) + ". That does not establish the full cause."
-    else:
-        text += " I do not have reliable appliance-level evidence to name the main cause."
-    adjustments = context.get("adjustments") or []
-    if adjustments:
-        text += " The alert threshold also accounts for " + "; ".join(str(a["reason"]) for a in adjustments[:2] if a.get("reason")) + "."
-    return text
+        watts, name = max(loads)
+        name = "AC" if name.lower() == "central ac" else name
+        return f"Energy is high; {name} is using about {watts / 1000:.1f} kilowatts."
+    return "Energy is high; cause unknown."
 
 
 def status_message(alarm, laundry, energy, now, calendar_text="", weather_text=""):
-    parts = ["Dr. House. House rounds."]
+    parts = ["House rounds."]
     observations = alerts.household_observations(alarm, now)
     openings = list(dict.fromkeys(v["name"] for k, v in observations.items() if not k.startswith(("cooling:", "temperature:")) and v["state"] in ("open", "unlocked")))
     if openings:
@@ -176,7 +172,7 @@ def build(mode):
     now = datetime.now(timezone.utc).isoformat()
     energy = alerts.load_json_file(alerts.ENERGY_HIGH_CONTEXT_PATH) or {}
     if mode == "hold":
-        return "Dr. House. Routine announcements are on hold for one hour. Detector alarms are unchanged."
+        return "Routine announcements are on hold for one hour. Detector alarms are unchanged."
     if mode == "changes":
         return changes_message(alerts.load_json_file(BASELINE) or {}, observations(now), now)
     if mode == "explain":
@@ -188,9 +184,9 @@ def build(mode):
             problems.append("door and lock readings are unavailable")
         if "energy" not in current:
             problems.append("energy readings are unavailable")
-        return "Dr. House. Needs attention: " + "; ".join(problems[:6]) + "." if problems else ""
+        return "Needs attention: " + "; ".join(problems[:6]) + "." if problems else ""
     if mode in ("discharge", "night"):
-        text = alerts.bedtime_message(alerts.load_alarm_com(), now).replace("Bedtime check.", "Dr. House. Discharge summary." if mode == "discharge" else "Dr. House. Night rounds.")
+        text = alerts.bedtime_message(alerts.load_alarm_com(), now).replace("Bedtime check.", "Discharge summary." if mode == "discharge" else "Night rounds.")
         running = [v["name"] for k, v in observations(now).items() if k.startswith("laundry:") and v["state"] == "running"]
         if running:
             text += " Laundry still running: " + ", ".join(running) + "."
@@ -198,7 +194,7 @@ def build(mode):
             text += " " + calendar_summary(now)
         return text
     if mode == "energy":
-        return "Dr. House. " + energy_message(energy, now, explain=True)
+        return "" + energy_message(energy, now, explain=True)
     weather_text = ""
     try:
         from household_weather import check, rain_expected

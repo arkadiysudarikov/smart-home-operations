@@ -48,15 +48,14 @@ class BriefingTests(unittest.TestCase):
 
     def test_high_is_evidence_backed(self):
         text = house.energy_message(self.context(), NOW, True)
-        self.assertIn("elevated demand", text)
-        self.assertIn("Dryer at 3.0", text)
+        self.assertEqual("Energy is high; Dryer is using about 3.0 kilowatts.", text)
         self.assertNotIn("Solar", text)
-        self.assertIn("does not establish the full cause", text)
+        self.assertNotIn("Dr. House", text)
 
     def test_stale_source_never_names_cause(self):
         data = self.context()
         data["sampleAt"] = "2026-09-10T16:00:00-07:00"
-        self.assertIn("deferred", house.energy_message(data, NOW, True))
+        self.assertIn("unavailable", house.energy_message(data, NOW, True))
         data = self.context()
         data["candidates"][0]["capturedAt"] = data["sampleAt"] = NOW
         data["candidates"][0]["capturedAt"] = "2026-09-10T16:00:00-07:00"
@@ -66,7 +65,7 @@ class BriefingTests(unittest.TestCase):
         data = self.context()
         data["liveLoadKw"] = 1
         text = house.energy_message(data, NOW, True)
-        self.assertIn("not currently active", text)
+        self.assertEqual("Energy use is normal.", text)
         self.assertNotIn("Dryer", text)
 
     def test_laundry_requires_fresh_heartbeat_and_never_infers_finished(self):
