@@ -30,5 +30,15 @@ repair, the user reported hearing the test. The mic captured 45 seconds but did
 not recognize the phrase; repeated tests had very low input peaks. Independent
 audible payload-isolation and playback-resume verification is still incomplete.
 The local temporary mic helper was updated with a disconnected-input guard and
-capture-only gain; rebuilding it returned it to a permissions-waiting state.
+capture-only gain. Permissions were granted and recording was confirmed before
+the next test. In a fresh 45-second window it recognized "Only this sentence
+should be spoken", which is within the marked synthetic payload, with 2160000
+frames and raw peak 0.0052084457. This independently confirms audible payload
+delivery, not the full sentence or playback resumption. macOS CM-15 input was
+already at 100%; no output/HomePod volume was changed.
+An isolated unmarked-email test then captured 2160000 frames and recognized only
+"Should be", not the unmarked "red balloon" phrase. This is not conclusive proof
+of silence: ambient/late audio and incomplete speech recognition remain possible.
+No private email contents were used as test payloads. Playback resumption remains
+unverified in this test session.
 Never use private inbox contents for audible testing.
