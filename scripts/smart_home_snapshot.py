@@ -75,6 +75,7 @@ DRIFT_CHECK_FILES = [
     "scripts/household_weather.py",
     "scripts/house_briefing.py",
     "scripts/announcement_pause.py",
+    "scripts/washer_free_reminder.py",
     "scripts/dr_house_ssh.py",
 ]
 DRIFT_CHECK_EXTERNAL_FILES = [
