@@ -7,7 +7,7 @@ import re
 
 START = "HOMESAFE-7D3B9A21:"
 END = ":END-7D3B9A21"
-PATTERN = r"(?<=HOMESAFE-7D3B9A21:)[^\r\n]{1,1500}(?=:END-7D3B9A21)"
+PATTERN = r"(?<=HOMESAFE-7D3B9A21:)[^\r\n]{1,1500}?(?=:END-7D3B9A21)"
 
 
 def encode(message):

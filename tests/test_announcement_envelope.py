@@ -15,6 +15,7 @@ class EnvelopeTests(unittest.TestCase):
 
     def test_surrounding_mail_cannot_enter_payload(self):
         self.assertEqual(extract("Private before\n" + encode("Test announcement.") + "\nPrivate after"), ["Test announcement."])
+        self.assertEqual(extract(encode("First.") + " Private between " + encode("Second.")), ["First.", "Second."])
 
     def test_rejects_invalid_payloads(self):
         for text in ("", "x" * 1501, START + "injected", "injected" + END):
