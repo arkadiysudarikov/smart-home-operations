@@ -11,6 +11,25 @@ NOW = "2026-09-11T16:00:00-07:00"
 
 
 class BriefingTests(unittest.TestCase):
+    def test_more_expands_energy_and_skips_its_own_reply(self):
+        import tempfile, json
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(house.alerts, "DATA_DIR", Path(directory)), mock.patch.object(house.alerts, "load_json_file", return_value=self.context()):
+            events = [{"ok": True, "at": NOW, "announcementId": "dr_house_energy"}, {"ok": True, "at": NOW, "announcementId": "dr_house_more"}]
+            (Path(directory) / "homepod_announcement_events.jsonl").write_text("\n".join(json.dumps(e) for e in events))
+            text = house.more_message(NOW)
+            self.assertIn("5.0 kilowatts", text)
+            self.assertIn("Dryer, 3.0", text)
+            self.assertNotIn("Solar", text)
+
+    def test_more_never_reexecutes_quiet(self):
+        import tempfile, json
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(house.alerts, "DATA_DIR", Path(directory)), mock.patch.object(pause, "quiet_until_morning") as mute:
+            path = Path(directory) / "homepod_announcement_events.jsonl"
+            path.write_text(json.dumps({"ok": True, "at": NOW, "announcementId": "dr_house_quiet"}))
+            self.assertIn("Safety alerts", house.more_message(NOW))
+            mute.assert_not_called()
+            self.assertIn("Ask a house question first", house.more_message("2026-09-11T17:00:00-07:00"))
+
     def test_washer_request_is_one_shot_and_expires(self):
         import tempfile
         import washer_free_reminder as reminder

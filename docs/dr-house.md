@@ -1,5 +1,14 @@
 # Dr. House on-demand briefings
 
+## Tell me more
+
+`Tell me more` uses the `more` command. It expands the latest accepted house reply
+within ten minutes, skipping failed/suppressed replies and previous expansions.
+Context is household-wide, not speaker-specific. Energy details use fresh totals,
+thresholds and up to three Sense estimates. Calendar details recheck presence;
+stored personal reply text is never replayed. Follow-ups never rerun pause,
+resume or reminder mutations. Original short replies are unchanged.
+
 ## Additional short voice commands
 
 - `What’s still running` -> `running`: fresh active laundry and up to three fresh

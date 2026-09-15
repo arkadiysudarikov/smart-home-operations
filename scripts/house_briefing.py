@@ -8,7 +8,7 @@ from pathlib import Path
 
 import generate_alerts as alerts
 
-MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree")
+MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more")
 BASELINE = alerts.DATA_DIR / "dr_house_baseline.json"
 
 
@@ -76,6 +76,64 @@ def fresh(data, key, now, seconds=600):
 
 def number(value):
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def more_message(now):
+    """Expand the latest accepted house reply; never rerun a state-changing command."""
+    try:
+        with (alerts.DATA_DIR / "homepod_announcement_events.jsonl").open("rb") as handle:
+            handle.seek(0, 2)
+            handle.seek(max(0, handle.tell() - 262144))
+            rows = handle.read().decode("utf-8", errors="replace").splitlines()
+        for line in reversed(rows):
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            if event.get("ok") is not True or event.get("skipped"):
+                continue
+            if not fresh(event, "at", now, 600):
+                break
+            identifier = str(event.get("announcementId", ""))
+            if not identifier.startswith("dr_house_") or identifier == "dr_house_more":
+                continue
+            mode = identifier.removeprefix("dr_house_")
+            if mode in ("energy", "running", "unusual"):
+                context = alerts.load_json_file(alerts.ENERGY_HIGH_CONTEXT_PATH) or {}
+                if not fresh(context, "generatedAt", now) or not fresh(context, "sampleAt", now):
+                    return "Current energy details are unavailable."
+                load, threshold = context.get("liveLoadKw"), context.get("thresholdKw")
+                if not number(load) or not number(threshold) or threshold <= 0:
+                    return "Current energy details are unavailable."
+                text = f"Current house load is {load:.1f} kilowatts; the alert threshold is {threshold:.1f}."
+                loads = []
+                for source in context.get("candidates") or []:
+                    if source.get("source") == "Sense" and fresh(source, "capturedAt", now):
+                        for device in source.get("devices") or []:
+                            name, watts = str(device.get("name") or ""), device.get("watts")
+                            if name and name.lower() not in ("solar", "other", "unknown", "always on") and str(device.get("id", "")).lower() != "solar" and number(watts) and watts >= 200:
+                                loads.append((watts, name))
+                if loads:
+                    text += " Sense estimates: " + "; ".join(f"{name}, {watts/1000:.1f} kilowatts" for watts, name in sorted(set(loads), reverse=True)[:3]) + ". These may not account for the full load."
+                else:
+                    text += " No reliable appliance breakdown is available."
+                return text
+            if mode in ("hold", "quiet", "resume"):
+                return "These controls affect routine announcements only. Safety alerts remain enabled. Resuming cancels the temporary pause, not ordinary quiet hours; missed alerts are not replayed."
+            if mode == "washerfree":
+                return "The reminder requires a fresh active wash cycle and uses its confirmed finish event, not a timer or power dip. It does not mean the washer has been unloaded. Quiet mode still applies."
+            if mode == "departure":
+                return (calendar_summary(now, departure_only=True) or "No current departure estimate is available for a verified person at home.") + " Timing uses driving directions and your configured arrival buffer."
+            if mode in ("status", "morning", "discharge"):
+                return build("status") + " Only current reporting devices and appointments for verified people at home are included."
+            if mode in ("openings", "leave", "night", "complications", "changes"):
+                return build("leave") + " This is a fresh sensor check, not proof of complete coverage. Nothing was locked or armed."
+            if mode == "explain":
+                return explanation(now, alerts.load_json_file(alerts.ENERGY_HIGH_CONTEXT_PATH) or {})
+            return "No additional details are available for that reply."
+    except OSError:
+        pass
+    return "Ask a house question first, then say Tell me more within ten minutes."
 
 
 def energy_message(context, now, explain=False):
@@ -174,6 +232,8 @@ def calendar_summary(now, departure_only=False):
 
 def build(mode):
     now = datetime.now(timezone.utc).isoformat()
+    if mode == "more":
+        return more_message(now)
     energy = alerts.load_json_file(alerts.ENERGY_HIGH_CONTEXT_PATH) or {}
     if mode == "resume":
         return "Routine announcements resumed."
