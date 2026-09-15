@@ -44,9 +44,22 @@ unverified in this test session.
 
 Later live verification: Office HomePod reported Playing before testing and after
 the dummy relay. After the energy/more sequence, the Home controller reported
-Paused. This is a playback regression, not a passed resume test; the precise
-transition/cause remains unresolved. The iPhone Tell me more shortcut contains
+Paused. This observation alone did not establish a playback regression; the
+precise transition/cause was not established. The iPhone Tell me more shortcut contains
 only Run Script over SSH with command more, and produced a fresh dr_house_more
 accepted event at 11:35:13 Pacific. Do not add unconditional Play as a workaround:
 that would start audio when the user had intentionally paused it.
+
+11:50 Pacific retest: no playback settings or controls changed. CM-15 capture
+started at Unix 1789498237.945; the synthetic marked email was sent at 1789498265.
+The 90-second recording had 4320000 frames. Local offline recognition of its
+60–90 second segment returned: "Announcement test blue lighthouse only this
+sentence should be spoken". Neither surrounding dummy-text sentence was in
+that transcript. The delayed arrival explains why a 45-second capture could
+miss delivery; this is not evidence of a broken microphone or failed relay.
+Office HomePod reported Playing before and after the confirmed audible test,
+without a Play command. No playback failure was reproduced. This confirms the
+announced payload acoustically and playback state via the controller, not
+individual acoustic verification of every speaker or podcast position recovery.
+The recording remains local in /tmp, not in the repository.
 Never use private inbox contents for audible testing.
