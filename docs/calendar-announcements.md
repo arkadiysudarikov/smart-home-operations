@@ -35,3 +35,9 @@ Limitations: Wi-Fi presence tracks the carried phone, not the person directly, a
 private Wi-Fi address changes require reenrollment. Calendar titles and appointment
 details are spoken to everyone within earshot indoors. End-to-end acceptance still
 requires a real due reminder heard on HomePods with music resuming.
+
+September 15 verification: synthetic scheduler tests cover a due home reminder,
+persist-before-send deduplication, tablet-only/away silence, departure during the ETA
+check, dry-run isolation, stale calendar/ETA rejection, and uncertain-delivery replay
+prevention. All 406 repository tests passed. These tests mock the reader, UniFi and
+relay and use temporary state; they do not establish audible scheduled delivery.
