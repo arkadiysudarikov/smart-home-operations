@@ -185,6 +185,8 @@
     "energy_ok_off_homepod_message": "Energy OK has turned off. Current energy status is unavailable.",
     "energy_high_on_homepod_announcement": true,
     "energy_high_on_homepod_message": "Energy is high. Check current energy use.",
+    "energy_high_clear_homepod_announcement": true,
+    "energy_high_clear_homepod_message": "Energy use is back to normal. The Energy High alert has cleared.",
     "energy_homepod_announcement_start_hour": 8,
     "energy_homepod_announcement_end_hour": 21,
     "energy_homepod_announcement_cooldown_minutes": 120,
@@ -195,6 +197,23 @@
     "bubbler_homepod_announcement_cooldown_minutes": 120,
     "energy_balance_residual_alert_percent": 5,
     "solar_parity_alert_percent": 10
+  },
+  "household_announcements": {
+    "temperature_enabled": true,
+    "rain_open_enabled": true,
+    "internet_restored_enabled": true,
+    "enabled": true,
+    "start_hour": 8,
+    "end_hour": 21,
+    "source_max_age_minutes": 20,
+    "cooling_open_enabled": true,
+    "solar_surplus_enabled": true,
+    "security_digest_enabled": true,
+    "rules": [
+      {"key": "garages:104430779-2207", "active_state": "open", "after_minutes": 15, "message": "A garage door has been open for at least fifteen minutes. Please check the garage."},
+      {"key": "garages:104430779-2210", "active_state": "open", "after_minutes": 15, "message": "A garage door has been open for at least fifteen minutes. Please check the garage."},
+      {"key": "sensors:104430779-26896", "active_state": "open", "after_minutes": 15, "message": "The sideyard gate has been open for at least fifteen minutes."}
+    ]
   },
   "actions": {
     "bind_host": "127.0.0.1",

@@ -445,6 +445,9 @@ def record_homepod_announcement(result: dict[str, Any], message: str, appliance_
 
 
 def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]:
+    from announcement_pause import active
+    if active(str(config.get("id", "washer"))):
+        return record_homepod_announcement({"ok": True, "skipped": True, "reason": "one-hour routine announcement pause"}, message, str(config.get("id", "washer")))
     targets = [str(item) for item in config.get("homepod_targets", []) if str(item).strip()]
     appliance_id = str(config.get("id", "washer"))
     if not targets:
@@ -456,11 +459,12 @@ def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]
 
     transport = str(config.get("homepod_announcement_transport", "music_airplay"))
     if transport == "iphone_intercom":
+        from announcement_envelope import encode
         shortcut_name = str(config.get("iphone_intercom_relay_shortcut", "Relay Home Announcement"))
         try:
             with tempfile.TemporaryDirectory(prefix="smart-home-intercom-") as temp_dir:
                 input_path = Path(temp_dir) / "announcement.txt"
-                input_path.write_text(message.strip() + "\n")
+                input_path.write_text(encode(message) + "\n")
                 proc = subprocess.run(
                     [
                         "/usr/bin/shortcuts",
@@ -700,6 +704,13 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
         if dry_run:
             results.append({"action": action, "ok": True, "dryRun": True})
         elif action in {"finish_on", "finish_off", "reminder_on", "reminder_off", "venting_on", "venting_off"}:
+            if action == "finish_off" and config.get("id", "washer") == "washer":
+                # Do not carry a request across the next cycle's reset/start.
+                from washer_free_reminder import update
+                try:
+                    update()
+                except OSError:
+                    pass  # Optional reminder must not break normal laundry actions.
             if action.startswith("finish"):
                 sensor_id = finish_id
             elif action.startswith("reminder"):
@@ -724,6 +735,13 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
                 ),
             })
         elif action == "announce_finish" and config.get("homepod_enabled", False):
+            if config.get("id", "washer") == "washer":
+                from washer_free_reminder import update
+                try:
+                    if update():
+                        announcement_message = "Your washer reminder: the cycle has finished."
+                except OSError:
+                    pass  # Keep the standard confirmed-finish announcement.
             results.append({"action": action, **homepod_announcement(announcement_message, config)})
         elif action == "notify_venting":
             message = str(config.get("venting_message", "Washer venting has finished. Turn off the laundry-room fan."))

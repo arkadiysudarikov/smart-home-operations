@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>CFBundleIdentifier</key><string>com.arkadiy.smart-home-calendar-reader</string>
+<key>CFBundleName</key><string>Smart Home Calendar Reader</string>
+<key>CFBundleExecutable</key><string>calendar-reader</string>
+<key>CFBundlePackageType</key><string>APPL</string>
+<key>LSUIElement</key><true/>
+<key>NSCalendarsFullAccessUsageDescription</key><string>Read Arkadiy, Maxim and Jeanne appointments for home-presence-gated departure announcements. This helper does not change calendar events.</string>
+</dict></plist>
