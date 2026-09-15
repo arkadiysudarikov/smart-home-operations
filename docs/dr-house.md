@@ -117,3 +117,14 @@ Calendar dry-run September 14: reader access succeeded, zero events returned,
 Arkadiy and Maxim phones reported home, no reminders due. Jeanne remains excluded
 from the private phone mapping pending positive iPhone identification; her MacBook
 must not be substituted. This is not an end-to-end scheduled-event delivery test.
+
+September 15 live verification: Tell me more was run from iPhone Spotlight and
+generated a fresh accepted dr_house_more event. The shortcut contains only the
+restricted SSH command more. The energy follow-up returned measured load and
+threshold while explicitly declining an unsupported appliance explanation.
+Runtime briefing/dispatcher files match source; all 399 tests pass.
+The calendar scheduler reads Apple Calendar successfully each minute, reports
+Arkadiy home and Maxim away, and has no due reminder. Jeanne is still unmapped:
+live and historical UniFi queries identify her MacBook by name but not her iPhone.
+No substitute device or guessed mapping was enabled. HomePod playback verification
+subsequently showed Paused; see announcement-email-privacy.md for that open failure.

@@ -41,4 +41,12 @@ An isolated unmarked-email test then captured 2160000 frames and recognized only
 of silence: ambient/late audio and incomplete speech recognition remain possible.
 No private email contents were used as test payloads. Playback resumption remains
 unverified in this test session.
+
+Later live verification: Office HomePod reported Playing before testing and after
+the dummy relay. After the energy/more sequence, the Home controller reported
+Paused. This is a playback regression, not a passed resume test; the precise
+transition/cause remains unresolved. The iPhone Tell me more shortcut contains
+only Run Script over SSH with command more, and produced a fresh dr_house_more
+accepted event at 11:35:13 Pacific. Do not add unconditional Play as a workaround:
+that would start audio when the user had intentionally paused it.
 Never use private inbox contents for audible testing.
