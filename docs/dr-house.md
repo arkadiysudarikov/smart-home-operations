@@ -128,3 +128,13 @@ Arkadiy home and Maxim away, and has no due reminder. Jeanne is still unmapped:
 live and historical UniFi queries identify her MacBook by name but not her iPhone.
 No substitute device or guessed mapping was enabled. HomePod playback verification
 subsequently showed Paused; see announcement-email-privacy.md for that open failure.
+
+September 15 follow-up: the user positively identified Jeanne's candidate iPhone.
+Its UniFi alias was renamed Jeanne's iPhone and verified by readback. The private
+calendar mapping now includes Jeanne. A live dry run returned Jeanne=false,
+Maxim=false, Arkadiy=true and zero due reminders, consistent with Jeanne being at
+work. The mapping file remains mode 0600 and is not committed. Apple's device-level
+name was not changed; no control connection to Jeanne's own iPhone is available.
+The later longer microphone test reproduced the full announcement and Office
+remained Playing, so the earlier isolated Paused observation was not sufficient
+to establish a playback defect; no speculative playback workaround was added.

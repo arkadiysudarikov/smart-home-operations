@@ -11,7 +11,8 @@ The private runtime data/calendar_announcement_config.json maps each calendar to
 its owner's iPhone MAC and specifies the home address and arrival buffer (15 minutes).
 UniFi must report the matching phone active with a last-seen age of at most 90 seconds.
 Missing or stale data means silence. An iPad never substitutes for a phone.
-Jeanne remains silent until her iPhone has a verified entry in the private mapping.
+Jeanne's iPhone was confirmed by the user and added to the private mapping on
+September 15. Her reminders remain silent whenever that phone is away or stale.
 
 Each minute, between 08:00 and 21:00 Pacific, the job checks appointments within
 three hours and asks Apple Maps for a current driving ETA from home. It announces
