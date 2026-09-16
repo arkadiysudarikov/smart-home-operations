@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.arkadiy.smart-home-followup</string>
+<key>ProgramArguments</key><array>
+<string>/usr/bin/python3</string>
+<string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/scripts/announcement_followup.py</string>
+<string>--tick</string>
+</array>
+<key>StartInterval</key><integer>30</integer>
+<key>ProcessType</key><string>Background</string>
+<key>StandardOutPath</key><string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/data/followup-check.log</string>
+<key>StandardErrorPath</key><string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/data/followup-check-error.log</string>
+</dict></plist>
