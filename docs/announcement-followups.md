@@ -44,3 +44,16 @@ The deployed-script drift inventory includes the new follow-up module; the full
 418-test suite passed again after deployment. The disposable driving event was
 accepted once by the automatic calendar scheduler and removed afterward; EventKit
 independently confirmed its removal. Relay acceptance alone is not acoustic proof.
+
+The full ten-minute snooze was requested at 12:06:29 Pacific and accepted by the
+relay at 12:17:03. The one-shot queue was empty on subsequent scheduler passes.
+The 420-second local CM-15 capture beginning 12:14:32 recognized at offset 180
+seconds: "Announcement check current energy use", matching the queued energy
+replay. Office HomePod reported Playing afterward, with no playback commands sent.
+This establishes an audible replay, not exact podcast-position continuity or
+proof from every room. The helper completed and exited normally.
+
+The driving reminder was accepted at 12:13:34, before this capture began; its
+phrase was not recognized. That acoustic check remains unverified. iPhone
+Mirroring still required local authentication, leaving phone synchronization and
+Siri activation unverified. GitHub CI passed; the pull request remains draft.
