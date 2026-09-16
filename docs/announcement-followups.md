@@ -73,3 +73,15 @@ seconds, more than two minutes after that message's relay acceptance, but not th
 driving phrase. An extended listening window was started without resending.
 Three additional replacement/invalid-timer/deleted-event regression tests bring
 the passing local suite to 421 tests.
+
+The extended 12:36:56–12:43:56 capture also did not recognize the driving phrase.
+There was a gap after the first recording ended at 12:35:47; these captures do not
+prove that no announcement played. A read-only lookup restricted to the exact
+generated test email found one inbox message received at 12:34:54 from the expected
+sender, with intact single-line announcement markers and the complete driving
+text. No ordinary email was used as test content.
+
+Office HomePod was Playing at 12:32 but reported Paused at approximately 12:43.
+No playback control was sent by this test; the cause of that state change is not
+established. Playback continuity and driving acoustic delivery remain unverified.
+The microphone helper completed and exited; no pending test reminder remains.
