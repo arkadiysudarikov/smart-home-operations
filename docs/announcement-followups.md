@@ -1,0 +1,46 @@
+# Announcement follow-ups
+
+Siri phrases and restricted SSH commands:
+
+- Repeat that: `repeat`
+- Remind me again in ten minutes: `snooze`
+- Why did you announce that: `why`
+
+These read the bounded local announcement log, never a mailbox. Only known routine
+announcement IDs and exact calendar occurrence IDs qualify. Failed, suppressed,
+future-dated, malformed, or older-than-ten-minute entries are excluded. House
+command acknowledgments cannot become replay targets. Replayed text starts with
+“Earlier announcement” and is not represented as a current sensor reading.
+
+Calendar replay requires the exact uncancelled future occurrence still present in
+a fresh Calendar snapshot and its owner's mapped iPhone currently home. Unknown
+or away presence means no personal replay. Explanations give the recorded trigger
+category without personal appointment details; missing sensor provenance is stated.
+
+There is one pending snooze, replaced by a newer request. It is due in 600 seconds,
+checked every 30 seconds, and expires after a 120-second catch-up window. Quiet
+hours (21:00–08:00 Pacific), routine pauses, and calendar privacy checks still apply.
+The request is consumed before relay invocation, including on uncertain delivery,
+so it cannot loop or replay after a restart. The acknowledgment notes these limits.
+
+Deployment copies announcement_followup.py, house_briefing.py, dr_house_ssh.py and
+action_server.py and smart_home_snapshot.py to the existing runtime, restarts only smart-home-actions, and
+installs launchagents/com.arkadiy.smart-home-followup.plist into LaunchAgents.
+No new credentials, ports, or SSH permissions are needed. No playback or email
+receiver settings change.
+
+Verification: 418 local tests passed, including 12 focused follow-up tests. Saved
+Mac shortcut actions use the existing host/key and the commands above. The old
+“Why did you announce that” shortcut had only a Text action; it was repaired with
+Run Script Over SSH and the orphaned Text input removed. Phone sync, Siri voice
+recognition, acoustic response, and a full ten-minute delivery are separate checks.
+
+Live September 16 checks: all three Mac shortcuts invoked their correct deployed
+commands and the relay accepted them. Local CM-15 recognition captured the snooze
+acknowledgment, the energy replay, and the recorded Energy High explanation. This
+does not verify Siri wake-word recognition or iPhone shortcut synchronization.
+
+The deployed-script drift inventory includes the new follow-up module; the full
+418-test suite passed again after deployment. The disposable driving event was
+accepted once by the automatic calendar scheduler and removed afterward; EventKit
+independently confirmed its removal. Relay acceptance alone is not acoustic proof.
