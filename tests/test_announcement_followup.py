@@ -113,3 +113,35 @@ class FollowupTests(unittest.TestCase):
         for mode in ("repeat", "snooze", "why"):
             self.assertIn(mode, house.MODES)
             self.assertIn(mode, dr_house_ssh.MODES)
+
+    def test_new_snooze_replaces_previous_request(self):
+        follow.request("snooze", self.now, mutate=True)
+        follow.request("snooze", self.now + 30, mutate=True)
+        queued = json.loads((self.root / "announcement_followup.json").read_text())
+        self.assertEqual(queued["dueAt"], self.now + 630)
+        with patch.object(follow, "active", return_value=False), patch.object(follow.alerts, "run_indoor_homepod_announcement") as send:
+            self.assertEqual(follow.tick(self.now + 600), "waiting")
+            self.assertEqual(follow.tick(self.now + 630), "attempted")
+            self.assertEqual(follow.tick(self.now + 660), "empty")
+            send.assert_called_once()
+
+    def test_invalid_queued_due_time_cannot_speak(self):
+        follow.request("snooze", self.now, mutate=True)
+        path = self.root / "announcement_followup.json"
+        queued = json.loads(path.read_text())
+        queued["dueAt"] += 1
+        path.write_text(json.dumps(queued))
+        with patch.object(follow.alerts, "run_indoor_homepod_announcement") as send:
+            self.assertEqual(follow.tick(self.now + 601), "invalid")
+            self.assertEqual(json.loads(path.read_text()), {})
+            send.assert_not_called()
+
+    def test_deleted_calendar_occurrence_cannot_be_replayed(self):
+        now = datetime.now(timezone.utc)
+        appointment = dict(id="deleted", calendar="Arkadiy", start=(now + timedelta(hours=1)).isoformat())
+        event = dict(self.event, announcementId="calendar-" + cal.occurrence(appointment))
+        config = self.root / "calendar.json"
+        config.write_text(json.dumps({"phones": {"Arkadiy": "phone"}}))
+        with patch.object(cal, "CONFIG", config), patch.object(cal, "invoke", return_value={"generatedAt": now.isoformat(), "events": []}), patch.object(cal, "active_clients") as clients:
+            self.assertFalse(follow.can_disclose(event, now.timestamp()))
+            clients.assert_not_called()

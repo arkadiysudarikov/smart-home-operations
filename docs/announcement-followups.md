@@ -57,3 +57,19 @@ The driving reminder was accepted at 12:13:34, before this capture began; its
 phrase was not recognized. That acoustic check remains unverified. iPhone
 Mirroring still required local authentication, leaving phone synchronization and
 Siri activation unverified. GitHub CI passed; the pull request remains draft.
+
+Follow-up at 12:29–12:30: iPhone Mirroring connected, all three shortcuts were
+visible on the phone, and each was run there. The deployed relay recorded the
+correct repeat/snooze/why command. With no recent qualifying record, each failed
+closed with the expected no-recent-announcement response. The local microphone
+recognized the repeat and explanation responses. This verifies phone execution,
+not spoken Siri name recognition.
+
+A second disposable driving event (Blue lighthouse road test) was automatically
+accepted once at 12:34:38, with a 13-minute drive. It was deleted after the test;
+EventKit confirmed zero matching events remained. The capture already running
+before scheduling recognized a real Energy High cleared message at offset 390
+seconds, more than two minutes after that message's relay acceptance, but not the
+driving phrase. An extended listening window was started without resending.
+Three additional replacement/invalid-timer/deleted-event regression tests bring
+the passing local suite to 421 tests.
