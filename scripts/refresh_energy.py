@@ -554,6 +554,8 @@ def main() -> int:
         index = next(i for i, step in enumerate(plan) if step[0] == "combo_notifier") + 1
         plan.insert(index, ("announcement_health", [py, "scripts/announcement_health.py"], 30, True, False, None))
         plan.insert(index + 1, ("additional_announcements", [py, "scripts/additional_announcements.py", "--deliver"], 150, True, False, None))
+        # Independent optional model step; never blocks laundry or changes its rules.
+        plan.append(("jev_energy", [py, "scripts/jev_energy_monitor.py", "--deliver"], 60, True, False, None))
         for name, command, timeout, optional, is_node, skip_reason in plan:
             if command is None:
                 step = skipped_step(name, skip_reason or "recent capture is still fresh", optional=optional)
