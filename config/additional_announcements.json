@@ -1,0 +1,6 @@
+{
+  "enabled": true,
+  "laundryHealth": true,
+  "doorbell": {"enabled": false, "sourceVerified": false, "cameraId": null, "name": "Doorbell", "component": null},
+  "freezer": {"enabled": false, "sourceVerified": false, "sensorId": null, "warnAboveF": 15, "clearBelowF": 10}
+}
