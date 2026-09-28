@@ -70,7 +70,10 @@ was cached and made zero API calls. No audio was played by that review.
 
 Mac shortcut setup exposed two migration issues: `m2-office-mini.local` was no
 longer reachable, and the current Mac Studio Shortcuts public key did not match
-the existing restricted Mac/iPhone keys. New phrase entries were saved, but SSH
-execution remains blocked pending authorization of the current restricted key
-and selection of a stable service hostname. Do not interpret saved entries as
-successful phone execution, acoustic delivery, or Siri voice recognition.
+the existing restricted Mac/iPhone keys. The user authorized the current Mac
+key with the same forced-command/no-forwarding restrictions; existing keys
+were retained. `Anything need attention` then successfully invoked the deployed
+service and the iPhone Intercom relay accepted its reply at 12:38:32 Pacific.
+The chosen stable hostname is `home-hub.local`; its system-settings rename still
+requires administrator authentication. Phone sync, acoustic delivery, and Siri
+voice recognition are separate checks, not established by relay acceptance.
