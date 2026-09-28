@@ -45,6 +45,10 @@ function main() {
   const oven = path.join(root, "dist/devices/oven.js");
   const accessToken = path.join(root, "dist/getAccessToken.js");
   const platform = path.join(root, "dist/platform.js");
+  if (args.has("--heartbeat-only")) {
+    console.log(JSON.stringify({ root, applied: shouldApply, ...patchHeartbeat(device, shouldApply) }, null, 2));
+    return;
+  }
   const washerStatus = patchFile(
     washer,
     `            const seconds = Math.round(minutes * 60); // Don't cap, let it show actual time
@@ -122,15 +126,35 @@ function main() {
                             break;`,
     shouldApply
   );
-  const heartbeatImportsStatus = patchFile(
+  console.log(JSON.stringify({ root, applied: shouldApply, washer: washerStatus,
+    oven: ovenStatus, auth: authStatus, authMfaUrl: authMfaUrlStatus,
+    combo: comboStatus, ...patchHeartbeat(device, shouldApply) }, null, 2));
+}
+
+function patchHeartbeat(device, shouldApply) {
+  const before = fs.readFileSync(device, "utf8");
+  const pushOriginal = `    onErdUpdate(erd, value) {
+        // no live updates by default
+        void erd;
+        void value;
+    }`;
+  const pushReplacement = `    onErdUpdate(erd, value) {
+        // Only genuine websocket arrivals count; cached getLiveErd reads do not.
+        if (value !== undefined && value !== null) {
+            recordSmartHQHeartbeat(this.getApplianceId(), this.getDisplayName(), erd, value);
+        }
+    }`;
+  if (before.includes("this.platform.getLiveErd(") && !before.includes(pushOriginal) && !before.includes(pushReplacement)) {
+    throw new Error("Unsupported SmartHQ websocket heartbeat hook; plugin left unchanged");
+  }
+  const heartbeatImportsStatus = before.includes("function recordSmartHQHeartbeat(applianceId, nickname, erd, value)")
+    ? "already patched" : patchFile(
     device,
-    `import axios from 'axios';
-import { ERD_TYPES } from '../settings.js';`,
+    `import axios from 'axios';`,
     `import axios from 'axios';
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { ERD_TYPES } from '../settings.js';
 const SMART_HOME_HEARTBEAT_PATH = process.env.SMART_HOME_SMARTHQ_HEARTBEAT_PATH
     ?? join(homedir(), 'Library', 'Application Support', 'SmartHomeMonitor', 'data', 'smarthq_erd_heartbeat.json');
 function recordSmartHQHeartbeat(applianceId, nickname, erd, value) {
@@ -189,17 +213,13 @@ function recordSmartHQHeartbeat(applianceId, nickname, erd, value) {
             return value;`,
     shouldApply
   );
-  console.log(JSON.stringify({
-    root,
-    applied: shouldApply,
-    washer: washerStatus,
-    oven: ovenStatus,
-    auth: authStatus,
-    authMfaUrl: authMfaUrlStatus,
-    combo: comboStatus,
+  const heartbeatPushStatus = before.includes("this.platform.getLiveErd(")
+    ? patchFile(device, pushOriginal, pushReplacement, shouldApply) : "not applicable";
+  return {
     heartbeatImports: heartbeatImportsStatus,
     heartbeatRead: heartbeatReadStatus,
-  }, null, 2));
+    heartbeatPush: heartbeatPushStatus,
+  };
 }
 
 main();

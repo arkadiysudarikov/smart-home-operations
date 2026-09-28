@@ -46,6 +46,47 @@ export class deviceBase {
 
 
 class PatchSmartHqRemainingDurationTest(unittest.TestCase):
+    def test_081_heartbeat_only_preserves_upstream_imports_and_cached_reads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            washer, oven, auth, platform, device = self.make_plugin(root)
+            current = DEVICE_ORIGINAL.replace("{ ERD_TYPES }", "{ ERD_TYPES, MAX_TIMER_MS }")
+            current = current.replace("    async readErd(erd) {", """    onErdUpdate(erd, value) {
+        // no live updates by default
+        void erd;
+        void value;
+    }
+    async readErd(erd) {
+        const liveValue = this.platform.getLiveErd(this.getApplianceId(), erd);
+        if (liveValue !== undefined) { return liveValue; }""")
+            device.write_text(current)
+            # Unrelated legacy patch targets are absent in current upstream.
+            washer.write_text("upstream 0.8.1 washer")
+            before = device.read_text()
+            dry = self.run_script(root, "--heartbeat-only")
+            self.assertEqual(dry.returncode, 0, dry.stderr)
+            self.assertEqual(device.read_text(), before)
+            result = self.run_script(root, "--heartbeat-only", "--apply")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(washer.read_text(), "upstream 0.8.1 washer")
+            self.assertIn("{ ERD_TYPES, MAX_TIMER_MS }", device.read_text())
+            self.assertIn("if (liveValue !== undefined) { return liveValue; }", device.read_text())
+            self.assertIn("Only genuine websocket arrivals count", device.read_text())
+            after = device.read_text()
+            again = self.run_script(root, "--heartbeat-only", "--apply")
+            self.assertEqual(again.returncode, 0, again.stderr)
+            self.assertEqual(device.read_text(), after)
+
+    def test_unknown_websocket_hook_fails_before_writing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            device = self.make_plugin(root)[4]
+            original = device.read_text() + "\n// this.platform.getLiveErd( unknown implementation\n"
+            device.write_text(original)
+            result = self.run_script(root, "--heartbeat-only", "--apply")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(device.read_text(), original)
+
     def make_plugin(self, root: Path) -> tuple[Path, Path, Path, Path, Path]:
         washer = root / "dist/devices/clothesWasher.js"
         oven = root / "dist/devices/oven.js"
