@@ -32,7 +32,8 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def call_jev(payload):
     body = json.dumps(payload, allow_nan=False).encode()
-    if len(body) > 2048:
+    # Up to seven structured decisions share one request and one reservation.
+    if len(body) > 8192:
         raise RuntimeError('Request size exceeds approved diagnostic bound')
     key = subprocess.run(['/usr/bin/security', 'find-generic-password', '-a', 'smart-home',
                           '-s', 'com.arkadiy.smart-home.typesafe', '-w'], capture_output=True, check=True, timeout=5).stdout.decode().strip()

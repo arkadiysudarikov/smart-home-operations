@@ -13,13 +13,15 @@ NOW = "2026-09-11T16:00:00-07:00"
 class BriefingTests(unittest.TestCase):
     def test_more_expands_energy_and_skips_its_own_reply(self):
         import tempfile, json
-        with tempfile.TemporaryDirectory() as directory, mock.patch.object(house.alerts, "DATA_DIR", Path(directory)), mock.patch.object(house.alerts, "load_json_file", return_value=self.context()):
+        import jev_house_advisor as advisor
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(house.alerts, "DATA_DIR", Path(directory)), mock.patch.object(advisor, "render", return_value="House load is 5.0 kilowatts; laundry, 3.0 kilowatts.") as render:
             events = [{"ok": True, "at": NOW, "announcementId": "dr_house_energy"}, {"ok": True, "at": NOW, "announcementId": "dr_house_more"}]
             (Path(directory) / "homepod_announcement_events.jsonl").write_text("\n".join(json.dumps(e) for e in events))
             text = house.more_message(NOW)
             self.assertIn("5.0 kilowatts", text)
-            self.assertIn("Dryer, 3.0", text)
+            self.assertIn("laundry, 3.0", text)
             self.assertNotIn("Solar", text)
+            self.assertEqual(render.call_args.args[0], 'energy_detail')
 
     def test_more_never_reexecutes_quiet(self):
         import tempfile, json
