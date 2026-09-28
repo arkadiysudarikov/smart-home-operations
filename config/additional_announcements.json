@@ -1,6 +1,6 @@
 {
   "enabled": true,
   "laundryHealth": true,
-  "doorbell": {"enabled": false, "sourceVerified": false, "cameraId": null, "name": "Doorbell", "component": null},
+  "doorbell": {"enabled": true, "sourceVerified": true, "verification": "installed_plugin_contract_and_accessory_mapping", "physicalDeliveryVerified": false, "cameraId": "104430779-2049", "name": "Doorbell", "component": "Security System"},
   "freezer": {"enabled": false, "sourceVerified": false, "sensorId": null, "warnAboveF": 15, "clearBelowF": 10}
 }
