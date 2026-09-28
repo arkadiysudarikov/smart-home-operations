@@ -74,7 +74,7 @@
     "targets": [
       {
         "id": "m2-office-mini",
-        "host": "m2-office-mini.local",
+        "host": "home-hub.local",
         "room": "office",
         "zone": "level_2",
         "presence_access_points": [

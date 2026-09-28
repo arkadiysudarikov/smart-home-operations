@@ -74,6 +74,15 @@ the existing restricted Mac/iPhone keys. The user authorized the current Mac
 key with the same forced-command/no-forwarding restrictions; existing keys
 were retained. `Anything need attention` then successfully invoked the deployed
 service and the iPhone Intercom relay accepted its reply at 12:38:32 Pacific.
-The chosen stable hostname is `home-hub.local`; its system-settings rename still
-requires administrator authentication. Phone sync, acoustic delivery, and Siri
-voice recognition are separate checks, not established by relay acceptance.
+After administrator approval, the local hostname was changed to `home-hub.local`.
+Name resolution and SSH connectivity were verified. Twenty-one SSH-backed
+household shortcuts were updated to that stable hostname, including all four new
+phrases and the existing energy/follow-up commands. The local display-awake target
+uses the stable name too; its existing ID was preserved so state mappings do not
+reset. Treat this name as a service identity to preserve across hardware changes.
+
+The audit also found four older Text-only placeholders (House, good morning;
+Quiet until morning; When should I leave; Anything unusual). They have no SSH
+host to migrate and were not represented as working commands by this change.
+Phone sync, acoustic delivery, and Siri voice recognition remain separate checks,
+not established by relay acceptance.
