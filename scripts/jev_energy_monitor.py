@@ -30,9 +30,25 @@ def sample_from(data, now):
     seen = presence.get('lastConfirmedAt')
     if type(home) is not bool or not low.number(seen) or not 0 <= now-seen <= 90:
         home = None
+    live_presence = load(data/'latest_display_awake.json')
+    network = live_presence.get('unifi', {})
+    current_home = live_presence.get('presence', {}).get('homePresent')
+    if (live_presence.get('ok') is True and live_presence.get('mappingConfigured') is True
+            and fresh(live_presence.get('generatedAt'),now,90)
+            and network.get('ok') is True and network.get('cached') is False
+            and type(current_home) is bool):
+        home = current_home
     hvac, ev = None, None
+    alarm = load(data/'latest_alarm_com.json')
+    alarm_state = alarm.get('alarmState', {})
+    if fresh(alarm.get('generatedAt'), now) and alarm_state.get('ok') is True:
+        thermostats = [t for s in alarm_state.get('systems', [])
+                       for t in s.get('components', {}).get('thermostats', [])]
+        states = [str(t.get('stateText', '')).lower() for t in thermostats]
+        if states and all(s in ('cooling','heating','off','idle') for s in states) and not any(t.get('isMalfunctioning') for t in thermostats):
+            hvac = any(s in ('cooling','heating') for s in states)
     # Context values are HomeKit observations, not invented defaults for absent devices.
-    if (fresh(snapshot.get('captured_at'), now)
+    if (hvac is None and fresh(snapshot.get('captured_at'), now)
             and fresh(virtual.get('generatedAt'), now)
             and fresh(virtual.get('freshness', {}).get('alarmPortalGeneratedAt'), now)):
         values = snapshot.get('homeEvents', {}).get('currentCharacteristics', {}).values()
@@ -71,6 +87,16 @@ def tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
     prior = state.get('detector', {})
     if config.get('enabled') is not True:
         return {'status': 'disabled', 'calls': 0}
+    import jev_house_advisor as advisor
+    evidence = advisor.facts(data, now, sample=sample)
+    if mutate:
+        # Every pass records fresh conflicts even when the API is on cooldown.
+        # This is a diagnostic record, not a completion or delivery decision.
+        save(data/'latest_jev_house_diagnostics.json', {
+            'generatedAt':datetime.fromtimestamp(now,timezone.utc).isoformat(),
+            'laundryConflicts':evidence['laundry_conflicts'],
+            'acceptedAdvice':advisor.cached(data,evidence,now),
+            'audioExecuted':False})
     now_text = datetime.fromtimestamp(now, timezone.utc).isoformat()
     detector, decision = low.evaluate(sample, history, prior, now_text, enabled=True)
     if sample['verified'] and low.context(sample) is not None:
@@ -91,6 +117,12 @@ def tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
         is_candidate = candidate_due
         request = decision['request'] if is_candidate else review_request(sample, low.baseline(sample, history, low.timestamp(now_text)))
         try:
+            if not is_candidate:
+                batch = advisor.request(evidence)
+                batch['state'] = {**batch['state'], **request['state']}
+                batch['questions'].update(request['questions'])
+                request = batch
+                save(data/'jev_house_attempt.json', {'at':now})
             response = ask(request)
             report['calls'] = 1
             report['model'] = response.get('model')
@@ -111,6 +143,7 @@ def tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
                     if result['status'] == 'eligible' and not active('energy_low') and deliver:
                         report['delivery'] = deliver(result['message'], 'energy_low').get('status')
             else:
+                advisor.remember(data, evidence, response, now)
                 answer = response.get('answers', {}).get('energy_review', {})
                 choice = answer.get('choice')
                 if response.get('model') != 'jev-1.13.0' or answer.get('type') != 'choice' or choice not in request['questions']['energy_review']['criteria']:

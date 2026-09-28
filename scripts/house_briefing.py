@@ -8,7 +8,7 @@ from pathlib import Path
 
 import generate_alerts as alerts
 
-MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why")
+MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "attention", "savings", "diagnostics", "routine")
 BASELINE = alerts.DATA_DIR / "dr_house_baseline.json"
 
 
@@ -95,29 +95,23 @@ def more_message(now):
             if not fresh(event, "at", now, 600):
                 break
             identifier = str(event.get("announcementId", ""))
+            if identifier.startswith('calendar-'):
+                return 'That was a personal appointment reminder. Use Repeat that for an exact occurrence and home-presence check.'
+            if identifier.startswith('energy_'):
+                from jev_house_advisor import render
+                return render('energy_detail', alerts.DATA_DIR, datetime.fromisoformat(now).timestamp())
+            if identifier in ('washer', 'dryer', 'combo'):
+                from jev_house_advisor import render
+                return 'That was a laundry alert. Current check: '+render('diagnostics', alerts.DATA_DIR, datetime.fromisoformat(now).timestamp())
             if not identifier.startswith("dr_house_") or identifier == "dr_house_more":
                 continue
             mode = identifier.removeprefix("dr_house_")
+            if mode in ('attention','savings','diagnostics','routine','complications'):
+                from jev_house_advisor import render
+                return render('detail' if mode in ('attention','complications') else mode, alerts.DATA_DIR, datetime.fromisoformat(now).timestamp())
             if mode in ("energy", "running", "unusual"):
-                context = alerts.load_json_file(alerts.ENERGY_HIGH_CONTEXT_PATH) or {}
-                if not fresh(context, "generatedAt", now) or not fresh(context, "sampleAt", now):
-                    return "Current energy details are unavailable."
-                load, threshold = context.get("liveLoadKw"), context.get("thresholdKw")
-                if not number(load) or not number(threshold) or threshold <= 0:
-                    return "Current energy details are unavailable."
-                text = f"Current house load is {load:.1f} kilowatts; the alert threshold is {threshold:.1f}."
-                loads = []
-                for source in context.get("candidates") or []:
-                    if source.get("source") == "Sense" and fresh(source, "capturedAt", now):
-                        for device in source.get("devices") or []:
-                            name, watts = str(device.get("name") or ""), device.get("watts")
-                            if name and name.lower() not in ("solar", "other", "unknown", "always on") and str(device.get("id", "")).lower() != "solar" and number(watts) and watts >= 200:
-                                loads.append((watts, name))
-                if loads:
-                    text += " Sense estimates: " + "; ".join(f"{name}, {watts/1000:.1f} kilowatts" for watts, name in sorted(set(loads), reverse=True)[:3]) + ". These may not account for the full load."
-                else:
-                    text += " No reliable appliance breakdown is available."
-                return text
+                from jev_house_advisor import render
+                return render('energy_detail', alerts.DATA_DIR, datetime.fromisoformat(now).timestamp())
             if mode in ("hold", "quiet", "resume"):
                 return "These controls affect routine announcements only. Safety alerts remain enabled. Resuming cancels the temporary pause, not ordinary quiet hours; missed alerts are not replayed."
             if mode == "washerfree":
@@ -125,7 +119,8 @@ def more_message(now):
             if mode == "departure":
                 return (calendar_summary(now, departure_only=True) or "No current departure estimate is available for a verified person at home.") + " Timing uses driving directions and your configured arrival buffer."
             if mode in ("status", "morning", "discharge"):
-                return build("status") + " Only current reporting devices and appointments for verified people at home are included."
+                from jev_house_advisor import render
+                return render('detail', alerts.DATA_DIR, datetime.fromisoformat(now).timestamp())
             if mode in ("openings", "leave", "night", "complications", "changes"):
                 return build("leave") + " This is a fresh sensor check, not proof of complete coverage. Nothing was locked or armed."
             if mode == "explain":
@@ -235,6 +230,9 @@ def build(mode):
         from announcement_followup import request
         return request(mode)
     now = datetime.now(timezone.utc).isoformat()
+    if mode in ('attention','savings','diagnostics','routine'):
+        from jev_house_advisor import render
+        return render(mode, alerts.DATA_DIR, datetime.fromisoformat(now).timestamp())
     if mode == "more":
         return more_message(now)
     energy = alerts.load_json_file(alerts.ENERGY_HIGH_CONTEXT_PATH) or {}
@@ -358,7 +356,16 @@ def main():
         from announcement_followup import request
         message = request("snooze", mutate=True)
     else:
+        if args.speak and args.mode in ('energy','complications','attention','savings','diagnostics','routine','more','status'):
+            import jev_house_advisor as advisor
+            # Failure, exhausted budget, or cooldown must not prevent the reply.
+            try:
+                advisor.refresh(alerts.DATA_DIR, datetime.now(timezone.utc).timestamp())
+            except (OSError, ValueError, TypeError):
+                pass
         message = build(args.mode)
+        if args.speak and args.mode in ('energy','complications'):
+            message = advisor.render(args.mode, alerts.DATA_DIR, datetime.now(timezone.utc).timestamp())
     if args.speak and args.mode == "resume":
         from announcement_pause import resume
         resume()

@@ -136,7 +136,7 @@ class BudgetTests(unittest.TestCase):
     def test_oversized_request_never_reads_key_or_sends(self):
         with patch.object(transport.subprocess,'run') as key:
             with self.assertRaisesRegex(RuntimeError,'size'):
-                transport.call_jev({'state':'x'*3000})
+                    transport.call_jev({'state':'x'*9000})
             key.assert_not_called()
 
 
