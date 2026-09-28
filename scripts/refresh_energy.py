@@ -550,6 +550,9 @@ def main() -> int:
                 ]
             )
 
+        # Run before long provider fetches so laundry/relay faults are visible promptly.
+        index = next(i for i, step in enumerate(plan) if step[0] == "combo_notifier") + 1
+        plan.insert(index, ("announcement_health", [py, "scripts/announcement_health.py"], 30, True, False, None))
         for name, command, timeout, optional, is_node, skip_reason in plan:
             if command is None:
                 step = skipped_step(name, skip_reason or "recent capture is still fresh", optional=optional)

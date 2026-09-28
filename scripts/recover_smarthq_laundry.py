@@ -266,6 +266,18 @@ def main() -> int:
     }
     sound = str(config.get("mac_sound", "Glass"))
 
+    # Missing hooks cannot be fixed by restarting. Never loop restarts after an
+    # upstream update replaces our reviewed instrumentation.
+    from announcement_health import active_plugin, inspect_plugin
+    plugin_root = active_plugin(int(config.get("child_bridge_port", 40893)))
+    instrumentation = inspect_plugin(plugin_root) if plugin_root else {"ok": False, "status": "running_plugin_unresolved"}
+    status["instrumentation"] = instrumentation
+    if plugin_root and instrumentation.get("ok") is not True:
+        status.update(ok=False, classification="instrumentation_review_required", action="none")
+        write_status(status)
+        print(json.dumps(status, indent=2, sort_keys=True))
+        return 1
+
     if not assessment["stale"]:
         status["consecutiveStaleChecks"] = 0
         status["awaitingRecovery"] = False
