@@ -1,4 +1,4 @@
-"""One synthetic Jev diagnostic review, never an appliance control or announcement.
+"""Shared bounded Jev transport; CLI runs one synthetic laundry diagnostic.
 
 Uses the approved Keychain credential. Reserves one cent per bounded request from
 the shared $1/month local allocation before transmission; never retries a request.
@@ -30,12 +30,12 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise RuntimeError('Redirect refused')
 
 
-def main():
-    body = json.dumps(REQUEST).encode()
+def call_jev(payload):
+    body = json.dumps(payload, allow_nan=False).encode()
     if len(body) > 2048:
         raise RuntimeError('Request size exceeds approved diagnostic bound')
     key = subprocess.run(['/usr/bin/security', 'find-generic-password', '-a', 'smart-home',
-                          '-s', 'com.arkadiy.smart-home.typesafe', '-w'], capture_output=True, check=True).stdout.decode().strip()
+                          '-s', 'com.arkadiy.smart-home.typesafe', '-w'], capture_output=True, check=True, timeout=5).stdout.decode().strip()
     with (DATA/'jev_budget.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         path = DATA/'jev_budget.json'
@@ -58,16 +58,21 @@ def main():
             if len(raw) > 65536:
                 raise RuntimeError('Oversized response')
             result = json.loads(raw)
-            answer = result.get('answers', {}).get('interpretation', {})
-            ok = result.get('model') == REQUEST['model'] and answer.get('type') == 'choice' and answer.get('choice') in ('still_running', 'review')
-            print(json.dumps({'ok': ok, 'syntheticOnly': True, 'model': result.get('model'),
-                              'answer': answer, 'usage': result.get('usage'),
-                              'reservedUsdThisMonth': ledger[month]/1000000,
-                              'controlsOrAnnouncementsExecuted': False}))
-            return 0 if ok else 1
+            if result.get('model') != payload['model']:
+                raise RuntimeError('Unexpected model')
+            return result
         except urllib.error.HTTPError as error:
-            print(json.dumps({'ok': False, 'httpStatus': error.code, 'retryAttempted': False}))
-            return 1
+            raise RuntimeError(f'Jev HTTP {error.code}; no retry') from None
+
+
+def main():
+    result = call_jev(REQUEST)
+    answer = result.get('answers', {}).get('interpretation', {})
+    ok = answer.get('type') == 'choice' and answer.get('choice') in ('still_running', 'review')
+    print(json.dumps({'ok': ok, 'syntheticOnly': True, 'model': result.get('model'),
+                      'answer': answer, 'usage': result.get('usage'),
+                      'controlsOrAnnouncementsExecuted': False}))
+    return 0 if ok else 1
 
 
 if __name__ == '__main__':

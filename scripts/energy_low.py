@@ -1,7 +1,7 @@
-"""Staged low-energy detector and Jev request contract; no network or delivery.
+"""Pure low-energy detector and Jev request contract; no network or delivery.
 
 Callers must persist returned state before dispatching an eligible announcement.
-The live scheduler is deliberately not wired until API access is provisioned.
+The budgeted network and delivery adapter lives in jev_energy_monitor.py.
 """
 from __future__ import annotations
 
