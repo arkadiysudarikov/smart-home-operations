@@ -34,14 +34,18 @@ No titles or locations. Fifteen-minute per-event repeat limit and at most three 
 notices per check, without queuing excess changes. Baseline files contain
 hashes/timestamps rather than appointment text and are mode 0600.
 
-## Doorbell — staged, disabled
+## Doorbell — enabled September 28
 
 Both enabled and sourceVerified must be true and cameraId/component must be mapped.
 Only an exact Alarm.com `Camera ring detected for NAME (ID)` event from that component
 qualifies. Motion and generic contact events never count. Events come from the existing
 read-only smart_home.sqlite event history, must be <=90 seconds old, and are deduplicated
 by event key with a 30-second cooldown. First run consumes historical events silently.
-Physical ring verification is still required; polling can miss events outside that window.
+The user explicitly requested activation. The installed Alarm.com 1.13.1 CameraHandler
+and cached ADC-VDB770 accessory map camera 104430779-2049 to the Security System
+component. sourceVerified records that contract/mapping check, not an audible test;
+physicalDeliveryVerified remains false. No real ring was found in the stored event history.
+Physical ring verification is still outstanding; polling can miss events outside that window.
 
 ## Freezer — staged, disabled
 
