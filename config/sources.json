@@ -241,7 +241,7 @@
   "washer_notifications": {
     "enabled": true,
     "accessory": "Washer",
-    "finish_signal": "cycleActive",
+    "finish_signal": "countdown_confirmed",
     "finish_title": "Wash Finished",
     "finish_message": "The wash has finished. Clothes are ready.",
     "announcement_message": "The wash has finished. Clothes are ready.",

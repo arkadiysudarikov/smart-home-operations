@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import subprocess
 import tempfile
 import urllib.parse
@@ -95,6 +96,7 @@ def direct_appliance_state(
         "fresh": capture_fresh and (heartbeat_fresh or not heartbeat_required),
         "inUse": bool(device["inUse"]),
         "cycleActive": bool(device["cycleActive"]),
+        "remainingSeconds": device.get("remainingSeconds"),
         "doorOpen": device.get("doorOpen"),
         "apiLastSuccessAt": heartbeat_at.isoformat(timespec="seconds") if heartbeat_at else None,
         "apiLastChangedAt": device.get("apiLastChangedAt"),
@@ -312,9 +314,76 @@ def evolve_washer_state(
     return state, list(dict.fromkeys(actions))
 
 
+def evolve_countdown_state(prior, current, now, config):
+    """Washer-only completion evidence independent of the unreliable cycle tile.
+
+    Never convert a positive countdown to finished. Require a decreasing run,
+    a near-zero final reading, then two distinct zero observations >=60s apart.
+    Unknown/stale readings do not become zero and old captures cannot advance proof.
+    """
+    state = dict(prior)
+    evidence = dict(state.get("countdownEvidence") or {})
+    remaining = current.get("remainingSeconds")
+    at = parse_time(current.get("capturedAt"))
+    previous_at = parse_time(evidence.get("at"))
+    valid = (current.get("fresh") is True and current.get("source") == "homebridge-hap-live"
+             and at is not None and timedelta(0) <= now-at <= timedelta(minutes=3)
+             and type(remaining) in (int, float) and math.isfinite(remaining) and 0 <= remaining <= 86400)
+    if not valid or (previous_at and at <= previous_at):
+        # Preserve the last effective edge; stale input may report health only.
+        state["countdownStatus"] = "invalid_stale_or_repeated_sample"
+        if not valid:
+            evidence.pop("zeroSince", None)
+        state["countdownEvidence"] = evidence
+        return evolve_washer_state(state, {**current, "fresh": False}, now, config)
+    if previous_at and at-previous_at > timedelta(minutes=5):
+        evidence = {}
+    effective = bool(state.get("lastCycleActive", False))
+    status = "idle_unarmed"
+    if remaining > 0:
+        evidence.pop("zeroSince", None)
+        if current.get("inUse") is True:
+            old = evidence.get("positive")
+            evidence["decreased"] = bool(evidence.get("decreased") or (old is not None and remaining < old))
+            evidence["positive"] = remaining
+            evidence["positiveAt"] = at.isoformat()
+            effective = True
+            status = "countdown_running"
+        else:
+            status = "positive_countdown_not_running"
+    else:
+        last_positive = evidence.get("positive")
+        # A large jump to zero may be cancellation or bad telemetry, not completion.
+        near_end = evidence.get("decreased") and last_positive is not None and last_positive <= 180
+        if near_end and state.get("primaryArmed"):
+            zero_since = parse_time(evidence.get("zeroSince"))
+            if zero_since is None:
+                evidence["zeroSince"] = at.isoformat()
+            elif at-zero_since >= timedelta(seconds=60):
+                effective = False
+                evidence = {}
+            status = "zero_confirmed" if not effective else "confirming_zero"
+        elif effective:
+            status = "zero_without_completion_evidence"
+            # Disarm ambiguous ends instead of interpreting a later run as this one.
+            state["primaryArmed"] = False
+            state["lastCycleActive"] = False
+            effective = False
+            evidence = {}
+    evidence["at"] = at.isoformat()
+    state["countdownEvidence"] = evidence
+    state["countdownStatus"] = status
+    # Initialize from a real running observation, never legacy stale arming flags.
+    if "lastCycleActive" not in state:
+        state["lastCycleActive"] = False
+    return evolve_washer_state(state, {**current, "cycleActive": effective}, now, config)
+
+
 def evolve_state(
     prior: dict[str, Any], current: dict[str, Any], now: datetime, config: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
+    if config.get("finish_signal") == "countdown_confirmed":
+        return evolve_countdown_state(prior, current, now, config)
     if config.get("finish_signal") == "cycleActive":
         return evolve_washer_state(prior, current, now, config)
 
