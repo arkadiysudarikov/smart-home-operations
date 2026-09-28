@@ -8,7 +8,7 @@ from pathlib import Path
 
 import generate_alerts as alerts
 
-MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more")
+MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why")
 BASELINE = alerts.DATA_DIR / "dr_house_baseline.json"
 
 
@@ -231,6 +231,9 @@ def calendar_summary(now, departure_only=False):
 
 
 def build(mode):
+    if mode in ("repeat", "snooze", "why"):
+        from announcement_followup import request
+        return request(mode)
     now = datetime.now(timezone.utc).isoformat()
     if mode == "more":
         return more_message(now)
@@ -351,7 +354,11 @@ def main():
         if args.mode == "quiet":
             from announcement_pause import quiet_until_morning
             quiet_until_morning()
-    message = build(args.mode)
+    if args.mode == "snooze" and args.speak:
+        from announcement_followup import request
+        message = request("snooze", mutate=True)
+    else:
+        message = build(args.mode)
     if args.speak and args.mode == "resume":
         from announcement_pause import resume
         resume()
