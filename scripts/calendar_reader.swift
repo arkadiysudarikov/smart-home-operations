@@ -34,6 +34,7 @@ func readCalendars() {
             "start": formatter.string(from: event.startDate),
             "end": formatter.string(from: event.endDate),
             "allDay": event.isAllDay,
+            "recurring": event.hasRecurrenceRules || event.isDetached,
             "location": event.location ?? "",
             "url": event.url?.absoluteString ?? "",
             "status": event.status.rawValue

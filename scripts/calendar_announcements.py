@@ -114,6 +114,21 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         state = json.loads(STATE.read_text()) if STATE.exists() else {}
         state = {key: value for key, value in state.items() if now - value < 604800}
+        if config.get("changesEnabled") is True and args.deliver and config.get("enabled") is True:
+            if Path(__file__).resolve().parents[1] != RUNTIME.resolve():
+                raise RuntimeError("Delivery requires deployed runtime")
+            from additional_announcements import calendar_changes, daytime, load, save
+            change_path = STATE.parent / "calendar_changes_state.json"
+            changes, candidates = calendar_changes(snapshot["events"], load(change_path), home, now)
+            # Baseline and attempts are durable before invoking the relay.
+            save(change_path, changes)
+            for owner, identifier, message in candidates[:3]:
+                checked_clients = active_clients()
+                checked_at = datetime.now(timezone.utc).timestamp()
+                if (0 <= checked_at - timestamp(snapshot["generatedAt"]) <= 90 and daytime(checked_at)
+                        and is_home(checked_clients, config["phones"][owner], checked_at)):
+                    result = run_indoor_homepod_announcement(message, identifier)
+                    report["attempts"].append({"id": identifier, "status": result.get("status")})
         for event in snapshot["events"]:
             video = video_event(event, now)
             if not (video or eligible(event, now)) or not home.get(event["calendar"], False):

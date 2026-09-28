@@ -62,6 +62,7 @@ DRIFT_CHECK_FILES = [
     "scripts/probe_alarm_sensor_saver_ui.js",
     "scripts/recover_smarthq_laundry.py",
     "scripts/announcement_health.py",
+    "scripts/additional_announcements.py",
     "scripts/recover_unifi_occupancy.py",
     "scripts/refresh_energy.py",
     "scripts/repair_alarm_homebridge_cache.py",

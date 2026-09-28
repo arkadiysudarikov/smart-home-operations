@@ -9,7 +9,7 @@ ROUTINE = {"washer", "dryer", "combo", "energy_high_on", "energy_high_clear", "e
 
 
 def paused(identifier, state, now):
-    if identifier not in ROUTINE and not identifier.startswith("calendar-"):
+    if identifier not in ROUTINE | {"laundry_health", "doorbell_press", "freezer_temperature"} and not identifier.startswith("calendar-"):
         return False
     try:
         start = float(state["startedAt"])

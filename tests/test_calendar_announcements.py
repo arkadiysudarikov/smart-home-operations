@@ -126,3 +126,41 @@ class CalendarDeliveryTests(unittest.TestCase):
             self.run_scheduler()
         self.assertEqual(self.run_scheduler()["due"], 0)
         self.relay.assert_called_once()
+
+    def prepare_change(self):
+        from additional_announcements import calendar_changes
+        config = json.loads(cal.CONFIG.read_text())
+        config["changesEnabled"] = True
+        cal.CONFIG.write_text(json.dumps(config))
+        self.event["recurring"] = False
+        baseline, _ = calendar_changes([self.event], {}, {"Jeanne": True}, self.now.timestamp()-60)
+        self.change_path = self.state.parent / "calendar_changes_state.json"
+        self.change_path.write_text(json.dumps(baseline))
+        self.event["status"] = 3
+
+    def test_explicit_cancellation_persisted_before_relay_once(self):
+        self.prepare_change()
+        def relay(message, identifier):
+            self.assertTrue(next(iter(json.loads(self.change_path.read_text()).values()))["cancelled"])
+            self.assertTrue(identifier.startswith("calendar-change-"))
+            self.assertNotIn("Synthetic appointment", message)
+            return {"status": "accepted"}
+        self.relay.side_effect = relay
+        self.assertEqual(len(self.run_scheduler()["attempts"]), 1)
+        self.assertEqual(self.run_scheduler()["attempts"], [])
+        self.relay.assert_called_once()
+
+    def test_change_rechecks_phone_and_consumes_without_replay(self):
+        self.prepare_change()
+        self.clients.side_effect = [self.clients.return_value, []]
+        self.assertEqual(self.run_scheduler()["attempts"], [])
+        self.clients.side_effect = None
+        self.assertEqual(self.run_scheduler()["attempts"], [])
+        self.relay.assert_not_called()
+
+    def test_change_dry_run_does_not_consume(self):
+        self.prepare_change()
+        previous = self.change_path.read_bytes()
+        self.run_scheduler(deliver=False)
+        self.assertEqual(previous, self.change_path.read_bytes())
+        self.relay.assert_not_called()

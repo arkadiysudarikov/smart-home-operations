@@ -25,6 +25,9 @@ Run scripts/calendar_announcements.py for a silent check; --deliver additionally
 requires the deployed runtime and enabled=true in the private config. Output contains
 presence, event counts and delivery status, not event titles or locations.
 
+Optional changesEnabled=true adds conservative appointment-change notices; see
+[additional-announcements.md](additional-announcements.md) for exclusions and privacy.
+
 Build scripts/calendar_reader.swift into Smart Home Calendar Reader.app in the runtime,
 using config/calendar-reader-Info.plist as Contents/Info.plist, and codesign the bundle.
 Run the executable with --request-access interactively once before scheduling.
