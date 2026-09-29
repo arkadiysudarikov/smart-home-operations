@@ -113,7 +113,9 @@ function main() {
     "                        url: new URL('/account/active/redirect', LOGIN_URL).toString(),",
     shouldApply
   );
-  const comboStatus = patchFile(
+  // Newer plugin versions have a native combo handler; do not add the old washer alias.
+  const nativeCombo = fs.readFileSync(platform, "utf8").includes("await this.createSmartHQCombinationWasherDryer(userId, device, details, features);");
+  const comboStatus = nativeCombo ? "native combo handler" : patchFile(
     platform,
     `                        case 'Clothes Washer':
                             await this.createSmartHQClothesWasher(userId, device, details, features);
@@ -126,7 +128,18 @@ function main() {
                             break;`,
     shouldApply
   );
-  console.log(JSON.stringify({ root, applied: shouldApply, washer: washerStatus,
+  const comboCleanup = nativeCombo ? patchFile(
+    path.join(root, "dist/devices/combinationWasherDryer.js"),
+    "        // Washer/Dryer Running State (Valve)",
+    `        // Washer/Dryer Running State (Valve)
+        // Remove obsolete standalone-washer services retained from the old combo mapping.
+        // Preserve Cycle Status: its existing HomeKit identity is still used by automations.
+        for (const service of [...this.accessory.services]) {
+            if (['Washer', 'WasherDoorLock', 'WasherDoor'].includes(service.subtype)) {
+                this.accessory.removeService(service);
+            }
+        }`, shouldApply) : "legacy handler retained";
+  console.log(JSON.stringify({ root, applied: shouldApply, comboCleanup, washer: washerStatus,
     oven: ovenStatus, auth: authStatus, authMfaUrl: authMfaUrlStatus,
     combo: comboStatus, ...patchHeartbeat(device, shouldApply) }, null, 2));
 }
