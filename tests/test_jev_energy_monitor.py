@@ -55,6 +55,16 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(report['historySamples'],0)
         self.assertFalse(report['contextKnown'])
 
+    def test_unknown_context_and_review_cooldown_are_distinct(self):
+        j.save(self.data/'jev_energy_state.json', {'lastCall':NOW.timestamp()-60})
+        ask=Mock()
+        with patch.object(j,'sample_from',return_value={**self.sample,'ev':None}):
+            report=j.tick(self.data,{'enabled':True},NOW.timestamp(),mutate=True,ask=ask)
+        self.assertEqual(report['reviewStatus'],'cooldown')
+        self.assertEqual(report['missingContext'],['ev'])
+        self.assertEqual(report['lowEnergyStatus'],'invalid_or_stale_data')
+        ask.assert_not_called()
+
     def test_adapter_missing_ev_is_unknown_not_virtual_switch_off(self):
         j.save(self.data/'sense_now_latest.json', {'ok':True,'online':True,
             'capturedAt':NOW.isoformat(),'watts':300,'devices':[]})

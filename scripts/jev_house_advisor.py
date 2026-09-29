@@ -36,6 +36,8 @@ OPTIONS = {
     'savings': {'cooling_open':'Cooling with an opening', 'away_high':'Owner carried device away and unusually high matching load',
         'unknown':'No verified opportunity'},
 }
+from jev_house_features import OPTIONS as FEATURE_OPTIONS
+OPTIONS.update(FEATURE_OPTIONS)
 
 
 def fresh(value, now, seconds=180):
@@ -93,7 +95,7 @@ def facts(data, now, sample=None):
                     conflicts += 1
     history = load(data/'jev_energy_state.json').get('history', [])
     usual = energy_low.baseline(sample, history, datetime.fromtimestamp(now,timezone.utc)) if sample['verified'] and energy_low.context(sample) is not None else None
-    return {'load_kw':load_kw, 'threshold_kw':context['thresholdKw'] if energy_known else None,
+    evidence = {'load_kw':load_kw, 'threshold_kw':context['thresholdKw'] if energy_known else None,
         'high':load_kw >= context['thresholdKw'] if energy_known else None,
         'measured_kw':{k:round(v,3) for k,v in measured.items()},
         'openings':openings, 'reporting_openings':reporting, 'hot':hot, 'cold':cold,
@@ -101,6 +103,8 @@ def facts(data, now, sample=None):
         'owner_home':sample['home'], 'usual_kw':usual,
         'away_high':sample['home'] is False and usual is not None and sample['load_kw'] > 2*usual,
         'daytime':daytime(now)}
+    from jev_house_features import enrich
+    return enrich(data,evidence,now)
 
 
 def request(evidence):
@@ -132,7 +136,8 @@ def supported(e):
     routine = {'quiet'}
     if e['daytime'] and attention: routine.add('announce')
     if e['daytime'] and len(attention)>1: routine.add('combine')
-    return {'contributor':contributors|{'unknown'}, 'attention':attention|{'none'},
+    from jev_house_features import supported as feature_supported
+    return {**feature_supported(e), 'contributor':contributors|{'unknown'}, 'attention':attention|{'none'},
         'laundry':{'unknown','conflict'} if e['laundry_conflicts'] else {'unknown'},
         'routine':routine, 'detail':details|{'unknown'}, 'savings':savings}
 
@@ -239,6 +244,9 @@ def savings_text(e, choices):
 def render(mode, data, now):
     e = facts(data,now)
     c = cached(data,e,now)
+    if mode in ('changes','wait','laundrytime','unusual','recap'):
+        from jev_house_features import render as feature_render
+        return feature_render(mode,e,c)
     if mode=='energy': return energy_text(e,c)
     if mode in ('attention','complications'): return attention_text(e,c)
     if mode=='savings': return savings_text(e,c)
