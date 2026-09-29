@@ -329,6 +329,37 @@ class ActionServerTest(unittest.TestCase):
             self.assertFalse(state["active"])
             self.assertEqual(state["restorePolicy"], "off-after-inactivity")
 
+    def test_garage_expiry_retries_errors_without_losing_hold(self) -> None:
+        for failure in ("occupancy", "read", "off"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                now = action_server.local_now()
+                path = Path(tmp) / "hold.json"
+                path.write_text(json.dumps({"active": True, "lastActivityAt": (now - action_server.timedelta(seconds=301)).isoformat()}))
+                off = mock.Mock(return_value={"ok": False, "error": "timeout"})
+                schedule = mock.Mock()
+                with mock.patch.multiple(action_server,
+                    GARAGE_LIGHT_HOLD_STATUS_PATH=path,
+                    GARAGE_ACTIVITY_EVENTS_PATH=Path(tmp) / "events.jsonl",
+                    garage_occupancy_status=mock.Mock(return_value={"enabled": True, "occupied": None, "error": "unavailable"} if failure == "occupancy" else {"occupied": False}),
+                    garage_light_status=mock.Mock(return_value={"ok": False, "error": "timeout"} if failure == "read" else {"ok": True, "light": {"on": True, "brightness": 100}}),
+                    garage_light_config=mock.Mock(return_value={"restore_started_state": False}),
+                    set_garage_light_off=off,
+                    schedule_garage_light_hold_check=schedule):
+                    action_server.expire_garage_light_hold()
+                state = json.loads(path.read_text())
+                self.assertTrue(state["active"])
+                self.assertIn("retryAt", state)
+                self.assertNotIn("finishedAt", state)
+                schedule.assert_called_once()
+                self.assertEqual(off.call_count, int(failure == "off"))
+
+    def test_garage_retry_does_not_spin_every_second(self) -> None:
+        now = action_server.local_now()
+        state = {"active": True, "lastActivityAt": (now - action_server.timedelta(seconds=600)).isoformat(), "retryAt": (now + action_server.timedelta(seconds=60)).isoformat()}
+        with mock.patch.object(action_server, "local_now", return_value=now), mock.patch.object(action_server, "GARAGE_LIGHT_HOLD_TIMER", None), mock.patch.object(action_server.threading, "Timer") as timer:
+            action_server.schedule_garage_light_hold_check(state)
+            self.assertEqual(timer.call_args.args[0], 60)
+
     def test_garage_expiry_extends_hold_for_phone_on_extender(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             now = action_server.local_now()
