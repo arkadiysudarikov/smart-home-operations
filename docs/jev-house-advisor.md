@@ -1,8 +1,9 @@
 # Jev household decision support
 
-Six bounded Choice questions share a request: measured energy contributor,
+Eleven bounded Choice questions share a request: measured energy contributor,
 attention priority, laundry telemetry conflict, routine-summary advice,
-supporting detail, and energy-saving opportunity. Scheduled energy reviews
+supporting detail, energy-saving opportunity, changes, deferral, solar timing,
+unusual combinations, and evening recap. Scheduled energy reviews
 include these questions alongside the existing low-energy advisory. On-demand
 reviews have a five-minute persistent attempt cooldown. All calls share the
 existing Keychain credential and $1 monthly local allocation; each attempt
@@ -20,6 +21,24 @@ reserves $0.01 before transmission. Requests are limited to 8 KiB, responses to
 | Check the laundry | diagnostics | Flag positive-countdown/idle conflicts |
 | Review routine announcements | routine | Recommend announce/combine/quiet; advisory only |
 | Tell me more | more | Expand the latest supported announcement using current evidence |
+| What changed | changes | Rank comparable energy/opening changes since the last accepted check |
+| What can wait | wait | Only defer energy optimization; never safety or appliance faults |
+| Best time to run laundry | laundrytime | Require ten minutes of fresh measured solar surplus; no invented TOU price |
+| Anything unusual | unusual | Rank verified conflicting laundry, cooling/opening, or away/high-use combinations |
+| Evening recap | recap | Short current-issues report |
+
+The automatic recap is enabled for 19:00–20:00 America/Los_Angeles, at most
+one attempt per local day, only with fresh positive home presence, an accepted
+Jev issues choice, daytime permission, and no announcement pause. No catch-up
+after the window and no suppression of existing safety/laundry announcements.
+It uses the existing scheduled energy process, with one bounded evening review.
+No appointment contents, names, IDs, or raw messages are sent to Jev.
+
+Energy reports distinguish `lowEnergyStatus`, `missingContext`, and `reviewStatus`.
+Unknown EV context blocks low-energy detection, not a scheduled advisory request;
+the normal twelve-hour review cooldown remains. Missing context is never filled
+with assumed false values. Bill-average pricing is not a time-of-use schedule,
+so future cheapest-hour recommendations remain unavailable until verified rates exist.
 
 These are backend commands; saved Shortcuts and their host must be verified
 separately. Phone sync and Siri speech recognition are not implied by a backend

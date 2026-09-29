@@ -106,12 +106,24 @@ def tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
     report = {'generatedAt': now_text, 'status': decision['status'], 'calls': 0,
               'historySamples': len(history), 'contextKnown': low.context(sample) is not None,
               'freshPower': sample['verified'], 'delivery': None}
+    report['lowEnergyStatus'] = decision['status']
+    report['missingContext'] = [key for key in ('home','hvac','ev') if type(sample.get(key)) is not bool]
     # A single owner lock surrounds this function. Persist attempts before network.
     last_call = state.get('lastCall', 0)
     review_due = now-last_call >= 43200
+    from zoneinfo import ZoneInfo
+    local = datetime.fromtimestamp(now,ZoneInfo('America/Los_Angeles'))
+    # One evening review can share the existing daily allocation, rather than
+    # repeatedly polling Jev. Unknown EV context still blocks low-use alerts.
+    evening_due = (config.get('evening_recap_enabled') and local.hour==19
+        and state.get('eveningReviewDay')!=local.date().isoformat() and now-last_call>=300)
+    review_due = review_due or evening_due
     candidate_due = decision['status'] == 'needs_jev' and now-last_call >= 21600
+    report['reviewStatus'] = ('dry_run' if not mutate else 'stale_power' if not sample['verified']
+        else 'quiet_hours' if not daytime(now) else 'due' if review_due or candidate_due else 'cooldown')
     if mutate and sample['verified'] and daytime(now) and (review_due or candidate_due):
         state['lastCall'] = now
+        if evening_due: state['eveningReviewDay'] = local.date().isoformat()
         save(path, state)
         report['callAttempted'] = True
         is_candidate = candidate_due
@@ -125,6 +137,7 @@ def tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
                 save(data/'jev_house_attempt.json', {'at':now})
             response = ask(request)
             report['calls'] = 1
+            report['reviewStatus'] = 'completed'
             report['model'] = response.get('model')
             report['usage'] = response.get('usage')
             if is_candidate:
@@ -154,7 +167,14 @@ def tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
             # Never print potentially credential-bearing request/exception details.
             report['status'] = 'jev_unavailable'
             report['errorType'] = type(error).__name__
+            report['reviewStatus'] = 'unavailable'
     if mutate:
+        from jev_house_features import scheduled
+        # Re-read after the model call; never dispatch from changed/stale facts.
+        checked = datetime.now(timezone.utc).timestamp()
+        current_evidence = advisor.facts(data, checked) if config.get('evening_recap_enabled') and local.hour==19 else evidence
+        report['eveningRecap'] = scheduled(data,current_evidence,
+            advisor.cached(data,current_evidence,checked),now,config,deliver)
         save(path, state)
         save(data/'latest_jev_energy.json', report)
     return report

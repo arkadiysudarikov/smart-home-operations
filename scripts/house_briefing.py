@@ -10,6 +10,7 @@ import generate_alerts as alerts
 
 MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "attention", "savings", "diagnostics", "routine")
 BASELINE = alerts.DATA_DIR / "dr_house_baseline.json"
+MODES += ("wait", "laundrytime", "recap")
 
 
 def observations(now):
@@ -106,7 +107,7 @@ def more_message(now):
             if not identifier.startswith("dr_house_") or identifier == "dr_house_more":
                 continue
             mode = identifier.removeprefix("dr_house_")
-            if mode in ('attention','savings','diagnostics','routine','complications'):
+            if mode in ('attention','savings','diagnostics','routine','complications','wait','laundrytime','recap'):
                 from jev_house_advisor import render
                 return render('detail' if mode in ('attention','complications') else mode, alerts.DATA_DIR, datetime.fromisoformat(now).timestamp())
             if mode in ("energy", "running", "unusual"):
@@ -230,7 +231,7 @@ def build(mode):
         from announcement_followup import request
         return request(mode)
     now = datetime.now(timezone.utc).isoformat()
-    if mode in ('attention','savings','diagnostics','routine'):
+    if mode in ('attention','savings','diagnostics','routine','changes','wait','laundrytime','unusual','recap'):
         from jev_house_advisor import render
         return render(mode, alerts.DATA_DIR, datetime.fromisoformat(now).timestamp())
     if mode == "more":
@@ -356,7 +357,7 @@ def main():
         from announcement_followup import request
         message = request("snooze", mutate=True)
     else:
-        if args.speak and args.mode in ('energy','complications','attention','savings','diagnostics','routine','more','status'):
+        if args.speak and args.mode in ('energy','complications','attention','savings','diagnostics','routine','more','status','changes','wait','laundrytime','unusual','recap'):
             import jev_house_advisor as advisor
             # Failure, exhausted budget, or cooldown must not prevent the reply.
             try:
@@ -379,6 +380,11 @@ def main():
             print(json.dumps({"status": "skipped", "reason": "No complications in available readings"}))
             return 0
         delivery = alerts.run_indoor_homepod_announcement(message, "dr_house_" + args.mode)
+        if delivery.get('status') == 'accepted' and args.mode in ('changes','status','recap'):
+            import jev_house_advisor as advisor
+            from jev_house_features import checkpoint
+            at=datetime.now(timezone.utc).timestamp()
+            checkpoint(alerts.DATA_DIR,advisor.facts(alerts.DATA_DIR,at),at)
         if delivery.get("status") == "accepted" and args.mode in ("status", "night", "discharge", "changes", "complications"):
             now = datetime.now(timezone.utc).isoformat()
             BASELINE.write_text(json.dumps({"at": now, "observations": observations(now)}))

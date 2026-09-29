@@ -6,6 +6,9 @@ import urllib.request
 MODES = frozenset(("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "attention", "savings", "diagnostics", "routine"))
 
 
+MODES = MODES | {'wait', 'laundrytime', 'recap'}
+
+
 def dispatch(command):
     if command not in MODES:
         raise ValueError("Only a Dr. House command name is permitted")
