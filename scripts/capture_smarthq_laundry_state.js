@@ -88,7 +88,7 @@ async function main() {
     const laundryDevices = {
       washer: { accessoryName: "Washer", mainServiceName: "Washer" },
       dryer: { accessoryName: "Dryer", mainServiceName: "Dryer" },
-      combo: { accessoryName: "Combination Washer Dryer", mainServiceName: "Washer" },
+      combo: { accessoryName: "Combination Washer Dryer", mainServiceName: "Washer/Dryer" },
     };
     for (const [appliance, device] of Object.entries(laundryDevices)) {
       const applianceServices = services.filter(

@@ -11,7 +11,7 @@ class CaptureSmartHQLaundryStateTests(unittest.TestCase):
 
         self.assertIn('names.has("Combination Washer Dryer")', source)
         self.assertIn(
-            'combo: { accessoryName: "Combination Washer Dryer", mainServiceName: "Washer" }',
+            'combo: { accessoryName: "Combination Washer Dryer", mainServiceName: "Washer/Dryer" }',
             source,
         )
         self.assertIn("apiLastSuccessAt", source)
