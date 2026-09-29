@@ -2896,7 +2896,7 @@ def garage_occupancy_status() -> dict[str, Any]:
     result = json_run(command, timeout=30)
     if not result.get("ok"):
         return {
-            "occupied": False,
+            "occupied": None,
             "enabled": True,
             "accessPoints": sorted(access_points),
             "error": result.get("error") or result.get("stderr") or "UniFi phone occupancy check failed",
@@ -2924,7 +2924,11 @@ def schedule_garage_light_hold_check(state: dict[str, Any] | None = None) -> Non
     last_activity = parse_dt(payload.get("lastActivityAt"))
     if last_activity is None:
         return
-    delay = max(1.0, (last_activity + timedelta(seconds=garage_light_hold_seconds()) - local_now()).total_seconds())
+    deadline = last_activity + timedelta(seconds=garage_light_hold_seconds())
+    retry_at = parse_dt(payload.get("retryAt"))
+    if retry_at is not None:
+        deadline = max(deadline, retry_at)
+    delay = max(1.0, (deadline - local_now()).total_seconds())
     GARAGE_LIGHT_HOLD_TIMER = threading.Timer(delay, expire_garage_light_hold)
     GARAGE_LIGHT_HOLD_TIMER.daemon = True
     GARAGE_LIGHT_HOLD_TIMER.start()
@@ -3054,6 +3058,18 @@ def expire_garage_light_hold() -> None:
             return
 
         occupancy = garage_occupancy_status()
+        state["occupancy"] = occupancy
+        append_garage_activity_event({"type": "occupancy-check", "occupancy": occupancy})
+        if occupancy.get("enabled") and (occupancy.get("error") or occupancy.get("occupied") is None):
+            state.update({
+                "status": "occupancy-unavailable",
+                "lastError": "Garage occupancy unavailable; preserving light and retrying",
+                "retryAt": (now + timedelta(seconds=60)).isoformat(timespec="seconds"),
+            })
+            write_garage_light_hold_state(state)
+            schedule_garage_light_hold_check(state)
+            return
+        state.pop("retryAt", None)
         if occupancy.get("occupied"):
             state.update(
                 {
@@ -3083,6 +3099,7 @@ def expire_garage_light_hold() -> None:
                     "status": "expiry-status-failed",
                     "lastErrorAt": now.isoformat(timespec="seconds"),
                     "lastError": current.get("error") or current.get("stderr") or "failed to read Garage Light state",
+                    "retryAt": (local_now() + timedelta(seconds=60)).isoformat(timespec="seconds"),
                 }
             )
             write_garage_light_hold_state(state)
@@ -3129,7 +3146,7 @@ def expire_garage_light_hold() -> None:
         )
         state.update(
             {
-                "active": False,
+                "active": not bool(restore.get("ok")),
                 "status": "restored" if restore.get("ok") else "restore-failed",
                 "restorePolicy": "started-state" if restore_started_state else "off-after-inactivity",
                 "finishedAt": now.isoformat(timespec="seconds"),
@@ -3137,7 +3154,12 @@ def expire_garage_light_hold() -> None:
                 "lastError": None if restore.get("ok") else restore.get("error") or restore.get("stderr"),
             }
         )
+        if not restore.get("ok"):
+            state.pop("finishedAt", None)
+            state["retryAt"] = (local_now() + timedelta(seconds=60)).isoformat(timespec="seconds")
         write_garage_light_hold_state(state)
+        if state["active"]:
+            schedule_garage_light_hold_check(state)
         append_garage_activity_event(
             {
                 "type": "expiry",
