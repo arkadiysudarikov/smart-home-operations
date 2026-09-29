@@ -79,7 +79,16 @@ Name resolution and SSH connectivity were verified. Twenty-one SSH-backed
 household shortcuts were updated to that stable hostname, including all four new
 phrases and the existing energy/follow-up commands. The local display-awake target
 uses the stable name too; its existing ID was preserved so state mappings do not
-reset. Treat this name as a service identity to preserve across hardware changes.
+reset.
+
+September 29 correction: macOS detected a Bonjour conflict and renamed the host
+to `home-hub-2.local`. The old name advertised an unreachable IPv6 address.
+Reserved this Mac's existing Ethernet address, `192.168.0.190`, in UniFi and
+verified its SSH host key matches the local Mac. Updated all 21 SSH-backed house
+shortcuts and the local display target to that reserved address. This avoids
+Bonjour-name churn; do not transfer the reservation to other hardware without
+verifying the SSH identity and updating the reservation. The competing advertiser
+is not identified, and iPhone sync remains a separate verification step.
 
 The audit also found four older Text-only placeholders (House, good morning;
 Quiet until morning; When should I leave; Anything unusual). They have no SSH
