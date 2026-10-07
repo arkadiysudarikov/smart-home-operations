@@ -2,6 +2,7 @@
 import argparse
 import fcntl
 import json
+import math
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -110,7 +111,13 @@ def tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
     report['missingContext'] = [key for key in ('home','hvac','ev') if type(sample.get(key)) is not bool]
     # A single owner lock surrounds this function. Persist attempts before network.
     last_call = state.get('lastCall', 0)
-    review_due = now-last_call >= 43200
+    # Increase useful coverage without minute-by-minute model polling. The
+    # shared monthly budget still applies to every scheduled/on-demand call.
+    interval = config.get('review_interval_seconds', 43200)
+    if type(interval) not in (int, float) or not math.isfinite(interval):
+        interval = 43200
+    interval = max(21600, min(86400, interval))
+    review_due = now-last_call >= interval
     from zoneinfo import ZoneInfo
     local = datetime.fromtimestamp(now,ZoneInfo('America/Los_Angeles'))
     # One evening review can share the existing daily allocation, rather than

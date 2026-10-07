@@ -1,1 +1,1 @@
-{"enabled": true, "evening_recap_enabled": true}
+{"enabled": true, "evening_recap_enabled": true, "review_interval_seconds": 21600}

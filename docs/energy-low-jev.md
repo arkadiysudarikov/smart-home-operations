@@ -17,7 +17,8 @@ review is not proof of an audible announcement.
   an off virtual switch is not evidence that charging is absent.
 - Unknown context blocks baseline collection and low-energy announcements.
   Seven matching prior days are required; elapsed time alone does not satisfy it.
-- Advisory reviews run at most every 12 hours during daytime. Eligible low-energy
+- Advisory reviews now run every six hours during daytime (configurable from six
+  to twenty-four hours; the default without configuration is twelve). Eligible low-energy
   candidates may instead be reviewed after six hours. Reviews cannot speak.
 - Keychain service `com.arkadiy.smart-home.typesafe`, account `smart-home`.
   Each bounded request reserves $0.01 from a persistent $1 monthly local
