@@ -65,6 +65,15 @@ class MonitorTests(unittest.TestCase):
         self.assertEqual(report['lowEnergyStatus'],'invalid_or_stale_data')
         ask.assert_not_called()
 
+    def test_six_hour_review_and_minimum_interval(self):
+        for age, expected in ((21600, 1), (21599, 0), (60, 0)):
+            j.save(self.data/'jev_energy_state.json', {'lastCall':NOW.timestamp()-age})
+            ask=Mock(return_value={'model':'jev-1.13.0','answers':{}})
+            with patch.object(j,'sample_from',return_value=self.sample):
+                report=j.tick(self.data,{'enabled':True,'review_interval_seconds':1},
+                              NOW.timestamp(),mutate=True,ask=ask)
+            self.assertEqual(ask.call_count,expected)
+
     def test_adapter_missing_ev_is_unknown_not_virtual_switch_off(self):
         j.save(self.data/'sense_now_latest.json', {'ok':True,'online':True,
             'capturedAt':NOW.isoformat(),'watts':300,'devices':[]})

@@ -36,7 +36,7 @@ No appointment contents, names, IDs, or raw messages are sent to Jev.
 
 Energy reports distinguish `lowEnergyStatus`, `missingContext`, and `reviewStatus`.
 Unknown EV context blocks low-energy detection, not a scheduled advisory request;
-the normal twelve-hour review cooldown remains. Missing context is never filled
+the configured review cooldown remains (six hours in the deployed configuration). Missing context is never filled
 with assumed false values. Bill-average pricing is not a time-of-use schedule,
 so future cheapest-hour recommendations remain unavailable until verified rates exist.
 
