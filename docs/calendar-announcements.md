@@ -2,8 +2,9 @@
 
 The local EventKit helper reads only uniquely named Arkadiy, Maxim and Jeanne calendars.
 macOS grants full Calendar access, but the helper contains no event-write operations.
-Shared calendars, all-day events, cancelled events and unmapped in-person destinations
-are excluded. Recognized video appointments instead get a five-minute reminder;
+Shared calendars, all-day events and cancelled events are excluded.
+Timed appointments without usable map coordinates get a plain fifteen-minute reminder,
+without a departure or travel-time claim. Recognized video appointments get a five-minute reminder;
 generic website links are not treated as video meetings. Private events and phone
 mappings are not committed.
 
