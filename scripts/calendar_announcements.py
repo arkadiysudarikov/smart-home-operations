@@ -51,6 +51,17 @@ def video_event(event, now):
         return False
 
 
+def timed_event(event, now):
+    """Ordinary reminders do not require a Maps pin or a recognized video URL."""
+    try:
+        lead = timestamp(event["start"]) - now
+        return (event.get("calendar") in ("Arkadiy", "Maxim", "Jeanne")
+                and not event.get("allDay") and event.get("status") != 3
+                and 0 < lead <= 10800)
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
 def is_home(clients, mac, now):
     for client in clients:
         if client.get("mac", "").lower() == mac.lower():
@@ -131,16 +142,18 @@ def main():
                     report["attempts"].append({"id": identifier, "status": result.get("status")})
         for event in snapshot["events"]:
             video = video_event(event, now)
-            if not (video or eligible(event, now)) or not home.get(event["calendar"], False):
+            mapped = eligible(event, now)
+            if not timed_event(event, now) or not home.get(event["calendar"], False):
                 continue
             key = occurrence(event)
             if key in state:
                 continue
-            eta = None if video else invoke("--eta", config["homeAddress"], str(event["latitude"]), str(event["longitude"]))
+            eta = None if video or not mapped else invoke("--eta", config["homeAddress"], str(event["latitude"]), str(event["longitude"]))
             current = datetime.now(timezone.utc).timestamp()
             if eta is not None and not 0 <= current - timestamp(eta["generatedAt"]) <= 90:
                 continue
-            ready = (0 <= current - (timestamp(event["start"]) - 300) <= 120) if video else due(event, float(eta["seconds"]), current, config.get("arrivalBufferMinutes", 15))
+            reminder_seconds = 300 if video else 900
+            ready = (0 <= current - (timestamp(event["start"]) - reminder_seconds) <= 120) if eta is None else due(event, float(eta["seconds"]), current, config.get("arrivalBufferMinutes", 15))
             if not ready:
                 continue
             report["due"] += 1
@@ -158,7 +171,8 @@ def main():
                 # Persist before delivery: uncertain relay results must not repeat.
                 minutes = max(1, math.ceil((timestamp(event['start']) - current) / 60))
                 message = (f"{event['calendar']}, {event['title']} starts in about {minutes} minutes. This is a video appointment."
-                           if video else f"{event['calendar']}, it is time to leave for {event['title']}. The drive is about {math.ceil(eta['seconds'] / 60)} minutes.")
+                           if video else (f"{event['calendar']}, {event['title']} starts in about {minutes} minutes."
+                           if eta is None else f"{event['calendar']}, it is time to leave for {event['title']}. The drive is about {math.ceil(eta['seconds'] / 60)} minutes."))
                 result = run_indoor_homepod_announcement(message, "calendar-" + key)
                 report["attempts"].append({"id": key, "status": result.get("status")})
         print(json.dumps(report))

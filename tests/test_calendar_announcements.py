@@ -19,6 +19,12 @@ class CalendarTests(unittest.TestCase):
     def test_mapped_timed_event(self):
         self.assertTrue(cal.eligible(self.event, self.now))
 
+    def test_unmapped_timed_event_still_eligible_for_plain_reminder(self):
+        event = dict(self.event, latitude=None, longitude=None)
+        self.assertTrue(cal.timed_event(event, self.now))
+        for change in ({"allDay": True}, {"status": 3}, {"calendar": "Family"}):
+            self.assertFalse(cal.timed_event(dict(event, **change), self.now))
+
     def test_exclusions(self):
         for changes in ({"allDay": True}, {"status": 3}, {"calendar": "Family"}, {"location": "https://meeting"}, {"latitude": None}, {"latitude": float("nan")}):
             self.assertFalse(cal.eligible(dict(self.event, **changes), self.now))
@@ -88,6 +94,20 @@ class CalendarDeliveryTests(unittest.TestCase):
             return {"status": "accepted"}
         self.relay.side_effect = relay
         self.assertEqual(self.run_scheduler()["due"], 1)
+        self.assertEqual(self.run_scheduler()["due"], 0)
+        self.relay.assert_called_once()
+        self.assertEqual(self.state.stat().st_mode & 0o777, 0o600)
+
+    def test_unmapped_reminder_has_no_eta_or_departure_claim(self):
+        self.event.pop("latitude")
+        self.event.pop("longitude")
+        self.event["start"] = "2026-09-15T19:15:00Z"
+        self.assertEqual(self.run_scheduler()["due"], 1)
+        message, identifier = self.relay.call_args.args
+        self.assertIn("starts in about 15 minutes", message)
+        self.assertNotIn("leave", message)
+        self.assertEqual(self.reader.call_args_list[0].args, ())
+        self.assertEqual(self.reader.call_count, 1)
         self.assertEqual(self.run_scheduler()["due"], 0)
         self.relay.assert_called_once()
         self.assertEqual(self.state.stat().st_mode & 0o777, 0o600)
