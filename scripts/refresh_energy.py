@@ -60,6 +60,13 @@ def python_path() -> str:
     return sys.executable
 
 
+def laundry_capture_command():
+    config = json.loads((ROOT / 'config/sources.json').read_text())
+    if (config.get('laundry_host') or {}).get('enabled') is True:
+        return [python_path(), 'scripts/remote_laundry.py']
+    return [node_path(), 'scripts/capture_smarthq_laundry_state.js']
+
+
 def run_step(name: str, cmd: list[str], timeout: int = 300, optional: bool = False) -> dict[str, Any]:
     started_at = now()
     proc: subprocess.Popen[str] | None = None
@@ -448,7 +455,7 @@ def main() -> int:
         if args.fast:
             plan: list[tuple[str, list[str] | str | None, int, bool, bool, str | None]] = [
                 ("snapshot", [py, "scripts/smart_home_snapshot.py"], 45, True, False, None),
-                ("capture_smarthq_laundry", "scripts/capture_smarthq_laundry_state.js", 60, True, True, None),
+                ("capture_smarthq_laundry", laundry_capture_command(), 170, True, False, None),
                 ("recover_smarthq_laundry", [py, "scripts/recover_smarthq_laundry.py"], 90, True, False, None),
                 ("washer_notifier", [py, "scripts/washer_notifier.py"], 30, True, False, None),
                 ("dryer_notifier", [py, "scripts/washer_notifier.py", "--appliance", "dryer"], 30, True, False, None),
@@ -512,7 +519,7 @@ def main() -> int:
         else:
             plan = [
                 ("snapshot", [py, "scripts/smart_home_snapshot.py"], 120, True, False, None),
-                ("capture_smarthq_laundry", "scripts/capture_smarthq_laundry_state.js", 60, True, True, None),
+                ("capture_smarthq_laundry", laundry_capture_command(), 170, True, False, None),
                 ("recover_smarthq_laundry", [py, "scripts/recover_smarthq_laundry.py"], 90, True, False, None),
                 ("washer_notifier", [py, "scripts/washer_notifier.py"], 30, True, False, None),
                 ("dryer_notifier", [py, "scripts/washer_notifier.py", "--appliance", "dryer"], 30, True, False, None),

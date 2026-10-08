@@ -107,8 +107,14 @@ def build(data, plugin, now):
 
 def main():
     config = load(ROOT / "config/sources.json")
-    root = active_plugin(int((config.get("smarthq_laundry_recovery") or {}).get("child_bridge_port", 40893)))
-    plugin = inspect_plugin(root) if root else {"status": "running_plugin_unresolved", "ok": False}
+    if (config.get('laundry_host') or {}).get('enabled') is True:
+        remote = load(ROOT/'data/latest_remote_laundry.json')
+        capture_age = age((remote.get('capture') or {}).get('capturedAt'), datetime.now(timezone.utc))
+        plugin = remote.get('plugin') if remote.get('ok') is True and capture_age is not None and 0 <= capture_age <= 300 else None
+        plugin = plugin or {'ok':False,'status':'remote_capture_unavailable'}
+    else:
+        root = active_plugin(int((config.get("smarthq_laundry_recovery") or {}).get("child_bridge_port", 40893)))
+        plugin = inspect_plugin(root) if root else {"status": "running_plugin_unresolved", "ok": False}
     payload = build(ROOT / "data", plugin, datetime.now(timezone.utc))
     target = ROOT / "data/latest_announcement_health.json"
     target.parent.mkdir(parents=True, exist_ok=True)

@@ -237,6 +237,11 @@ def main() -> int:
         return 1
 
     full_config = load_json(CONFIG_PATH)
+    if (full_config.get('laundry_host') or {}).get('enabled') is True:
+        # Capture step already executed the watchdog on the Homebridge host.
+        print(json.dumps({'ok':True,'action':'remote_watchdog_owned',
+                          'host':full_config['laundry_host']['host']}))
+        return 0
     config = full_config.get("smarthq_laundry_recovery", {})
     now = now_local()
     previous = load_json(STATUS_PATH)
