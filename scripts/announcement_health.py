@@ -9,6 +9,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PATCHED_081 = "87f83a7c7aaa8864fe3f8475c6a3619e4bdcc9916cc9e7895201f712d40f7bfb"
 ORIGINAL_081 = "f3418372bc2cbda76b36ae3dabc568669ff5d8cabe94b3796a5e8c2adc89e335"
+# The installed 0.9.0 device module is byte-for-byte identical to the reviewed
+# 0.8.1 module. Keep both version and code checks: a matching function name or
+# a future release number is not enough to establish heartbeat correctness.
+REVIEWED_DEVICE_HASHES = {
+    "0.8.1": (ORIGINAL_081, PATCHED_081),
+    "0.9.0": (ORIGINAL_081, PATCHED_081),
+}
 
 
 def load(path):
@@ -33,8 +40,9 @@ def inspect_plugin(root):
         digest = hashlib.sha256((root / "dist/devices/device.js").read_bytes()).hexdigest()
     except OSError:
         return {"status": "unavailable", "ok": False}
-    known = version == "0.8.1" and digest == PATCHED_081
-    status = "verified" if known else "heartbeat_patch_missing" if version == "0.8.1" and digest == ORIGINAL_081 else "plugin_changed_review_required"
+    reviewed = REVIEWED_DEVICE_HASHES.get(version)
+    known = bool(reviewed and digest == reviewed[1])
+    status = "verified" if known else "heartbeat_patch_missing" if reviewed and digest == reviewed[0] else "plugin_changed_review_required"
     return {"status": status, "ok": known, "version": version, "sha256": digest}
 
 
