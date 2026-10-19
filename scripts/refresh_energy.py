@@ -472,7 +472,7 @@ def main() -> int:
                 ),
                 (
                     "analyze_all_energy",
-                    analyzer_cmd(py),
+                    [py, "scripts/analyze_all_energy_readings.py"],
                     120,
                     True,
                     False,
