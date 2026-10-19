@@ -120,9 +120,10 @@ def request_json(
     method: str = "GET",
     body: dict[str, Any] | None = None,
     timeout: int = 12,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[bool, int | None, Any, str | None]:
     data = None
-    headers = {"User-Agent": "smart-home-monitor-unifi-recovery"}
+    headers = {"User-Agent": "smart-home-monitor-unifi-recovery", **(extra_headers or {})}
     if body is not None:
         data = json.dumps(body).encode("utf-8")
         headers["Content-Type"] = "application/json"
@@ -153,30 +154,37 @@ def probe_unifi_api(platform_config: dict[str, Any]) -> dict[str, Any]:
     password = unifi.get("password")
     site = str(unifi.get("site") or "default")
     unifios = unifi.get("unifios") is not False
-    if not controller or not username or not password:
-        return {"ok": False, "authOk": False, "apiOk": False, "error": "UniFi controller credentials are incomplete"}
+    if not controller:
+        return {"ok": False, "authOk": False, "apiOk": False, "error": "UniFi controller is missing"}
 
     context = ssl._create_unverified_context() if unifi.get("secure") is False else None
     cookie_jar = CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cookie_jar), urllib.request.HTTPSHandler(context=context))
-    auth_path = "/api/auth/login" if unifios else "/api/login"
-    login_ok, login_status, _login_payload, login_error = request_json(
-        opener,
-        f"{controller}{auth_path}",
-        method="POST",
-        body={"username": username, "password": password},
-        timeout=12,
-    )
-    result: dict[str, Any] = {
-        "ok": False,
-        "authOk": bool(login_ok),
-        "apiOk": False,
-        "loginStatus": login_status,
-        "loginError": login_error,
-    }
-    if not login_ok:
-        result["classification"] = "auth" if login_status in {401, 403} else "login_unavailable"
-        return result
+    pin_path = ROOT / "config" / "unifi_api_key.json"
+    headers: dict[str, str] = {}
+    if pin_path.exists():
+        pin = load_json(pin_path)
+        if pin.get("controller", "").rstrip("/") != controller or not unifios:
+            return {"ok": False, "authOk": False, "apiOk": False, "classification": "auth", "error": "UniFi API-key destination mismatch"}
+        from display_awake_manager import keychain_secret
+        key = keychain_secret(str(pin.get("service") or ""), str(pin.get("account") or ""))
+        if not key:
+            return {"ok": False, "authOk": False, "apiOk": False, "classification": "auth", "error": "UniFi API Keychain credential unavailable"}
+        headers["X-API-KEY"] = key
+        result: dict[str, Any] = {"ok": False, "authOk": False, "apiOk": False, "authSource": "keychain-api-key"}
+    else:
+        if not username or not password:
+            return {"ok": False, "authOk": False, "apiOk": False, "error": "UniFi controller credentials are incomplete"}
+        auth_path = "/api/auth/login" if unifios else "/api/login"
+        login_ok, login_status, _login_payload, login_error = request_json(
+            opener, f"{controller}{auth_path}", method="POST",
+            body={"username": username, "password": password}, timeout=12,
+        )
+        result = {"ok": False, "authOk": bool(login_ok), "apiOk": False,
+                  "loginStatus": login_status, "loginError": login_error}
+        if not login_ok:
+            result["classification"] = "auth" if login_status in {401, 403} else "login_unavailable"
+            return result
 
     prefix = "/proxy/network" if unifios else ""
     endpoints = {
@@ -186,10 +194,12 @@ def probe_unifi_api(platform_config: dict[str, Any]) -> dict[str, Any]:
     api_results: dict[str, Any] = {}
     for name, url in endpoints.items():
         started = time.monotonic()
-        ok, status, payload, error = request_json(opener, url, timeout=15)
+        ok, status, payload, error = request_json(opener, url, timeout=15, extra_headers=headers)
         elapsed = round(time.monotonic() - started, 3)
         count = len(payload) if isinstance(payload, list) else None
         api_results[name] = {"ok": ok, "status": status, "seconds": elapsed, "count": count, "error": error}
+    if headers:
+        result["authOk"] = any(item.get("ok") for item in api_results.values()) and not any(item.get("status") in {401, 403} for item in api_results.values())
     result["endpoints"] = api_results
     result["apiOk"] = all(item.get("ok") for item in api_results.values())
     result["ok"] = bool(result["authOk"] and result["apiOk"])

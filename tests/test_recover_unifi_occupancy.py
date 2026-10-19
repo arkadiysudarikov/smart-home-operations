@@ -11,6 +11,7 @@ from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'scripts'))
 SPEC = importlib.util.spec_from_file_location("recover_unifi_occupancy", ROOT / "scripts" / "recover_unifi_occupancy.py")
 assert SPEC and SPEC.loader
 recover_unifi_occupancy = importlib.util.module_from_spec(SPEC)
@@ -18,6 +19,29 @@ SPEC.loader.exec_module(recover_unifi_occupancy)
 
 
 class RecoverUniFiOccupancyTest(unittest.TestCase):
+    def test_keychain_probe_uses_only_reads_and_does_not_export_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'config').mkdir()
+            (root/'config/unifi_api_key.json').write_text(json.dumps({'controller':'https://controller.local','service':'test','account':'test'}))
+            platform={'unifi':{'controller':'https://controller.local','username':'old','password':'unused','unifios':True}}
+            with mock.patch.object(recover_unifi_occupancy,'ROOT',root), mock.patch('display_awake_manager.keychain_secret',return_value='SYNTHETIC-KEY'), mock.patch.object(recover_unifi_occupancy,'request_json',side_effect=[(True,200,{},None),(True,200,[],None)]) as request:
+                result=recover_unifi_occupancy.probe_unifi_api(platform)
+            self.assertTrue(result['ok']);self.assertEqual(result['authSource'],'keychain-api-key')
+            self.assertEqual(request.call_count,2)
+            self.assertTrue(all(call.kwargs.get('method','GET')=='GET' for call in request.call_args_list))
+            self.assertTrue(all(call.kwargs['extra_headers']=={'X-API-KEY':'SYNTHETIC-KEY'} for call in request.call_args_list))
+            self.assertNotIn('SYNTHETIC-KEY',json.dumps(result))
+
+    def test_mismatched_or_unavailable_key_never_falls_back_to_password(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);(root/'config').mkdir();pin=root/'config/unifi_api_key.json'
+            platform={'unifi':{'controller':'https://controller.local','username':'old','password':'unused','unifios':True}}
+            for text in ['{',json.dumps({'controller':'https://other.local'}),json.dumps({'controller':'https://controller.local','service':'test','account':'test'})]:
+                pin.write_text(text)
+                with mock.patch.object(recover_unifi_occupancy,'ROOT',root), mock.patch('display_awake_manager.keychain_secret',return_value=None), mock.patch.object(recover_unifi_occupancy,'request_json') as request:
+                    self.assertFalse(recover_unifi_occupancy.probe_unifi_api(platform)['ok'])
+                    request.assert_not_called()
+
     def test_detects_api_warning_without_treating_sense_401_as_unifi_auth(self) -> None:
         snapshot = {
             "homebridge": {

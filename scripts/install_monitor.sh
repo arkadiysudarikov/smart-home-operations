@@ -25,6 +25,7 @@ rsync -a --delete \
   --exclude 'data' \
   --exclude 'logs' \
   --exclude 'reports' \
+  --exclude 'config/unifi_api_key.json' \
   "$ROOT/" "$RUNTIME/"
 python3 "$ROOT/scripts/sync_display_awake_policy.py" --source-root "$ROOT" --runtime-root "$RUNTIME"
 mkdir -p "$RUNTIME/data"

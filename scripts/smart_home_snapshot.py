@@ -68,6 +68,8 @@ DRIFT_CHECK_FILES = [
     "scripts/jev_house_advisor.py",
     "scripts/jev_house_features.py",
     "scripts/jev_operations.py",
+    "scripts/unifi_keychain_events.cjs",
+    "scripts/patch_unifi_keychain_transport.py",
     "scripts/jev_laundry_review.py",
     "config/jev_energy.json",
     "scripts/recover_unifi_occupancy.py",
