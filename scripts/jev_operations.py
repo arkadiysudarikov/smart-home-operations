@@ -24,7 +24,7 @@ STAMP = re.compile(r'^\[([^]]+)\]')
 def log_summary(path, now):
     """Read bounded tail, require dated evidence, classify locally; retain no text."""
     result = {key:0 for key in COUNTS}
-    result.update(available=False, observed=0, truncated=False)
+    result.update(available=False, observed=0, truncated=False, covered_seconds=0, window_complete=False)
     try:
         with path.open('rb') as stream:
             size=stream.seek(0,2); stream.seek(max(0,size-2_000_000))
@@ -39,12 +39,15 @@ def log_summary(path, now):
         try:
             at=datetime.strptime(match[1],'%m/%d/%Y, %I:%M:%S %p').replace(tzinfo=ZoneInfo('America/Los_Angeles')).timestamp()
         except ValueError: continue
-        if not 0<=now-at<=900: continue
+        age=now-at
+        if age>=900: result['window_complete']=True
+        if not 0<=age<=900: continue
+        result['covered_seconds']=max(result['covered_seconds'],int(age))
         result['observed']+=1
         if re.search(r'(Starting child bridge|Launched child bridge|Homebridge .* running)',line,re.I): start=at
         if 'ETIMEDOUT' in line: key='timeouts'
-        elif re.search(r'\b401\b|unauthorized|login failed',line,re.I): key='authentication'
-        elif re.search(r'\b429\b|too many requests',line,re.I): key='rate_limits'
+        elif re.search(r'(?:status(?: code)?|http|response|error)\s*[:=]?\s*401\b|unauthorized|login failed',line,re.I): key='authentication'
+        elif re.search(r'(?:status(?: code)?|http|response|error)\s*[:=]?\s*429\b|too many requests',line,re.I): key='rate_limits'
         elif 'ECONNRESET' in line:
             key='startup_disconnects' if start is not None and 0<=at-start<=90 else 'disconnects'
         elif re.search(r'\berror\b|\bexception\b',line,re.I) and 'adding webhook' not in line.lower(): key='other_faults'
@@ -105,7 +108,8 @@ def facts(data,now):
     alarm_ok=a.get('ok') is True and 0<=now-stamp(a.get('checkedAt'))<=1800
     adc=automation_summary(alarm_rules(alarm)) if alarm_ok else None
     summaries=[s for s in (home,adc) if s is not None]
-    return {'operations_logs':log_facts,
+    coverage={'complete_window':logs.get('window_complete') is True, 'truncated_tail':logs.get('truncated') is True} if log_facts is not None else None
+    return {'operations_logs':log_facts, 'operations_log_coverage':coverage,
         'operations_automations':{k:sum(s[k] for s in summaries) for k in ('reviewed_actions','overlaps','conflicts')} if summaries else None,
         'operations_coverage':{'home_review':home is not None,'alarm_subset':adc is not None}}
 
@@ -134,7 +138,8 @@ def render(mode,e,c):
         detail=', '.join(f'{logs[k]} {label}' for k,label in [('timeouts','timeouts'),('authentication','authentication failures'),('rate_limits','rate-limit responses'),('disconnects','disconnects'),('other_faults','other fault lines')] if logs[k])
         prefix='Investigate recent faults. ' if faults>=2 else 'Watch the recent fault. ' if faults else ''
         advice={'investigate':'Jev also recommends investigation. ', 'watch':'Jev recommends observation. ', 'startup':'Jev identifies the startup-adjacent category; this does not establish harmlessness. '}.get(c.get('logs'),'No confident Jev log recommendation is cached. ')
-        return advice+prefix+(detail+'. ' if detail else 'No classified ongoing faults in the available fifteen-minute tail. ')+f"{logs['startup_disconnects']} disconnect lines occurred near startup. Counts are log lines, not distinct incidents. Unmatched or missing logs may hide other issues."
+        coverage='The tail does not establish full fifteen-minute coverage. ' if not (e.get('operations_log_coverage') or {}).get('complete_window') else ''
+        return coverage+advice+prefix+(detail+'. ' if detail else 'No classified ongoing faults in the available fifteen-minute tail. ')+f"{logs['startup_disconnects']} disconnect lines occurred near startup. Counts are log lines, not distinct incidents. Unmatched or missing logs may hide other issues."
     auto=e.get('operations_automations')
     if auto is None: return 'Fresh automation review evidence is unavailable. No conflict-free claim is possible.'
     advice={'conflict':'Jev prioritizes opposing-action candidates. ', 'overlap':'Jev prioritizes similar-action candidates. ', 'none':'Jev found no candidate in the supplied limited coverage. '}.get(c.get('automations'),'No confident Jev automation recommendation is cached. ')

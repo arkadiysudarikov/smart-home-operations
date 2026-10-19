@@ -26,9 +26,11 @@ class OperationsTests(unittest.TestCase):
             '[10/19/2026, 2:59:02 PM] Office ETIMEDOUT SECRET\n'
             '[10/19/2026, 2:59:03 PM] UniFi 401 Unauthorized\n'
             '[10/19/2026, 1:00:00 PM] 429\n'
-            '[10/19/2026, 2:59:04 PM] adding webhook error test failed\n')
+            '[10/19/2026, 2:59:04 PM] adding webhook error test failed\n'
+            '[10/19/2026, 2:59:05 PM] Power 429 watts, sensor 401\n')
         counts=ops.log_summary(path,NOW)
         self.assertEqual((counts['startup_disconnects'],counts['timeouts'],counts['authentication'],counts['rate_limits'],counts['other_faults']),(1,1,1,0,0))
+        self.assertTrue(counts['window_complete']);self.assertEqual(counts['covered_seconds'],60)
         self.assertNotIn('SECRET',json.dumps(counts)); self.assertNotIn('Office',json.dumps(counts))
         self.assertFalse(ops.log_summary(path,NOW+1000)['available'])
         self.assertFalse(ops.log_summary(self.data/'missing',NOW)['available'])
@@ -36,7 +38,7 @@ class OperationsTests(unittest.TestCase):
     def test_truncated_tail_is_bounded_and_future_lines_are_rejected(self):
         path=self.data/'log';path.write_text('x'*2_000_010+'\n[10/19/2026, 3:01:00 PM] ETIMEDOUT\n')
         result=ops.log_summary(path,NOW)
-        self.assertTrue(result['truncated']);self.assertFalse(result['available'])
+        self.assertTrue(result['truncated']);self.assertFalse(result['available']);self.assertFalse(result['window_complete'])
 
     def test_rules_require_matching_trigger_target_window_and_enabled(self):
         r={'enabled':True,'trigger':'a','target':'b','window':'always','action':'on'}
@@ -70,6 +72,23 @@ class OperationsTests(unittest.TestCase):
         request['questions'].update(low['questions']);request['state'].update(low['state'])
         self.assertLess(len(json.dumps(request).encode()),8192)
         self.assertIn('logs',request['questions']);self.assertIn('automations',request['questions'])
+
+    def test_model_cannot_hide_faults_or_promote_unsupported_choices(self):
+        e=advisor.facts(self.data,NOW)
+        e['operations_logs']={k:(2 if k=='rate_limits' else 0) for k in ops.COUNTS}
+        e['operations_automations']={'reviewed_actions':3,'overlaps':1,'conflicts':0}
+        def answer(key,choice):
+            return {'type':'choice','choice':choice,'confidence':1.,'probabilities':{k:float(k==choice) for k in ops.OPTIONS[key]}}
+        response={'model':advisor.MODEL,'answers':{'logs':answer('logs','startup'),'automations':answer('automations','conflict')}}
+        self.assertEqual(advisor.validated(response,e),{})
+        response['answers']={'logs':answer('logs','investigate'),'automations':answer('automations','overlap')}
+        accepted=advisor.validated(response,e)
+        self.assertEqual(accepted,{'logs':'investigate','automations':'overlap'})
+        self.assertIn('2 rate-limit responses',ops.render('logs',e,{'logs':'unknown'}))
+        self.assertIn('1 similar-action overlaps',ops.render('automations',e,{'automations':'unknown'}))
+        path=self.data/'http-log'
+        path.write_text('[10/19/2026, 2:59:00 PM] Request failed with status code 429\n')
+        self.assertEqual(ops.log_summary(path,NOW)['rate_limits'],1)
 
     def test_briefing_modes_are_readonly(self):
         self.assertIn('logs',briefing.MODES);self.assertIn('automations',briefing.MODES)

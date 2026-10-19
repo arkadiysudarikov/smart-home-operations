@@ -127,7 +127,8 @@ On the Homebridge host, run `jev_operations.py --collect` every five minutes.
 An optional `--publish-host` sends only the resulting count snapshot over existing
 household SSH to the coordinator. A missing or older-than-six-minute snapshot
 is unavailable, never healthy. The collector reads at most 2 MB and considers
-only dated lines in the latest fifteen minutes. It counts timeout, authentication,
+only dated lines in the latest fifteen minutes. It reports incomplete tail coverage
+explicitly; a truncation limit is never a promise of full coverage. It counts timeout, authentication,
 rate-limit, disconnect, startup-adjacent disconnect, and other error lines.
 Counts are not distinct incidents; near-startup disconnects are not proven benign.
 No log text, tokens, addresses, timestamps from individual events, or labels go to
