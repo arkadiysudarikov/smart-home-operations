@@ -49,7 +49,9 @@ or garage-door action was executed by the repair.
 The recovery probe uses the same configured Keychain source so it does not keep
 trying the obsolete password. Missing credentials or a destination mismatch fail
 closed. Both live fingerprint and active-client probes returned HTTP 200 after
-the repair.
+the repair. `recover_unifi_occupancy.py --probe-only` refreshes the status report
+without restarting a bridge; verified current authentication overrides historical
+401 warnings in old snapshots.
 
 Checks: `python3 -m unittest discover -s tests -p 'test_unifi_keychain_transport.py'`
 and `test_recover_unifi_occupancy.py`. These cover destination pinning, bounded

@@ -42,6 +42,15 @@ class RecoverUniFiOccupancyTest(unittest.TestCase):
                     self.assertFalse(recover_unifi_occupancy.probe_unifi_api(platform)['ok'])
                     request.assert_not_called()
 
+    def test_live_healthy_key_overrides_historical_auth_warning_without_restart(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);hb=root/'hb.json';hb.write_text(json.dumps({'platforms':[{'platform':'UnifiOccupancy'}]}))
+            with mock.patch.object(recover_unifi_occupancy,'running_from_runtime_root',return_value=True), mock.patch.object(recover_unifi_occupancy,'load_config',return_value={}), mock.patch.object(recover_unifi_occupancy,'homebridge_config_path',return_value=hb), mock.patch.object(recover_unifi_occupancy,'latest_snapshot',return_value={'homebridge':{'logs':{'recentWarnings':['[homebridge-unifi-occupancy] HTTP 401','[homebridge-unifi-occupancy] HTTP 504']}}}), mock.patch.object(recover_unifi_occupancy,'probe_unifi_api',return_value={'ok':True,'authOk':True,'apiOk':True,'classification':'healthy'}), mock.patch.object(recover_unifi_occupancy,'DATA_DIR',root), mock.patch.object(recover_unifi_occupancy,'REPORT_DIR',root), mock.patch.object(recover_unifi_occupancy,'STATUS_PATH',root/'status.json'), mock.patch.object(recover_unifi_occupancy,'restart_child_bridge') as restart, mock.patch.object(sys,'argv',['recover_unifi_occupancy.py','--probe-only']):
+                self.assertEqual(recover_unifi_occupancy.main(),0)
+                result=json.loads((root/'status.json').read_text())
+                self.assertTrue(result['ok']);self.assertEqual(result['classification'],'healthy')
+                self.assertEqual(result['action'],'none');restart.assert_not_called()
+
     def test_detects_api_warning_without_treating_sense_401_as_unifi_auth(self) -> None:
         snapshot = {
             "homebridge": {

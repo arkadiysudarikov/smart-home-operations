@@ -268,6 +268,7 @@ def main() -> int:
         action="store_true",
         help="allow live UniFi child-bridge recovery when this script is not running from the runtime root",
     )
+    parser.add_argument("--probe-only", action="store_true", help="report live API health without restarting a bridge")
     args = parser.parse_args()
     if not args.force_outside_runtime and not running_from_runtime_root():
         write_status(
@@ -315,12 +316,16 @@ def main() -> int:
         "probe": probe,
     }
 
-    if auth_warning or probe.get("classification") == "auth":
+    if probe.get("classification") == "auth" or (auth_warning and not probe.get("authOk")):
         status.update({"ok": False, "action": "none", "classification": "auth", "reason": "UniFi credentials are rejected; not restarting child bridge"})
         write_status(status)
         return 0
     if not probe.get("apiOk"):
         status.update({"ok": False, "action": "none", "classification": probe.get("classification") or "api", "reason": "UniFi API is not healthy; not restarting child bridge"})
+        write_status(status)
+        return 0
+    if args.probe_only:
+        status.update({"classification": "healthy", "reason": "Live UniFi API probe is healthy; no restart requested"})
         write_status(status)
         return 0
     if not stale:
