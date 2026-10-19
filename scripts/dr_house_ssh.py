@@ -6,7 +6,7 @@ import urllib.request
 MODES = frozenset(("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "attention", "savings", "diagnostics", "routine"))
 
 
-MODES = MODES | {'wait', 'laundrytime', 'recap'}
+MODES = MODES | {'wait', 'laundrytime', 'recap', 'logs', 'automations'}
 
 
 def dispatch(command):
