@@ -22,9 +22,17 @@ uses runtime data; explicit full refresh retains external-file scanning.
 Action health, dashboard health, laundry capture and announcement source health pass.
 Audible HomePod delivery has not been tested during this migration.
 
-Remaining: Tell me more SSH host saved as m4-office-mini.local. Other voice-shortcut
-hosts still point to the old coordinator. Shortcuts UI automation timed out;
-remaining shortcut changes and phone sync are unverified.
+Voice shortcut migration completed: all 32 house SSH shortcuts were reopened
+and verified with host m4-office-mini.local after restarting Shortcuts. This
+includes the backup copies and Dr. House connection setup. Five text-only
+shortcuts were repaired by adding the configured SSH action with their existing
+command: House, good morning; Quiet until morning; When should I leave;
+Backup - Anything unusual; Backup - Anything unusual 2.
+
+Live Check the laundry shortcut completed successfully. M4 recorded
+announcementId=dr_house_diagnostics with relay acceptance at 15:55:36 Pacific.
+This verifies shortcut execution and relay acceptance, not audible playback.
+Phone iCloud synchronization and Siri recognition have not been independently tested.
 
 Rollback property lists retained under ~/Library/Application Support/SmartHomeMigrationBackup
 on each host. Old runtime files retained. Avoid enabling duplicate coordinators.
