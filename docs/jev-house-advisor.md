@@ -1,9 +1,10 @@
 # Jev household decision support
 
-Eleven bounded Choice questions share a request: measured energy contributor,
+Thirteen bounded Choice questions share a request: measured energy contributor,
 attention priority, laundry telemetry conflict, routine-summary advice,
 supporting detail, energy-saving opportunity, changes, deferral, solar timing,
-unusual combinations, and evening recap. Scheduled energy reviews
+unusual combinations, evening recap, Homebridge log triage, and automation
+conflict candidates. Scheduled energy reviews
 include these questions alongside the existing low-energy advisory. On-demand
 reviews have a five-minute persistent attempt cooldown. All calls share the
 existing Keychain credential and $1 monthly local allocation; each attempt
