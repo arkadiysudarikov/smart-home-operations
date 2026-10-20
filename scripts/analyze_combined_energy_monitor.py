@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import csv
 from datetime import datetime, timezone
 from pathlib import Path
@@ -538,6 +539,24 @@ def build_daily_summary(
     return out
 
 
+def live_solar_gap(pair: dict[str, Any], now: datetime, max_age_seconds: float = 300,
+                   max_skew_seconds: float = 120) -> float | None:
+    envoy_at = parse_dt(pair.get("envoyCapturedAt"))
+    sense_at = parse_dt(pair.get("senseCapturedAt"))
+    if not envoy_at or not sense_at or pair.get("envoyStatus") != "live":
+        return None
+    ages = [(now - value).total_seconds() for value in (envoy_at, sense_at)]
+    if any(age < -60 or age > max_age_seconds for age in ages):
+        return None
+    if abs((envoy_at - sense_at).total_seconds()) > max_skew_seconds:
+        return None
+    production, solar = num(pair.get("envoyProductionKw")), num(pair.get("senseSolarKw"))
+    if production is None or solar is None or not all(math.isfinite(x) for x in (production, solar)):
+        return None
+    # Ignore low-production periods, where standby current and noise dominate.
+    return production - solar if production >= 0.25 else None
+
+
 def build_payload() -> dict[str, Any]:
     config = load_json(CONFIG_PATH)
     thresholds = config.get("alerts", {})
@@ -637,6 +656,13 @@ def build_payload() -> dict[str, Any]:
                 f"Envoy non-battery load minus Sense load is `{fmt(sense_gap_for_alert, 3)}` kW.",
             )
         )
+
+    solar_gap = live_solar_gap(meter.get("liveEnvoySensePairing") or {}, now)
+    if solar_gap is not None and abs(solar_gap) >= float(thresholds.get("sense_envoy_solar_gap_kw", 0.75)):
+        alerts.append(alert(
+            "warning", "Solar meters disagree",
+            f"Fresh matched Envoy production minus Sense solar is `{fmt(solar_gap, 3)}` kW; meter coverage or calibration needs verification.",
+        ))
 
     metrics = latest.get("homebridge", {}).get("logs", {}).get("latestMetrics", {})
     if isinstance(metrics.get("enphase_consumption_net_kw"), (int, float)):

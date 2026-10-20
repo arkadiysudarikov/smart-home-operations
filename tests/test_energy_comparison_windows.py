@@ -4,6 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,5 +44,27 @@ class EnergyWindowTest(unittest.TestCase):
         ev=next(x for x in result['opportunities'] if x['area']=='EV charging')
         self.assertIn('unverified',ev['finding'])
         self.assertNotIn('30%',ev['finding'])
+
+class SolarPairQualityTest(unittest.TestCase):
+    def setUp(self):
+        self.now=datetime(2026,10,20,20,35,40,tzinfo=timezone.utc)
+        self.pair={'envoyStatus':'live','envoyCapturedAt':'2026-10-20T13:35:37-07:00','senseCapturedAt':'2026-10-20T20:35:39Z','envoyProductionKw':2.094,'senseSolarKw':-0.003}
+    def test_fresh_same_instant_can_expose_solar_disagreement(self):
+        self.assertAlmostEqual(combined.live_solar_gap(self.pair,self.now),2.097)
+    def test_combined_report_warns_on_a_fresh_matched_solar_gap(self):
+        now=datetime.now(timezone.utc)
+        pair={**self.pair,'envoyCapturedAt':(now-timedelta(seconds=2)).isoformat(),'senseCapturedAt':now.isoformat()}
+        with tempfile.TemporaryDirectory() as tmp:
+            data=Path(tmp);(data/'latest_meter_reconciliation.json').write_text(json.dumps({'liveEnvoySensePairing':pair}))
+            with patch.object(combined,'DATA_DIR',data),patch.object(combined,'CONFIG_PATH',data/'config.json'),patch.object(combined,'live_envoy_source',return_value={}),patch.object(combined,'live_sense_source',return_value={}):
+                result=combined.build_payload()
+        self.assertTrue(any(x.get('title')=='Solar meters disagree' for x in result['alerts']))
+    def test_old_skewed_missing_and_future_samples_are_not_compared(self):
+        for field,value in [('senseCapturedAt','2026-10-19T20:35:39Z'),('envoyCapturedAt','2026-10-20T20:32:00Z'),('senseCapturedAt',None),('senseCapturedAt','2026-10-21T20:35:39Z')]:
+            with self.subTest(field=field,value=value):
+                self.assertIsNone(combined.live_solar_gap({**self.pair,field:value},self.now))
+    def test_night_noise_and_nonfinite_values_are_not_a_solar_disagreement(self):
+        for fields in [{'envoyProductionKw':0.01},{'senseSolarKw':float('nan')},{'envoyProductionKw':float('inf')}]:
+            self.assertIsNone(combined.live_solar_gap({**self.pair,**fields},self.now))
 
 if __name__=='__main__':unittest.main()
