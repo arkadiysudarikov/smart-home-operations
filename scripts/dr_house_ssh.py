@@ -3,7 +3,7 @@ import os
 import sys
 import urllib.request
 
-MODES = frozenset(("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "attention", "savings", "diagnostics", "routine"))
+MODES = frozenset(("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "acknowledge", "attention", "savings", "diagnostics", "routine"))
 
 
 MODES = MODES | {'wait', 'laundrytime', 'recap'}

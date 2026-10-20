@@ -8,7 +8,7 @@ from pathlib import Path
 
 import generate_alerts as alerts
 
-MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "attention", "savings", "diagnostics", "routine")
+MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "acknowledge", "attention", "savings", "diagnostics", "routine")
 BASELINE = alerts.DATA_DIR / "dr_house_baseline.json"
 MODES += ("wait", "laundrytime", "recap")
 
@@ -227,6 +227,8 @@ def calendar_summary(now, departure_only=False):
 
 
 def build(mode):
+    if mode == "acknowledge":
+        return "Announcements acknowledged. Repeats stopped."
     if mode in ("repeat", "snooze", "why"):
         from announcement_followup import request
         return request(mode)
@@ -353,6 +355,9 @@ def main():
         if args.mode == "quiet":
             from announcement_pause import quiet_until_morning
             quiet_until_morning()
+    if args.mode == "acknowledge" and args.speak:
+        from announcement_ack import acknowledge
+        acknowledge(alerts.DATA_DIR)
     if args.mode == "snooze" and args.speak:
         from announcement_followup import request
         message = request("snooze", mutate=True)

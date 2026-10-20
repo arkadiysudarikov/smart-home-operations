@@ -152,4 +152,5 @@ if __name__ == "__main__":
     parser.parse_args()
     if not alerts.running_from_runtime_root():
         raise SystemExit("Scheduled follow-ups require deployed runtime")
-    print(json.dumps({"status": tick()}))
+    from announcement_ack import tick as repeat_tick
+    print(json.dumps({"status": tick(), "repeated": repeat_tick(alerts.DATA_DIR)}))
