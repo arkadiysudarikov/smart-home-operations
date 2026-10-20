@@ -108,3 +108,19 @@ appointments are never disclosed. Repeats say “Unacknowledged announcement” 
 identify recorded text rather than claim a fresh observation. Failed/uncertain
 replays wait another five minutes; they cannot recursively enqueue themselves.
 No historical log entries are backfilled when deploying this feature.
+
+October 20 live validation: the marked synthetic household test was accepted at
+13:34:46 Pacific. The scheduler accepted its automatic repeat at 13:39:55, with
+no duplicate on the next pass. A scheduler restart preserved the pending item
+and its original due time. Running the saved Acknowledge announcements shortcut
+in the Mac UI reached M4's restricted command at 13:41:14 (HTTP 200), cleared
+pending repeats, and subsequent scheduler passes reported zero repeats. The
+manual POST also returned HTTP 200 with zero pending. An external Origin was
+rejected with HTTP 403. No synthetic repeat remains queued.
+
+The shortcut name synced to M4. iPhone Mirroring was blocked by Touch ID; phone
+sync and spoken Siri recognition were not confirmed in this check. The CM-15 is
+now the M4's default microphone, while the M5 has no audio input. A temporary M4
+capture helper reached the microphone permission prompt but did not record; it
+was stopped and removed from Applications after testing. Relay acceptance does
+not prove audible delivery to any individual HomePod.
