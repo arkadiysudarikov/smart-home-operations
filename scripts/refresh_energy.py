@@ -154,9 +154,11 @@ def run_node_step(name: str, script: str, timeout: int = 300, optional: bool = F
     return run_step(name, [node, script], timeout=timeout, optional=optional)
 
 
-def analyzer_cmd(py: str) -> list[str]:
+def analyzer_cmd(py: str, *, scan_external: bool = False) -> list[str]:
     script = ROOT / "scripts/analyze_all_energy_readings.py"
     cmd = [py, str(script)]
+    if not scan_external:
+        return cmd
     try:
         proc = subprocess.run(
             [py, str(script), "--help"],
@@ -529,7 +531,7 @@ def main() -> int:
                 [
                     (
                         "analyze_all_energy",
-                        analyzer_cmd(py),
+                        analyzer_cmd(py, scan_external=True),
                         300,
                         False,
                         False,

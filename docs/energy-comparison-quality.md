@@ -22,10 +22,17 @@ refreshed the monitor coverage. Utility interval coverage still ends in June
 2026 and does not overlap the current monitor window. No charging, battery,
 thermostat, or appliance-control setting was changed by this repair.
 
-Validation: 527 unit tests, including historical versus rolling windows,
+Validation: 534 unit tests, including historical versus rolling windows,
 unknown source completeness, cached legacy shares, and removal of fixed EV
 percentage claims. A live solar comparison warns when contemporaneous Envoy
 and Sense readings differ materially. Stale, missing, future, skewed, night, and
 non-finite samples are excluded. This warning requests meter-coverage/calibration
 verification and does not establish a hardware fault. Runtime reports were
 regenerated from the existing sources.
+
+Fast refresh uses the runtime's local imports; explicit full refresh retains
+Downloads/Documents/iCloud discovery. Fingerprinting retries bounded transient
+file-provider locks from a clean digest and still fails on persistent or other
+read errors. Local SmartHQ source aliases inspect the active local plugin;
+actual remote sources still require a fresh remote attestation. This prevents
+false remote-capture warnings without relaxing the reviewed version/hash gate.

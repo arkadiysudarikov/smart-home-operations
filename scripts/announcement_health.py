@@ -2,6 +2,7 @@
 """Read-only announcement diagnostics. Never sends mail or plays audio."""
 import hashlib
 import json
+import socket
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -113,10 +114,24 @@ def build(data, plugin, now):
             "audibleDelivery": {"status": "unverified", "reason": "No automatic HomePod playback receipt; relay acceptance is not audible proof."}}
 
 
+def configured_plugin(config, now):
+    source = config.get("laundry_host") or {}
+    host = str(source.get("host") or "").lower().rstrip(".")
+    local = socket.gethostname().lower().rstrip(".")
+    short = local.removesuffix(".local")
+    local_hosts = {local, short, short + ".local", "localhost", "127.0.0.1", "::1"}
+    if source.get("enabled") is True and host not in local_hosts:
+        remote = load(ROOT / "data/latest_remote_laundry.json")
+        capture_age = age((remote.get("capture") or {}).get("capturedAt"), now)
+        plugin = remote.get("plugin") if remote.get("ok") is True and capture_age is not None and 0 <= capture_age <= 300 else None
+        return plugin or {"ok": False, "status": "remote_capture_unavailable"}
+    root = active_plugin(int((config.get("smarthq_laundry_recovery") or {}).get("child_bridge_port", 40893)))
+    return inspect_plugin(root) if root else {"status": "running_plugin_unresolved", "ok": False}
+
+
 def main():
     config = load(ROOT / "config/sources.json")
-    root = active_plugin(int((config.get("smarthq_laundry_recovery") or {}).get("child_bridge_port", 40893)))
-    plugin = inspect_plugin(root) if root else {"status": "running_plugin_unresolved", "ok": False}
+    plugin = configured_plugin(config, datetime.now(timezone.utc))
     payload = build(ROOT / "data", plugin, datetime.now(timezone.utc))
     target = ROOT / "data/latest_announcement_health.json"
     target.parent.mkdir(parents=True, exist_ok=True)
