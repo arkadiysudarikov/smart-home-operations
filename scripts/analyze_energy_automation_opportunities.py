@@ -74,9 +74,9 @@ def build_payload() -> dict[str, Any]:
         {
             "area": "EV charging",
             "priority": "high",
-            "finding": f"ChargePoint has {visible_totals.get('energyKwh', 0):.1f} kWh across {visible_totals.get('sessionCount', 0)} visible sessions and is about 30% of the recent Alarm.com 7-day site-load window.",
-            "recommendation": "Shift EV charging to solar-surplus or cheapest off-peak windows where practical; avoid default overnight charging on already-high load days.",
-            "automation": "Use Home/ChargePoint trigger or manual routine: if Solar is triggered and Grid Out is triggered, allow charging; otherwise defer charging unless departure requires it.",
+            "finding": f"The available ChargePoint history contains {visible_totals.get('energyKwh', 0):.1f} kWh across {visible_totals.get('sessionCount', 0)} sessions. Its share of current house usage is unverified because the measurement windows and history completeness are not aligned.",
+            "recommendation": "Verify current ChargePoint history, the electricity tariff, and departure needs before changing the charging schedule.",
+            "automation": "Review a solar-aware charging schedule once current session coverage and charging requirements are verified.",
         },
         {
             "area": "Thermostat setbacks",

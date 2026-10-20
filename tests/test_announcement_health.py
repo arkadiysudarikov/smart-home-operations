@@ -57,6 +57,28 @@ class HealthTests(unittest.TestCase):
         (self.data/"dist/devices/device.js").write_text("function recordSmartHQHeartbeat() {}")
         self.assertEqual(health.inspect_plugin(self.data)["status"], "plugin_changed_review_required")
 
+    def test_reviewed_090_requires_exact_instrumented_code(self):
+        self.write("package.json", {"version": "0.9.0"})
+        (self.data/"dist/devices").mkdir(parents=True)
+        (self.data/"dist/devices/device.js").write_text("test fixture")
+        with mock.patch.object(health.hashlib, "sha256") as digest:
+            digest.return_value.hexdigest.return_value = health.PATCHED_081
+            self.assertTrue(health.inspect_plugin(self.data)["ok"])
+            digest.return_value.hexdigest.return_value = health.ORIGINAL_081
+            missing = health.inspect_plugin(self.data)
+            self.assertFalse(missing["ok"])
+            self.assertEqual(missing["status"], "heartbeat_patch_missing")
+            digest.return_value.hexdigest.return_value = "modified code"
+            self.assertEqual(health.inspect_plugin(self.data)["status"], "plugin_changed_review_required")
+
+    def test_unreviewed_version_rejects_even_a_known_code_hash(self):
+        self.write("package.json", {"version": "0.9.1"})
+        (self.data/"dist/devices").mkdir(parents=True)
+        (self.data/"dist/devices/device.js").write_text("test fixture")
+        with mock.patch.object(health.hashlib, "sha256") as digest:
+            digest.return_value.hexdigest.return_value = health.PATCHED_081
+            self.assertFalse(health.inspect_plugin(self.data)["ok"])
+
     def test_absent_plugin_is_not_healthy(self):
         self.assertFalse(health.inspect_plugin(self.data)["ok"])
 

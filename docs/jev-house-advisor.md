@@ -1,9 +1,10 @@
 # Jev household decision support
 
-Eleven bounded Choice questions share a request: measured energy contributor,
+Thirteen bounded Choice questions share a request: measured energy contributor,
 attention priority, laundry telemetry conflict, routine-summary advice,
 supporting detail, energy-saving opportunity, changes, deferral, solar timing,
-unusual combinations, and evening recap. Scheduled energy reviews
+unusual combinations, evening recap, Homebridge log triage, and automation
+conflict candidates. Scheduled energy reviews
 include these questions alongside the existing low-energy advisory. On-demand
 reviews have a five-minute persistent attempt cooldown. All calls share the
 existing Keychain credential and $1 monthly local allocation; each attempt
@@ -114,3 +115,37 @@ Quiet until morning; When should I leave; Anything unusual). They have no SSH
 host to migrate and were not represented as working commands by this change.
 Phone sync, acoustic delivery, and Siri voice recognition remain separate checks,
 not established by relay acceptance.
+
+## Homebridge logs and automation candidates (October 19)
+
+Two additional bounded questions share the existing request, budget, cooldown,
+and strict response validation: `logs` and `automations`. The CLI and restricted
+household command routes accept those two mode names. No Siri shortcut installation
+or audible delivery is implied by a backend check.
+
+On the Homebridge host, run `jev_operations.py --collect` every five minutes.
+An optional `--publish-host` sends only the resulting count snapshot over existing
+household SSH to the coordinator. A missing or older-than-six-minute snapshot
+is unavailable, never healthy. The collector reads at most 2 MB and considers
+only dated lines in the latest fifteen minutes. It reports incomplete tail coverage
+explicitly; a truncation limit is never a promise of full coverage. It counts timeout, authentication,
+rate-limit, disconnect, startup-adjacent disconnect, and other error lines.
+Counts are not distinct incidents; near-startup disconnects are not proven benign.
+No log text, tokens, addresses, timestamps from individual events, or labels go to
+Jev. The generated timestamp is kept locally and excluded from model facts.
+
+Automation evidence covers fresh Alarm.com garage-light summaries (30-minute
+expiry) plus an explicitly reviewed local `home_automation_review.json` (seven-day
+expiry). That file has `reviewedAt` and a `rules` list with `enabled`, `trigger`,
+`target`, `action`, and `window`. Local opaque keys can distinguish triggers and
+targets. Jev receives only totals and coverage booleans. Opposite actions require
+matching trigger, target, and time window; matching actions are overlap candidates.
+Alarm.com descriptions sometimes omit sensor identity, so candidates require
+inspection. Unreviewed devices, cross-platform interactions, different or
+partially overlapping schedules, and security policy intent are not inferred.
+The review never changes, disables, tests, arms, unlocks, or fires an automation.
+
+Read-only checks: `house_briefing.py --mode logs` and `--mode automations`.
+`jev_house_advisor.py --review` makes one budgeted request without audio; plain
+rendering makes none. Local reports always retain observed faults/candidates,
+even when Jev is unavailable or returns an unsupported choice.

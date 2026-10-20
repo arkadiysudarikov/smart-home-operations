@@ -6,6 +6,7 @@ import json
 import sqlite3
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -216,7 +217,7 @@ class AnalyzeEnergyObservabilityTest(unittest.TestCase):
             analyzer.DB_PATH = Path(tmp) / "smart_home.sqlite"
             try:
                 analyzer.persist_observation(
-                    "2026-07-15T10:00:00-07:00",
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     {
                         "envoyProductionKw": 3.2,
                         "envoySiteLoadKw": 3.1,
@@ -258,7 +259,7 @@ class AnalyzeEnergyObservabilityTest(unittest.TestCase):
                     )
 
                 analyzer.persist_observation(
-                    "2026-07-15T11:00:00-07:00",
+                    datetime.now(timezone.utc).isoformat(timespec="seconds"),
                     {"alarmProjectedKwh": 1250.0, "alarmBudgetKwh": 1100.0},
                     {"alerts": []},
                 )

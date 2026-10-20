@@ -154,9 +154,11 @@ def run_node_step(name: str, script: str, timeout: int = 300, optional: bool = F
     return run_step(name, [node, script], timeout=timeout, optional=optional)
 
 
-def analyzer_cmd(py: str) -> list[str]:
+def analyzer_cmd(py: str, *, scan_external: bool = False) -> list[str]:
     script = ROOT / "scripts/analyze_all_energy_readings.py"
     cmd = [py, str(script)]
+    if not scan_external:
+        return cmd
     try:
         proc = subprocess.run(
             [py, str(script), "--help"],
@@ -503,6 +505,10 @@ def main() -> int:
                     "recent ChargePoint capture is still fresh",
                 ),
                 ("snapshot_post_capture", [py, "scripts/smart_home_snapshot.py"], 45, True, False, None),
+                ("analyze_chargepoint", [py, "scripts/analyze_chargepoint_pairing.py"], 300, True, False, None),
+                ("analyze_meter_reconciliation", [py, "scripts/analyze_meter_reconciliation.py"], 300, True, False, None),
+                ("analyze_bill_home_pairing", [py, "scripts/analyze_bill_home_pairing.py"], 300, True, False, None),
+                ("analyze_energy_costs", [py, "scripts/analyze_energy_costs.py"], 300, True, False, None),
                 ("analyze_combined_energy", [py, "scripts/analyze_combined_energy_monitor.py"], 300, True, False, None),
                 ("analyze_energy_observability", [py, "scripts/analyze_energy_observability.py"], 120, True, False, None),
                 ("generate_alerts", [py, "scripts/generate_alerts.py"], 300, True, False, None),
@@ -525,7 +531,7 @@ def main() -> int:
                 [
                     (
                         "analyze_all_energy",
-                        analyzer_cmd(py),
+                        analyzer_cmd(py, scan_external=True),
                         300,
                         False,
                         False,

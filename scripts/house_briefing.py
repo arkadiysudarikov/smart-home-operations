@@ -10,7 +10,7 @@ import generate_alerts as alerts
 
 MODES = ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "attention", "savings", "diagnostics", "routine")
 BASELINE = alerts.DATA_DIR / "dr_house_baseline.json"
-MODES += ("wait", "laundrytime", "recap")
+MODES += ("wait", "laundrytime", "recap", "logs", "automations")
 
 
 def observations(now):
@@ -231,7 +231,7 @@ def build(mode):
         from announcement_followup import request
         return request(mode)
     now = datetime.now(timezone.utc).isoformat()
-    if mode in ('attention','savings','diagnostics','routine','changes','wait','laundrytime','unusual','recap'):
+    if mode in ('attention','savings','diagnostics','routine','changes','wait','laundrytime','unusual','recap','logs','automations'):
         from jev_house_advisor import render
         return render(mode, alerts.DATA_DIR, datetime.fromisoformat(now).timestamp())
     if mode == "more":
@@ -357,7 +357,7 @@ def main():
         from announcement_followup import request
         message = request("snooze", mutate=True)
     else:
-        if args.speak and args.mode in ('energy','complications','attention','savings','diagnostics','routine','more','status','changes','wait','laundrytime','unusual','recap'):
+        if args.speak and args.mode in ('energy','complications','attention','savings','diagnostics','routine','more','status','changes','wait','laundrytime','unusual','recap','logs','automations'):
             import jev_house_advisor as advisor
             # Failure, exhausted budget, or cooldown must not prevent the reply.
             try:

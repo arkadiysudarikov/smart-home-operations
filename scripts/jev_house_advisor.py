@@ -38,6 +38,8 @@ OPTIONS = {
 }
 from jev_house_features import OPTIONS as FEATURE_OPTIONS
 OPTIONS.update(FEATURE_OPTIONS)
+from jev_operations import OPTIONS as OPERATIONS_OPTIONS
+OPTIONS.update(OPERATIONS_OPTIONS)
 
 
 def fresh(value, now, seconds=180):
@@ -104,7 +106,8 @@ def facts(data, now, sample=None):
         'away_high':sample['home'] is False and usual is not None and sample['load_kw'] > 2*usual,
         'daytime':daytime(now)}
     from jev_house_features import enrich
-    return enrich(data,evidence,now)
+    from jev_operations import facts as operations_facts
+    return {**enrich(data,evidence,now), **operations_facts(data,now)}
 
 
 def request(evidence):
@@ -137,7 +140,8 @@ def supported(e):
     if e['daytime'] and attention: routine.add('announce')
     if e['daytime'] and len(attention)>1: routine.add('combine')
     from jev_house_features import supported as feature_supported
-    return {**feature_supported(e), 'contributor':contributors|{'unknown'}, 'attention':attention|{'none'},
+    from jev_operations import supported as operations_supported
+    return {**operations_supported(e), **feature_supported(e), 'contributor':contributors|{'unknown'}, 'attention':attention|{'none'},
         'laundry':{'unknown','conflict'} if e['laundry_conflicts'] else {'unknown'},
         'routine':routine, 'detail':details|{'unknown'}, 'savings':savings}
 
@@ -244,6 +248,9 @@ def savings_text(e, choices):
 def render(mode, data, now):
     e = facts(data,now)
     c = cached(data,e,now)
+    if mode in ('logs','automations'):
+        from jev_operations import render as operations_render
+        return operations_render(mode,e,c)
     if mode in ('changes','wait','laundrytime','unusual','recap'):
         from jev_house_features import render as feature_render
         return feature_render(mode,e,c)
@@ -273,7 +280,7 @@ def render(mode, data, now):
 def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--review',action='store_true')
-    parser.add_argument('--mode',choices=('energy','attention','savings','diagnostics','routine','detail'),default='attention')
+    parser.add_argument('--mode',choices=('energy','attention','savings','diagnostics','routine','detail','logs','automations'),default='attention')
     args=parser.parse_args()
     now=datetime.now(timezone.utc).timestamp()
     if args.review:
