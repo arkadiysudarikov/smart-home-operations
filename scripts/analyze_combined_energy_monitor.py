@@ -589,7 +589,12 @@ def build_payload() -> dict[str, Any]:
     alarm_raw_mismatch = alarm_dashboard["rawMismatchKwh"]
 
     charge_alarm = (chargepoint.get("alarm") or {})
-    cp_share = charge_alarm.get("recentChargepointShareOfAlarm7d")
+    cp_share = (
+        num(charge_alarm.get("recentChargepointShareOfAlarm7d"))
+        if charge_alarm.get("alarm7dComparisonVerified") is True
+        and charge_alarm.get("capturedAtLocal") == alarm.get("capturedAtLocal")
+        else None
+    )
     if cp_share is not None and cp_share >= float(thresholds.get("chargepoint_alarm_7d_share_high", 0.35)):
         alerts.append(
             alert(

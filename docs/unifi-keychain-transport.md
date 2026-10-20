@@ -43,8 +43,13 @@ October 19 verification used the real installed module in an isolated mock
 Homebridge API: nine network-device mappings, 49 active clients, 48 simulated new
 accessories, all 55 original UUIDs retained, and zero removals. The live restart
 then retained the 55 original entries and wrote 103 total cached accessories.
-The 55 legacy mappings remain pending an explicit cleanup decision. No security
-or garage-door action was executed by the repair.
+On October 20, the approved cleanup removed exactly those 55 original UUIDs.
+The child bridge was stopped before its cache was backed up and edited, then
+started after shutdown completed. All 90 other cached entries were retained.
+The subsequent HAP response contained zero obsolete names, and continuing UniFi
+polls were healthy. New current-client entries can still be created normally.
+Pairing and platform configuration were preserved. No security or garage-door
+action was executed by the repair.
 
 The recovery probe uses the same configured Keychain source so it does not keep
 trying the obsolete password. Missing credentials or a destination mismatch fail
