@@ -3343,13 +3343,17 @@ class Handler(BaseHTTPRequestHandler):
             return 405, {"ok": False, "error": "action endpoints require POST"}
         if path.startswith("/action/") and not self.request_origin_allowed():
             return 403, {"ok": False, "error": "request origin is not allowed"}
+        if path == "/action/acknowledge-announcements":
+            from announcement_ack import acknowledge
+            count = acknowledge(ROOT / "data")
+            return 200, {"ok": True, "acknowledged": count}
         if path == "/action/run-check":
             payload = run_smart_home_check()
             return (200 if payload["ok"] else 500), payload
         if path == "/action/announce-help":
             payload = run([str(python_bin()), str(ROOT / "scripts/generate_alerts.py"), "--help-announcement", "--speak"], timeout=55)
             return (200 if payload["ok"] else 500), payload
-        if path in {"/action/dr-house-" + mode for mode in ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "attention", "savings", "diagnostics", "routine", "wait", "laundrytime", "recap")}:
+        if path in {"/action/dr-house-" + mode for mode in ("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "acknowledge", "attention", "savings", "diagnostics", "routine", "wait", "laundrytime", "recap")}:
             mode = path.removeprefix("/action/dr-house-")
             payload = run([str(python_bin()), str(ROOT / "scripts/house_briefing.py"), "--mode", mode, "--speak"], timeout=120)
             return (200 if payload["ok"] else 500), payload
@@ -3410,6 +3414,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/announcements":
+            self.send_html(200, b'''<!doctype html><meta name="viewport" content="width=device-width"><title>Announcements</title><h1>Announcements</h1><button onclick="this.disabled=true;fetch('/action/acknowledge-announcements',{method:'POST'}).then(r=>{if(!r.ok)throw Error();document.querySelector('p').textContent='Acknowledged. Repeats stopped.'}).catch(()=>{this.disabled=false;document.querySelector('p').textContent='Could not acknowledge. Try again.'})">Acknowledge announcements</button><p></p>''')
+            return
         if parsed.path == "/displays":
             self.send_html(200, render_display_page())
             return

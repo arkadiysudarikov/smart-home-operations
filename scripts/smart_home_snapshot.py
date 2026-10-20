@@ -84,6 +84,7 @@ DRIFT_CHECK_FILES = [
     "scripts/house_briefing.py",
     "scripts/announcement_pause.py",
     "scripts/announcement_followup.py",
+    "scripts/announcement_ack.py",
     "scripts/announcement_envelope.py",
     "scripts/washer_free_reminder.py",
     "scripts/dr_house_ssh.py",

@@ -85,3 +85,26 @@ Office HomePod was Playing at 12:32 but reported Paused at approximately 12:43.
 No playback control was sent by this test; the cause of that state change is not
 established. Playback continuity and driving acoustic delivery remain unverified.
 The microphone helper completed and exited; no pending test reminder remains.
+
+## Repeats until acknowledged
+
+Actionable announcements now remain pending and repeat every five minutes until
+explicitly acknowledged. Each source has its own pending item, persisted across
+service restarts; a newer message replaces that source's prior message. This
+covers laundry, appointment reminders, energy attention notices, household
+reminders, doorbell/help requests, laundry connectivity and freezer warnings.
+Energy-clear and health-recovery announcements clear the matching pending warning;
+status replies and announcement-control confirmations do not repeat.
+
+Run **Acknowledge announcements** by tapping the shortcut or asking Siri to run
+it. Its existing SSH key/host calls the restricted `acknowledge` command on M4.
+This acknowledges all pending announcements and cancels the ten-minute snooze.
+The M4-local page `http://127.0.0.1:18765/announcements` also has a manual button;
+it uses a POST and keeps the existing loopback-only action-server boundary.
+
+Ordinary quiet hours and pauses defer repeats. Calendar repeats retain the fresh
+occurrence and owner-at-home privacy gate, so expired, cancelled or unavailable
+appointments are never disclosed. Repeats say “Unacknowledged announcement” to
+identify recorded text rather than claim a fresh observation. Failed/uncertain
+replays wait another five minutes; they cannot recursively enqueue themselves.
+No historical log entries are backfilled when deploying this feature.

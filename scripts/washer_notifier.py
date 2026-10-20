@@ -510,6 +510,11 @@ def record_homepod_announcement(result: dict[str, Any], message: str, appliance_
             handle.write(json.dumps(event, sort_keys=True) + "\n")
     except OSError:
         pass
+    try:
+        from announcement_ack import record
+        record(DATA_DIR, event)
+    except (OSError, ValueError, TypeError):
+        pass
     return result
 
 
