@@ -26,12 +26,12 @@ REQUIRED_AP_ZONES = {
 REQUIRED_TARGETS = {
     "m2-office-mini": {
         "zone": "level_2",
-        "local": True,
+        "local": False,
         "presence_access_points": ["Family", "Office"],
     },
     "m2-garage-mini": {"zone": "level_1", "host": "m2-garage-mini.localdomain"},
     "m4-bar-mini": {"zone": "level_3"},
-    "m4-office-mini": {"zone": "level_2", "host": "m4-office-mini.local"},
+    "m4-office-mini": {"zone": "level_2", "host": "m4-office-mini.local", "local": True},
     "m2-macbook-pro": {
         "dynamic_room": True,
         "dynamic_zone_source": "presence",

@@ -1,7 +1,7 @@
 {
   "homebridge": {
     "storage_path": "/Users/arkadiysudarikov/.homebridge",
-    "launchd_service": "system/com.homebridge.server",
+    "launchd_service": "gui/501/com.homebridge.server",
     "ui_port": 8581,
     "main_bridge_port": 51179
   },
@@ -74,14 +74,14 @@
     "targets": [
       {
         "id": "m2-office-mini",
-        "host": "192.168.0.190",
+        "host": "m5-office-studio.local",
         "room": "office",
         "zone": "level_2",
         "presence_access_points": [
           "Family",
           "Office"
         ],
-        "local": true
+        "local": false
       },
       {
         "id": "m2-garage-mini",
@@ -102,7 +102,8 @@
         "host": "m4-office-mini.local",
         "host_source": "unifi",
         "room": "office",
-        "zone": "level_2"
+        "zone": "level_2",
+        "local": true
       },
       {
         "id": "m2-macbook-pro",
@@ -275,7 +276,7 @@
     "homepod_volume": 65,
     "homepod_clip_seconds": 8,
     "mac_sound": "Glass",
-    "webhook_url": "http://127.0.0.1:63743",
+    "webhook_url": "http://m4-office-mini.local:63743",
     "finish_sensor_id": "smart_home_washer_finished_v1",
     "reminder_sensor_id": "smart_home_washer_unload_v1",
     "venting_sensor_id": "smart_home_washer_venting_v1",
@@ -308,7 +309,7 @@
     "homepod_volume": 65,
     "homepod_clip_seconds": 8,
     "mac_sound": "Glass",
-    "webhook_url": "http://127.0.0.1:63743",
+    "webhook_url": "http://m4-office-mini.local:63743",
     "finish_sensor_id": "smart_home_dryer_finished_v1",
     "reminder_sensor_id": "smart_home_dryer_unload_v1",
     "power_fallback_mode": "shadow",
@@ -343,11 +344,17 @@
     "homepod_volume": 65,
     "homepod_clip_seconds": 8,
     "mac_sound": "Glass",
-    "webhook_url": "http://127.0.0.1:63743",
+    "webhook_url": "http://m4-office-mini.local:63743",
     "finish_sensor_id": "smart_home_combo_finished_v1",
     "reminder_sensor_id": "smart_home_combo_unload_v1",
     "power_fallback_mode": "shadow",
     "power_fallback_minimum_training_cycles": 3
+  },
+  "laundry_host": {
+    "enabled": true,
+    "host": "m4-office-mini.local",
+    "identity": "m4-office-mini",
+    "runtime": "/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor"
   },
   "smarthq_laundry_recovery": {
     "enabled": true,
