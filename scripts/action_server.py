@@ -3001,6 +3001,7 @@ def trigger_garage_light_activity(trigger: str | None = None, source: str | None
             "active": True,
             "lastActivityAt": now.isoformat(timespec="seconds"),
             "lastActivationAt": now.isoformat(timespec="seconds"),
+            "lastPhysicalActivityAt": now.isoformat(timespec="seconds"),
             "holdSeconds": hold_seconds,
             "holdUntil": hold_until.isoformat(timespec="seconds"),
             "controllerBrightness": GARAGE_LIGHT_CONTROLLER_BRIGHTNESS,
@@ -3060,7 +3061,10 @@ def expire_garage_light_hold() -> None:
         occupancy = garage_occupancy_status()
         state["occupancy"] = occupancy
         append_garage_activity_event({"type": "occupancy-check", "occupancy": occupancy})
-        if occupancy.get("enabled") and (occupancy.get("error") or occupancy.get("occupied") is None):
+        actual_activity = parse_dt(state.get("lastPhysicalActivityAt")) or last_activity
+        phone_limit = max(hold_seconds, int(garage_light_config().get("maximum_phone_hold_seconds", 600)))
+        phone_hold_allowed = (now - actual_activity).total_seconds() < phone_limit
+        if phone_hold_allowed and occupancy.get("enabled") and (occupancy.get("error") or occupancy.get("occupied") is None):
             state.update({
                 "status": "occupancy-unavailable",
                 "lastError": "Garage occupancy unavailable; preserving light and retrying",
@@ -3070,10 +3074,14 @@ def expire_garage_light_hold() -> None:
             schedule_garage_light_hold_check(state)
             return
         state.pop("retryAt", None)
-        if occupancy.get("occupied"):
+        # Wi-Fi association is supporting evidence, not continuous physical
+        # activity. Bound its extension so a nearby stationary phone cannot
+        # keep the light on indefinitely.
+        if occupancy.get("occupied") and phone_hold_allowed:
             state.update(
                 {
                     "lastActivityAt": now.isoformat(timespec="seconds"),
+                    "lastPhysicalActivityAt": actual_activity.isoformat(timespec="seconds"),
                     "lastOccupancyAt": now.isoformat(timespec="seconds"),
                     "holdUntil": (now + timedelta(seconds=hold_seconds)).isoformat(timespec="seconds"),
                     "status": "occupancy-hold",
@@ -3369,6 +3377,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/action/refresh-alarm-cache":
             payload = refresh_alarm_cache()
             return (202 if payload["ok"] else 500), payload
+        if path == "/action/garage-reconcile":
+            from garage_light_reconcile import adopt
+            payload = adopt(sys.modules[__name__])
+            return (200 if payload.get("ok") else 503), payload
         if path == "/action/garage-activity":
             payload = trigger_garage_light_activity(
                 trigger=(query.get("trigger") or [None])[0],

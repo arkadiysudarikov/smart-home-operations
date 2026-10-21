@@ -98,6 +98,10 @@ def direct_appliance_state(
         "cycleActive": bool(device["cycleActive"]),
         "remainingSeconds": device.get("remainingSeconds"),
         "doorOpen": device.get("doorOpen"),
+        "doorLastOpenedAt": device.get("doorLastOpenedAt"),
+        "cycleCode": device.get("cycleCode"),
+        "ventingActive": device.get("ventingActive"),
+        "detergentTankLow": device.get("detergentTankLow"),
         "apiLastSuccessAt": heartbeat_at.isoformat(timespec="seconds") if heartbeat_at else None,
         "apiLastChangedAt": device.get("apiLastChangedAt"),
         "heartbeatFresh": heartbeat_fresh,
@@ -383,7 +387,22 @@ def evolve_state(
     prior: dict[str, Any], current: dict[str, Any], now: datetime, config: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
     if config.get("finish_signal") == "countdown_confirmed":
-        return evolve_countdown_state(prior, current, now, config)
+        if current.get("fresh") and current.get("ventingActive") is True:
+            vent_prior = dict(prior)
+            # First observation after upgrading must not turn an old venting
+            # countdown into a fabricated wash-finish event.
+            if prior.get("lastWasherMode") != "wash":
+                vent_prior.update(primaryArmed=False, lastCycleActive=False)
+            state, actions = evolve_washer_state(vent_prior, {**current, "cycleActive": False}, now, config)
+            state.update(lastWasherMode="vent", primaryArmed=False, ventingArmed=True)
+            state["ventingStartedAt"] = state.get("ventingStartedAt") or now.isoformat(timespec="seconds")
+            state["countdownEvidence"] = {}
+            state["countdownStatus"] = "venting_not_washing"
+            return state, actions
+        state, actions = evolve_countdown_state(prior, current, now, config)
+        if current.get("fresh") and state.get("lastCycleActive"):
+            state["lastWasherMode"] = "wash"
+        return state, actions
     if config.get("finish_signal") == "cycleActive":
         return evolve_washer_state(prior, current, now, config)
 
@@ -519,6 +538,23 @@ def record_homepod_announcement(result: dict[str, Any], message: str, appliance_
 
 
 def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]:
+    # Honor the user's time-limited pause for known camera outage messages,
+    # including already-queued repeats, without muting other household alerts.
+    pause = load_json(DATA_DIR / "camera_outage_announcement_pause.json", {})
+    pause_until = parse_time(pause.get("until"))
+    pause_start = parse_time(pause.get("startedAt"))
+    check_time = datetime.now(timezone.utc).astimezone(LOCAL_TZ)
+    if (pause_start and pause_until and pause_start <= check_time < pause_until
+            and pause_until - pause_start <= timedelta(days=7)
+            and "security status. alarm.com reports:" in message.lower()
+            and any(camera in message.lower() for camera in ("(sideyard)", "(backyard)"))
+            and all(part.strip().rstrip(".") in {
+                "video device - not responding (sideyard)",
+                "video device - not responding (backyard)",
+            } for part in message.lower().split("alarm.com reports:", 1)[1].split(";"))):
+        return record_homepod_announcement(
+            {"ok": True, "skipped": True, "reason": "camera outage announcements paused for seven days"},
+            message, str(config.get("id", "washer")))
     from announcement_pause import active
     if active(str(config.get("id", "washer"))):
         return record_homepod_announcement({"ok": True, "skipped": True, "reason": "one-hour routine announcement pause"}, message, str(config.get("id", "washer")))
@@ -793,6 +829,12 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
                 sensor_id = venting_id
             result = webhook_set(webhook_url, sensor_id, action.endswith("_on"))
             results.append({"action": action, **result})
+        elif action == "notify_tank_low":
+            results.append({"action": action, **mac_notification(
+                "The washer detergent tank is low. Please refill it.", "Washer Detergent Low", str(config.get("mac_sound", "Glass")))})
+        elif action == "announce_tank_low" and config.get("homepod_enabled", False):
+            results.append({"action": action, **homepod_announcement(
+                "The washer detergent tank is low. Please refill it.", {**config, "id": "washer_tank_low"})})
         elif action == "notify_finish":
             results.append({
                 "action": action,
@@ -948,7 +990,20 @@ def main() -> int:
         except ValueError as exc:
             parser.error(str(exc))
     state, actions = evolve_state(prior, current, now, config)
+    from laundry_ack import reconcile, clear, retry_actions, remember_delivery
+    state, actions, clear_at = reconcile(prior, current, state, actions, now, config)
+    if not args.dry_run:
+        started = state.get("washStartedAt") or state.get("cycleStartedAt")
+        if current.get("fresh") and started:
+            clear(DATA_DIR, appliance_id, started)
+        if clear_at:
+            clear(DATA_DIR, appliance_id, clear_at)
+        if appliance_id == "washer" and current.get("fresh") and current.get("detergentTankLow") is False:
+            clear(DATA_DIR, "washer_tank_low", now.isoformat(timespec="seconds"))
+    actions = retry_actions(prior, current, state, actions, now, cleared=bool(clear_at))
     results = execute_actions(actions, config, args.dry_run)
+    if not args.dry_run:
+        state = remember_delivery(prior, state, actions, results, now)
     observation = power_observation(current, now, appliance_id)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with power_log_path.open("a") as handle:
