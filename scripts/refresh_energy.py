@@ -455,6 +455,7 @@ def main() -> int:
         if args.fast:
             plan: list[tuple[str, list[str] | str | None, int, bool, bool, str | None]] = [
                 ("snapshot", [py, "scripts/smart_home_snapshot.py"], 45, True, False, None),
+                ("garage_light_reconcile", [py, "scripts/garage_light_reconcile.py"], 95, True, False, None),
                 ("capture_smarthq_laundry", laundry_capture_command(), 170, True, False, None),
                 ("recover_smarthq_laundry", [py, "scripts/recover_smarthq_laundry.py"], 90, True, False, None),
                 ("washer_notifier", [py, "scripts/washer_notifier.py"], 30, True, False, None),
@@ -519,6 +520,7 @@ def main() -> int:
         else:
             plan = [
                 ("snapshot", [py, "scripts/smart_home_snapshot.py"], 120, True, False, None),
+                ("garage_light_reconcile", [py, "scripts/garage_light_reconcile.py"], 95, True, False, None),
                 ("capture_smarthq_laundry", laundry_capture_command(), 170, True, False, None),
                 ("recover_smarthq_laundry", [py, "scripts/recover_smarthq_laundry.py"], 90, True, False, None),
                 ("washer_notifier", [py, "scripts/washer_notifier.py"], 30, True, False, None),

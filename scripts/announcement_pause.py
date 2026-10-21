@@ -5,7 +5,7 @@ from zoneinfo import ZoneInfo
 from pathlib import Path
 
 PATH = Path.home() / "Library/Application Support/SmartHomeMonitor/data/announcement_pause.json"
-ROUTINE = {"washer", "dryer", "combo", "energy_high_on", "energy_high_clear", "energy_ok_off", "bubbler_on", "household_reminder"}
+ROUTINE = {"washer_tank_low", "washer", "dryer", "combo", "energy_high_on", "energy_high_clear", "energy_ok_off", "bubbler_on", "household_reminder"}
 
 
 def paused(identifier, state, now):

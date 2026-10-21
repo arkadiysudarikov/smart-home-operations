@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 INTERVAL = 300
-ACTIONABLE = {'washer', 'dryer', 'combo', 'energy_high_on', 'energy_ok_off',
+ACTIONABLE = {'washer_tank_low', 'washer', 'dryer', 'combo', 'energy_high_on', 'energy_ok_off',
               'household_reminder', 'laundry_health', 'freezer_temperature',
               'doorbell_press', 'help_request', 'energy_low'}
 
