@@ -3343,10 +3343,10 @@ class Handler(BaseHTTPRequestHandler):
             return 405, {"ok": False, "error": "action endpoints require POST"}
         if path.startswith("/action/") and not self.request_origin_allowed():
             return 403, {"ok": False, "error": "request origin is not allowed"}
-        if path == "/action/acknowledge-announcements":
+        if path in {"/action/acknowledge-announcements", "/action/dr-house-acknowledge"}:
             from announcement_ack import acknowledge
             count = acknowledge(ROOT / "data")
-            return 200, {"ok": True, "acknowledged": count}
+            return 200, {"ok": True, "acknowledged": count, "message": "Announcements acknowledged. Repeats stopped."}
         if path == "/action/run-check":
             payload = run_smart_home_check()
             return (200 if payload["ok"] else 500), payload
