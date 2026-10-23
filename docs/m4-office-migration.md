@@ -62,4 +62,14 @@ on each host. Old runtime files retained. Avoid enabling duplicate coordinators.
   completed with no required or optional failures.
 - Re-registered Apple's Mail application after repeated relay failures logged
   a missing Mail action definition. Both direct and action-server test calls
-  were accepted; recurrence and actual Intercom playback still require checking.
+  were accepted. The same Mail log warning also occurred during a successful
+  send, so it does not establish the cause of the earlier failures. Actual
+  Intercom playback and recurrence remain unverified.
+- Three fresh 120-second CM-15 recordings completed with microphone and on-device
+  speech permissions granted. None recognized the synthetic announcement phrase.
+  The third recording used input gain 100%; this is not audible-delivery proof.
+  A local speaker calibration temporarily unmuted M4 speakers, then restored
+  their original mute setting.
+- iPhone Mirroring connected and showed synced household shortcuts, but input
+  failed with `noWindowsAvailable`. Restarting Mirroring returned to its Touch ID
+  lock; receiver automation inspection and iPhone execution remain unfinished.
