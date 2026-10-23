@@ -60,6 +60,23 @@ class HealthTests(unittest.TestCase):
     def test_absent_plugin_is_not_healthy(self):
         self.assertFalse(health.inspect_plugin(self.data)["ok"])
 
+    def test_reviewed_door_history_hash_requires_reviewed_version(self):
+        self.write("package.json", {"version": "0.9.0"})
+        (self.data/"dist/devices").mkdir(parents=True)
+        (self.data/"dist/devices/device.js").write_text("reviewed fixture")
+        digest = "53e12f18023091e72e1c03e52085c592635549cab9cb5784a390abd289c064f7"
+        with mock.patch.object(health.hashlib, "sha256") as hashed:
+            hashed.return_value.hexdigest.return_value = digest
+            self.assertTrue(health.inspect_plugin(self.data)["ok"])
+            self.write("package.json", {"version": "0.9.1"})
+            self.assertFalse(health.inspect_plugin(self.data)["ok"])
+
+    def test_local_laundry_host_uses_live_plugin_not_old_remote_capture(self):
+        config = {"laundry_host": {"enabled": True, "host": "m4-office-mini.local"}}
+        with mock.patch.object(health.socket, "gethostname", return_value="m4-office-mini"), mock.patch.object(health, "active_plugin", return_value=self.data), mock.patch.object(health, "inspect_plugin", return_value={"ok": True}) as inspect:
+            self.assertTrue(health.configured_plugin(config, self.now)["ok"])
+            inspect.assert_called_once_with(self.data)
+
     def test_changed_plugin_stops_recovery_restarts(self):
         with mock.patch.object(recovery, "ROOT", recovery.RUNTIME_ROOT), mock.patch.object(recovery, "load_json", return_value={"smarthq_laundry_recovery": {"enabled": True}}), mock.patch.object(health, "active_plugin", return_value=self.data), mock.patch.object(health, "inspect_plugin", return_value={"ok":False,"status":"heartbeat_patch_missing"}), mock.patch.object(recovery, "restart_smarthq_child") as restart, mock.patch.object(recovery, "write_status") as status, mock.patch.object(sys, "argv", ["recover_smarthq_laundry.py"]), mock.patch("builtins.print"):
             self.assertEqual(recovery.main(), 1)

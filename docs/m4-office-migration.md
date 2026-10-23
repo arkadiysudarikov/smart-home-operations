@@ -36,3 +36,30 @@ Phone iCloud synchronization and Siri recognition have not been independently te
 
 Rollback property lists retained under ~/Library/Application Support/SmartHomeMigrationBackup
 on each host. Old runtime files retained. Avoid enabling duplicate coordinators.
+
+## October 23 verification and repairs
+
+- CM-15 USB microphone detected as M4's default input; microphone and local
+  speech-recognition permissions are granted. Initial relay test was accepted,
+  but its phrase was not recognized acoustically. Audible delivery is pending.
+- Reviewed the installed SmartHQ 0.9.0 door-history delta: it preserves existing
+  heartbeat fields and adds `lastOpenedAt` only on changed open-door events.
+  The health check now recognizes that exact reviewed digest and still rejects
+  unreviewed code or versions.
+- Disabled `laundry_host` remote delegation on the M4 coordinator. Capture and
+  the local recovery watchdog now have the same owner. The watchdog restarted
+  only the validated SmartHQ child on port 40893, then all three appliance
+  heartbeats became fresh and recovery reported `recovered`.
+- Recovered the malformed history database into a separate database and verified
+  SQLite integrity before replacing it. The original, recovered database,
+  unassigned records, and config backup remain in
+  `~/Library/Application Support/SmartHomeMigrationBackup/database-recovery-20261023-164632`.
+  Recovery does not establish that every historical record is intact.
+- The post-recovery refresh completed with no required failures; its only
+  optional failure was announcement health sampled before SmartHQ recovery.
+  A subsequent live announcement health check passed with no faults. The
+  16:51:27–16:52:16 and 16:54:16–16:55:06 Pacific scheduled refreshes then
+  completed with no required or optional failures.
+- Re-registered Apple's Mail application after repeated relay failures logged
+  a missing Mail action definition. Both direct and action-server test calls
+  were accepted; recurrence and actual Intercom playback still require checking.

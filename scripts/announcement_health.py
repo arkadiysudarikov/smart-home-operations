@@ -2,6 +2,7 @@
 """Read-only announcement diagnostics. Never sends mail or plays audio."""
 import hashlib
 import json
+import socket
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -9,6 +10,16 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PATCHED_081 = "87f83a7c7aaa8864fe3f8475c6a3619e4bdcc9916cc9e7895201f712d40f7bfb"
 ORIGINAL_081 = "f3418372bc2cbda76b36ae3dabc568669ff5d8cabe94b3796a5e8c2adc89e335"
+# The installed 0.9.0 device module is byte-for-byte identical to the reviewed
+# 0.8.1 module. Keep both version and code checks: a matching function name or
+# a future release number is not enough to establish heartbeat correctness.
+REVIEWED_DEVICE_HASHES = {
+    "0.8.1": (ORIGINAL_081, PATCHED_081),
+    # Reviewed door-history addition preserves heartbeat updates and only adds
+    # lastOpenedAt to genuine open-door arrivals between monitor polls.
+    "0.9.0": (ORIGINAL_081, PATCHED_081,
+              "53e12f18023091e72e1c03e52085c592635549cab9cb5784a390abd289c064f7"),
+}
 
 
 def load(path):
@@ -33,8 +44,9 @@ def inspect_plugin(root):
         digest = hashlib.sha256((root / "dist/devices/device.js").read_bytes()).hexdigest()
     except OSError:
         return {"status": "unavailable", "ok": False}
-    known = version == "0.8.1" and digest == PATCHED_081
-    status = "verified" if known else "heartbeat_patch_missing" if version == "0.8.1" and digest == ORIGINAL_081 else "plugin_changed_review_required"
+    reviewed = REVIEWED_DEVICE_HASHES.get(version)
+    known = bool(reviewed and digest in reviewed[1:])
+    status = "verified" if known else "heartbeat_patch_missing" if reviewed and digest == reviewed[0] else "plugin_changed_review_required"
     return {"status": status, "ok": known, "version": version, "sha256": digest}
 
 
@@ -105,16 +117,24 @@ def build(data, plugin, now):
             "audibleDelivery": {"status": "unverified", "reason": "No automatic HomePod playback receipt; relay acceptance is not audible proof."}}
 
 
+def configured_plugin(config, now):
+    source = config.get("laundry_host") or {}
+    host = str(source.get("host") or "").lower().rstrip(".")
+    local = socket.gethostname().lower().rstrip(".")
+    short = local.removesuffix(".local")
+    local_hosts = {local, short, short + ".local", "localhost", "127.0.0.1", "::1"}
+    if source.get("enabled") is True and host not in local_hosts:
+        remote = load(ROOT / "data/latest_remote_laundry.json")
+        capture_age = age((remote.get("capture") or {}).get("capturedAt"), now)
+        plugin = remote.get("plugin") if remote.get("ok") is True and capture_age is not None and 0 <= capture_age <= 300 else None
+        return plugin or {"ok": False, "status": "remote_capture_unavailable"}
+    root = active_plugin(int((config.get("smarthq_laundry_recovery") or {}).get("child_bridge_port", 40893)))
+    return inspect_plugin(root) if root else {"status": "running_plugin_unresolved", "ok": False}
+
+
 def main():
     config = load(ROOT / "config/sources.json")
-    if (config.get('laundry_host') or {}).get('enabled') is True:
-        remote = load(ROOT/'data/latest_remote_laundry.json')
-        capture_age = age((remote.get('capture') or {}).get('capturedAt'), datetime.now(timezone.utc))
-        plugin = remote.get('plugin') if remote.get('ok') is True and capture_age is not None and 0 <= capture_age <= 300 else None
-        plugin = plugin or {'ok':False,'status':'remote_capture_unavailable'}
-    else:
-        root = active_plugin(int((config.get("smarthq_laundry_recovery") or {}).get("child_bridge_port", 40893)))
-        plugin = inspect_plugin(root) if root else {"status": "running_plugin_unresolved", "ok": False}
+    plugin = configured_plugin(config, datetime.now(timezone.utc))
     payload = build(ROOT / "data", plugin, datetime.now(timezone.utc))
     target = ROOT / "data/latest_announcement_health.json"
     target.parent.mkdir(parents=True, exist_ok=True)
