@@ -73,3 +73,7 @@ on each host. Old runtime files retained. Avoid enabling duplicate coordinators.
 - iPhone Mirroring connected and showed synced household shortcuts, but input
   failed with `noWindowsAvailable`. Restarting Mirroring returned to its Touch ID
   lock; receiver automation inspection and iPhone execution remain unfinished.
+
+- Existing PR #97 separately fixes Siri acknowledgement returning HTTP 500 after
+  clearing reminders. The deployed action server contains the shared direct
+  acknowledgement handler for both URLs; this verification preserves that fix.
