@@ -81,6 +81,7 @@ DRIFT_CHECK_FILES = [
     "scripts/washer_notifier.py",
     "scripts/laundry_ack.py",
     "scripts/garage_light_reconcile.py",
+    "scripts/garage_camera_occupancy.py",
     "scripts/patch_laundry_door_history.py",
     "scripts/calendar_announcements.py",
     "scripts/internet_restored.py",

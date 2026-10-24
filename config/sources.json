@@ -227,6 +227,7 @@
     "office_tahoma_child_bridge_port": 35854
   },
   "garage_light": {
+    "camera_motion": {"enabled": true},
     "hold_seconds": 300,
     "restore_started_state": false,
     "occupancy": {

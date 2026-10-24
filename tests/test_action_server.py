@@ -23,6 +23,12 @@ SPEC.loader.exec_module(action_server)
 
 
 class ActionServerTest(unittest.TestCase):
+    def setUp(self):
+        # Legacy phone-mode cases must not query the deployed camera bridge.
+        camera = mock.patch("garage_camera_occupancy.read", return_value=None)
+        camera.start()
+        self.addCleanup(camera.stop)
+
     def test_restart_homebridge_route_writes_structured_audit_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_path = Path(tmp) / "actions.audit.jsonl"
