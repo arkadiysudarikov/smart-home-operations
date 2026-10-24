@@ -185,3 +185,11 @@ class RunnerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DoorbellDeploymentContractTests(__import__('unittest').TestCase):
+    def test_generic_camera_trigger_is_not_a_verified_button_press(self):
+        import json
+        from pathlib import Path
+        config=json.loads((Path(__file__).resolve().parents[1]/'config/additional_announcements.json').read_text())
+        self.assertFalse(config['doorbell']['sourceVerified'])
