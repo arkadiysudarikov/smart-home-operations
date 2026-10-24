@@ -104,3 +104,26 @@ this verified acoustic test from automatic playback receipts, which remain
 unavailable for other announcements. This acoustically verifies Office;
 individual verification of every configured indoor speaker was not performed.
 The temporary one-action Intercom diagnostic shortcut is retained for diagnosis.
+
+### October 23 Siri reply follow-up
+
+The user invoked “Siri, check the laundry” on the iPhone and reported “Done.”
+M4 logged `/action/dr-house-diagnostics` HTTP 200 at 18:24:24 Pacific and accepted
+the diagnostic announcement. This verifies Siri invocation and M4 execution.
+The Office microphone subsequently captured the separate dryer reminder at
+approximately 18:26:27; the diagnostic reply itself was not identified.
+
+The SSH dispatcher previously returned nested transport JSON. It now extracts
+the briefing message as plain text, rejects failed or missing replies, and gives
+acknowledgements a plain response. The “Check the laundry” shortcut’s Stop and
+Output fallback was changed in Shortcuts from “Do Nothing” to “Respond,” with
+the SSH result as its response. The saved change synced to M4, and a live Mac
+shortcut execution returned the expected diagnostic text. Post-repair iPhone
+Siri speech remains unverified until a new invocation is observed.
+
+All six indoor HomePods advertised AirPlay services and appeared in Home as
+Playing at approximately 18:33 Pacific: Primary, Bar, Bathroom, Entry, Kitchen,
+and Office. These are network and Home status checks, not individual acoustic
+proof. The microphone remains in Office; the other rooms cannot be claimed as
+acoustically verified. The Mac Home app did not expose the iPhone Intercom
+receiver settings, and iPhone Mirroring was authentication-locked.
