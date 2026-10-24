@@ -24,3 +24,16 @@ class CameraOccupancyTests(unittest.TestCase):
   self.assertTrue(s['active']);self.assertEqual(s['status'],'camera-unavailable')
  def test_disabled_camera_keeps_existing_behavior(self):
   with patch.object(camera,'read',return_value=None):self.assertFalse(camera.guard(self.controller,{},self.now))
+
+ def test_active_camera_timer_is_still_reconciled(self):
+  import tempfile,json,contextlib,io
+  import garage_light_reconcile as reconcile
+  with tempfile.TemporaryDirectory() as tmp:
+   root=Path(tmp);(root/'data').mkdir();(root/'config').mkdir()
+   (root/'data/garage_light_hold.json').write_text(json.dumps({'active':True}))
+   (root/'config/sources.json').write_text(json.dumps({'garage_light':{'camera_motion':{'enabled':True}},'actions':{'port':18765}}))
+   response=Mock();response.read.return_value=b'{}'
+   context=Mock();context.__enter__=Mock(return_value=response);context.__exit__=Mock(return_value=False)
+   with patch.object(reconcile,'ROOT',root),patch.object(reconcile.urllib.request,'urlopen',return_value=context) as request,contextlib.redirect_stdout(io.StringIO()):
+    reconcile.main()
+   self.assertEqual(request.call_count,1)
