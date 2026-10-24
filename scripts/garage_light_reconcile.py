@@ -51,9 +51,12 @@ def adopt(controller):
 
 
 def main():
-    snapshot = json.loads((ROOT / 'data/latest.json').read_text())
-    hold = json.loads((ROOT / 'data/garage_light_hold.json').read_text())
-    if not needs_timer(snapshot, hold, datetime.now(timezone.utc).timestamp()):
+    try:
+        hold = json.loads((ROOT / 'data/garage_light_hold.json').read_text())
+    except (OSError, ValueError):
+        hold = {}
+    config = json.loads((ROOT / 'config/sources.json').read_text())
+    if hold.get('active') and not config.get('garage_light', {}).get('camera_motion', {}).get('enabled'):
         print(json.dumps({'ok': True, 'adopted': False}))
         return
     config = json.loads((ROOT / 'config/sources.json').read_text())
