@@ -38,6 +38,32 @@ def age(value, now):
         return None
 
 
+def audible_test(data, now):
+    result = {"status": "unverified", "reason": "No automatic HomePod playback receipt; relay acceptance is not audible proof."}
+    proof = load(data / "announcement_audio_verification.json")
+    if proof.get("kind") != "acoustic_test" or proof.get("matched") is not True:
+        return result
+    seconds = age(proof.get("heardAt"), now)
+    if seconds is None or seconds < 0 or not proof.get("phrase"):
+        return result
+    recording = (data / str(proof.get("recording", ""))).resolve()
+    if not recording.is_relative_to(data.resolve()):
+        return result
+    try:
+        digest = hashlib.sha256()
+        with recording.open("rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        if digest.hexdigest() != proof.get("recordingSha256"):
+            return result
+    except OSError:
+        return result
+    return {"status": "verified_test_only", "heardAt": proof["heardAt"],
+            "ageSeconds": seconds, "phrase": proof["phrase"],
+            "scope": proof.get("scope"), "announcementId": proof.get("announcementId"),
+            "reason": "Dated acoustic test only; other announcements have no automatic playback receipt."}
+
+
 def inspect_plugin(root):
     try:
         version = load(root / "package.json").get("version")
@@ -114,7 +140,7 @@ def build(data, plugin, now):
     if relay["status"] in ("failed", "invalid_log"): faults.append("Announcement relay failed or log invalid")
     return {"generatedAt": now.isoformat(), "ok": not faults, "faults": faults,
             "smartHQPlugin": plugin, "laundrySources": sources, "relay": relay,
-            "audibleDelivery": {"status": "unverified", "reason": "No automatic HomePod playback receipt; relay acceptance is not audible proof."}}
+            "audibleDelivery": audible_test(data, now)}
 
 
 def configured_plugin(config, now):

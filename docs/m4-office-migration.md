@@ -77,3 +77,30 @@ on each host. Old runtime files retained. Avoid enabling duplicate coordinators.
 - Existing PR #97 separately fixes Siri acknowledgement returning HTTP 500 after
   clearing reminders. The deployed action server contains the shared direct
   acknowledgement handler for both URLs; this verification preserves that fix.
+
+## October 23 acoustic delivery confirmed
+
+The full deployed M4 -> Relay Home Announcement email -> iPhone receiver ->
+Indoors Intercom route passed a fresh acoustic test. The relay accepted the test
+at 17:32:38 Pacific; the CM-15 on M4 captured the Office HomePod saying
+"Amber Beacon Lighthouse" twice, followed by "the announcement delivery test is
+complete", at approximately 17:33:24-17:33:31 Pacific.
+
+The receiver was re-registered by disabling/re-enabling its email automation,
+and the Office HomePod Intercom reception switch was cycled. The original
+sender filter, payload regex and Indoors destination were preserved. Mirroring
+was closed for the final locked-phone test. These actions were followed by a
+successful end-to-end test; the contribution of each action was not isolated.
+
+The initial full-recording Apple speech check missed the phrase. Independent,
+on-device faster-whisper base.en transcription (no initial prompt) identified
+the exact repeated phrase in the controlled recording, at offsets 60-67 seconds
+with average log probability -0.563. Audio remained on the user's Macs.
+
+The original recording and a dated, SHA-256-bound evidence manifest are preserved
+under M4 runtime data/announcement-verification/ and
+data/announcement_audio_verification.json. The health report now distinguishes
+this verified acoustic test from automatic playback receipts, which remain
+unavailable for other announcements. This acoustically verifies Office;
+individual verification of every configured indoor speaker was not performed.
+The temporary one-action Intercom diagnostic shortcut is retained for diagnosis.

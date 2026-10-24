@@ -1,4 +1,5 @@
 import json
+import hashlib
 import sys
 import tempfile
 import unittest
@@ -29,6 +30,29 @@ class HealthTests(unittest.TestCase):
         result = self.report()
         self.assertEqual(result["relay"]["status"], "accepted_not_delivered")
         self.assertEqual(result["audibleDelivery"]["status"], "unverified")
+
+    def test_acoustic_test_requires_its_preserved_recording(self):
+        recording = self.data / "test.wav"
+        recording.write_bytes(b"synthetic recording fixture")
+        proof = {"kind": "acoustic_test", "matched": True,
+                 "heardAt": self.now.isoformat(), "phrase": "amber beacon lighthouse",
+                 "recording": "test.wav", "recordingSha256": hashlib.sha256(recording.read_bytes()).hexdigest(),
+                 "scope": "Office HomePod", "announcementId": "migration_verification"}
+        self.write("announcement_audio_verification.json", proof)
+        self.assertEqual(self.report()["audibleDelivery"]["status"], "verified_test_only")
+        recording.write_bytes(b"changed recording")
+        self.assertEqual(self.report()["audibleDelivery"]["status"], "unverified")
+        recording.unlink()
+        self.assertEqual(self.report()["audibleDelivery"]["status"], "unverified")
+
+    def test_future_and_outside_recordings_cannot_establish_audibility(self):
+        proof = {"kind": "acoustic_test", "matched": True, "phrase": "test",
+                 "heardAt": (self.now + timedelta(minutes=1)).isoformat(), "recording": "../test.wav"}
+        self.write("announcement_audio_verification.json", proof)
+        self.assertEqual(self.report()["audibleDelivery"]["status"], "unverified")
+        proof["heardAt"] = self.now.isoformat()
+        self.write("announcement_audio_verification.json", proof)
+        self.assertEqual(self.report()["audibleDelivery"]["status"], "unverified")
 
     def test_failed_and_skipped_are_separate(self):
         self.write("homepod_announcement_events.jsonl", {"ok": False})
