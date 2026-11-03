@@ -342,6 +342,13 @@ def main():
     args = parser.parse_args()
     if args.speak and not alerts.running_from_runtime_root():
         raise SystemExit("Spoken briefings require deployed runtime")
+    # Clearing reminders must never wait for another briefing or speaker relay.
+    if args.mode == "acknowledge" and args.speak:
+        from announcement_ack import acknowledge
+        count = acknowledge(alerts.DATA_DIR)
+        print(json.dumps({"ok": True, "acknowledged": count,
+                          "status": "acknowledged", "message": "Announcements acknowledged. Repeats stopped."}))
+        return 0
     if args.speak:
         lock = (alerts.DATA_DIR / "dr_house.lock").open("a")
         try:
@@ -355,9 +362,6 @@ def main():
         if args.mode == "quiet":
             from announcement_pause import quiet_until_morning
             quiet_until_morning()
-    if args.mode == "acknowledge" and args.speak:
-        from announcement_ack import acknowledge
-        acknowledge(alerts.DATA_DIR)
     if args.mode == "snooze" and args.speak:
         from announcement_followup import request
         message = request("snooze", mutate=True)

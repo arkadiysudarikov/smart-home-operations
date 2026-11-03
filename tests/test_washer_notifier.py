@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -13,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'scripts'))
 SPEC = importlib.util.spec_from_file_location("washer_notifier", ROOT / "scripts" / "washer_notifier.py")
 assert SPEC and SPEC.loader
 washer_notifier = importlib.util.module_from_spec(SPEC)
@@ -34,6 +36,13 @@ def config() -> dict:
 
 
 class WasherNotifierTest(unittest.TestCase):
+    def setUp(self):
+        # Transport tests represent a confirmed at-home owner. Away gating has
+        # separate tests which assert no transport or repeat queue is touched.
+        home = mock.patch('announcement_presence.allowed', return_value=True)
+        home.start()
+        self.addCleanup(home.stop)
+
     def test_initial_idle_sample_does_not_notify(self) -> None:
         now = datetime(2026, 7, 15, 12, 0, tzinfo=TZ)
         state, actions = washer_notifier.evolve_state(

@@ -23,6 +23,18 @@ SPEC.loader.exec_module(action_server)
 
 
 class ActionServerTest(unittest.TestCase):
+    def test_both_ack_routes_clear_without_briefing_or_speaker(self):
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(action_server, 'ROOT', Path(tmp)), mock.patch.object(action_server, 'run') as run:
+            data = Path(tmp)/'data'
+            data.mkdir()
+            for path in ('/action/acknowledge-announcements', '/action/dr-house-acknowledge'):
+                (data/'announcement_ack.json').write_text('{"pending":{"washer":{}}}')
+                handler = object.__new__(action_server.Handler)
+                handler.path, handler.command, handler.headers = path, 'POST', {}
+                status, payload = handler.route()
+                self.assertEqual((status, payload), (200, {'ok': True, 'acknowledged': 1}))
+                self.assertEqual(json.loads((data/'announcement_ack.json').read_text())['pending'], {})
+            run.assert_not_called()
     def test_restart_homebridge_route_writes_structured_audit_record(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audit_path = Path(tmp) / "actions.audit.jsonl"

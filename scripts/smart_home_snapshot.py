@@ -25,6 +25,7 @@ DB_PATH = DATA_DIR / "smart_home.sqlite"
 SOURCE_ROOT = Path.home() / "Documents" / "Smart Home"
 RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor"
 DRIFT_CHECK_FILES = [
+    "scripts/announcement_presence.py",
     "scripts/action_server.py",
     "scripts/display_awake_manager.py",
     "scripts/display_awake_policy_guard.py",

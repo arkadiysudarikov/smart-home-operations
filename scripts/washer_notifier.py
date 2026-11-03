@@ -519,6 +519,11 @@ def record_homepod_announcement(result: dict[str, Any], message: str, appliance_
 
 
 def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]:
+    from announcement_presence import allowed
+    if not allowed(DATA_DIR):
+        return record_homepod_announcement(
+            {"ok": True, "skipped": True, "reason": "owner away or presence unavailable"},
+            message, str(config.get("id", "washer")))
     from announcement_pause import active
     if active(str(config.get("id", "washer"))):
         return record_homepod_announcement({"ok": True, "skipped": True, "reason": "one-hour routine announcement pause"}, message, str(config.get("id", "washer")))

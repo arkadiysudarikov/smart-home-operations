@@ -6,6 +6,7 @@ const RETIRED_ACTION_IDS = new Set(["office-restart"]);
 const DEFAULT_STARTUP_REPLAY_PROTECTION_MS = 60000;
 
 const DEFAULT_ACTIONS = [
+  { id: "ack-announcements", name: "Clear Announcements", path: "/action/acknowledge-announcements", timeoutMs: 10000 },
   { id: "check", name: "⚙️ Home Check", path: "/action/run-check", timeoutMs: 120000 },
   { id: "hb-restart", name: "⚙️ Restart Hub", path: "/action/restart-homebridge", timeoutMs: 5000 },
   { id: "mute-alerts", name: "⚙️ Pause Alerts", path: "/action/silence-alerts", timeoutMs: 120000 },

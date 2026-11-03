@@ -88,6 +88,19 @@ The microphone helper completed and exited; no pending test reminder remains.
 
 ## Repeats until acknowledged
 
+November 2 repair: all speaker transports now require a fresh (at most 180 seconds)
+explicit `homePresent: true` from the owner's presence monitor. Away, missing,
+stale, or unknown presence suppresses new announcements and replays before any
+speaker transport runs. Suppressed announcements are not added to the repeat queue.
+The user's absence silences announcements even if other residents remain home.
+
+Both acknowledgment HTTP routes clear the queue directly, without acquiring the
+briefing lock or invoking speaker delivery. The CLI acknowledgment also bypasses
+the briefing lock and relay. A default shared Home action, **Clear Announcements**,
+lets residents clear reminders without a personal shortcut: “Siri, turn on Clear
+Announcements.” This clears pending repeats and the one-shot snooze; it does not
+delete the historical event log or prevent new source events when the owner returns.
+
 Actionable announcements now remain pending and repeat every five minutes until
 explicitly acknowledged. Each source has its own pending item, persisted across
 service restarts; a newer message replaces that source's prior message. This

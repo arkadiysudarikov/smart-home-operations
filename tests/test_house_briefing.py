@@ -11,6 +11,14 @@ NOW = "2026-09-11T16:00:00-07:00"
 
 
 class BriefingTests(unittest.TestCase):
+    def test_acknowledge_bypasses_briefing_lock_and_speaker(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temp, mock.patch.object(house.alerts, 'DATA_DIR', Path(temp)), mock.patch.object(house.alerts, 'running_from_runtime_root', return_value=True), mock.patch.object(sys, 'argv', ['house_briefing.py', '--mode', 'acknowledge', '--speak']), mock.patch.object(house.fcntl, 'flock', wraps=house.fcntl.flock) as flock, mock.patch.object(house.alerts, 'run_indoor_homepod_announcement') as speak, mock.patch('builtins.print'):
+            self.assertEqual(house.main(), 0)
+            # Queue locks remain; the unrelated briefing lock is never opened.
+            self.assertFalse((Path(temp)/'dr_house.lock').exists())
+            speak.assert_not_called()
+
     def test_more_expands_energy_and_skips_its_own_reply(self):
         import tempfile, json
         import jev_house_advisor as advisor
