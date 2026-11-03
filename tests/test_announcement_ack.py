@@ -8,6 +8,20 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import announcement_ack as ack
 
 class AcknowledgementTests(unittest.TestCase):
+    def test_opened_appliance_clears_only_its_queue_and_snooze(self):
+        ack.record(self.root, self.event, self.now)
+        ack.record(self.root, dict(self.event, announcementId='dryer'), self.now)
+        (self.root/'announcement_followup.json').write_text(json.dumps({'event': self.event}))
+        self.assertTrue(ack.acknowledge_appliance(self.root, 'washer'))
+        self.assertEqual(set(json.loads((self.root/'announcement_ack.json').read_text())['pending']), {'dryer'})
+        self.assertEqual(json.loads((self.root/'announcement_followup.json').read_text()), {})
+        with self.assertRaises(ValueError):
+            ack.acknowledge_appliance(self.root, 'energy_high_on')
+
+    def test_other_appliance_snooze_survives(self):
+        (self.root/'announcement_followup.json').write_text(json.dumps({'event': {'announcementId':'dryer'}}))
+        ack.acknowledge_appliance(self.root, 'washer')
+        self.assertEqual(json.loads((self.root/'announcement_followup.json').read_text())['event']['announcementId'], 'dryer')
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)

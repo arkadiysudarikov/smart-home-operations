@@ -9,6 +9,21 @@ import washer_notifier as w
 
 
 class CountdownTest(unittest.TestCase):
+    def test_open_and_close_between_polls_clears_unload_wait(self):
+        now = datetime(2026, 11, 3, 12, 20, tzinfo=ZoneInfo('America/Los_Angeles'))
+        state = {'awaitingUnload': True, 'washFinishedAt': (now-timedelta(minutes=5)).isoformat(),
+                 'lastCycleActive': False, 'lastInUse': False}
+        current = {'fresh': True, 'inUse': False, 'cycleActive': False, 'doorOpen': False,
+                   'capturedAt': now.isoformat(), 'doorLastOpenedAt': (now-timedelta(minutes=2)).isoformat()}
+        result, actions = w.evolve_washer_state(state, current, now, self.cfg)
+        self.assertFalse(result['awaitingUnload'])
+        self.assertIn('reminder_off', actions)
+        current['doorLastOpenedAt'] = (now-timedelta(hours=2)).isoformat()
+        result, actions = w.evolve_washer_state(state, current, now, self.cfg)
+        self.assertTrue(result['awaitingUnload'])
+        current['doorLastOpenedAt'] = (now+timedelta(minutes=1)).isoformat()
+        result, actions = w.evolve_washer_state(state, current, now, self.cfg)
+        self.assertTrue(result['awaitingUnload'])
     def test_manual_venting_does_not_arm_an_eight_hour_wash(self):
         state = {'lastCycleActive': False, 'lastInUse': False, 'primaryArmed': False,
                  'completedCycles': 37, 'washFinishedAt': '2026-09-28T09:50:00-07:00'}

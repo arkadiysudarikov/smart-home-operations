@@ -28,6 +28,15 @@ def response(**choices):
 
 
 class AdvisorTests(unittest.TestCase):
+    def test_venting_and_active_dryer_are_not_idle_laundry_conflicts(self):
+        with tempfile.TemporaryDirectory() as d:
+            data=Path(d)
+            j.save(data/'latest_smarthq_laundry_state.json',{'ok':True,'capturedAt':AT,'devices':{
+                'washer':{'apiLastSuccessAt':AT,'inUse':True,'cycleActive':False,'ventingActive':True,'remainingSeconds':28000},
+                'dryer':{'apiLastSuccessAt':AT,'inUse':True,'cycleActive':False,'remainingSeconds':1800}}})
+            result=j.facts(data,NOW)
+            self.assertEqual(result['laundry_conflicts'],0)
+            self.assertEqual(result['remaining_minutes'],[30])
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -101,7 +110,7 @@ class AdvisorTests(unittest.TestCase):
                 {'id':'solar','name':'Solar','watts':5000},
                 {'id':'unknown','name':'PRIVATE EMAIL TEXT','watts':3000}]}]})
         j.save(self.data/'latest_smarthq_laundry_state.json',{'ok':True,'capturedAt':AT,'devices':{
-            'washer':{'apiLastSuccessAt':AT,'cycleActive':False,'remainingSeconds':1800}}})
+            'washer':{'apiLastSuccessAt':AT,'inUse':False,'cycleActive':False,'remainingSeconds':1800}}})
         current=j.facts(self.data,NOW)
         self.assertEqual(current['measured_kw'],{'hvac':2.,'ev':0.,'laundry':0.})
         self.assertEqual(current['laundry_conflicts'],1)

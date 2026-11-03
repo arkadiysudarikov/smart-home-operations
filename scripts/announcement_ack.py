@@ -71,6 +71,24 @@ def acknowledge(directory):
     return count
 
 
+def acknowledge_appliance(directory, identifier):
+    """Opening one appliance clears only its reminders and matching snooze."""
+    if identifier not in {'washer', 'dryer', 'combo'}:
+        raise ValueError('Unknown laundry appliance')
+    with state(directory) as value:
+        removed = value.setdefault('pending', {}).pop(identifier, None) is not None
+        with (directory / 'announcement_followup.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            path = directory / 'announcement_followup.json'
+            try:
+                snooze = json.loads(path.read_text())
+            except (OSError, ValueError):
+                snooze = {}
+            if snooze.get('event', {}).get('announcementId') == identifier:
+                path.write_text('{}')
+    return removed
+
+
 def tick(directory, now=None):
     from announcement_followup import active, can_disclose
     from generate_alerts import run_indoor_homepod_announcement

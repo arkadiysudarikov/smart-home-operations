@@ -48,6 +48,22 @@ function booleanValue(value) {
   return Boolean(value);
 }
 
+// Decode only documented, actually observed ERDs; unknown is never closed/full.
+function laundrySignals(heartbeat) {
+  const door = heartbeat.erds?.["0x2012"];
+  const tank = heartbeat.erds?.["0x203c"];
+  const decode = (value) => typeof value === "string" && /^[0-9a-f]{2}$/i.test(value) ? parseInt(value, 16) : null;
+  const doorValue = decode(door?.value);
+  const tankValue = decode(tank?.value);
+  return {
+    cycleCode: decode(heartbeat.erds?.["0x200a"]?.value),
+    doorOpen: doorValue === 0 ? true : doorValue === 1 ? false : null,
+    doorLastOpenedAt: door?.lastOpenedAt ?? (doorValue === 0 ? door.lastChangedAt : null),
+    detergentTankLow: tankValue === 1 ? true : tankValue === 2 ? false : null,
+    detergentTankObservedAt: tank?.lastSuccessAt ?? null,
+  };
+}
+
 function heartbeatForAccessory(accessoryName) {
   try {
     const payload = JSON.parse(fs.readFileSync(HEARTBEAT_PATH, "utf8"));
@@ -97,15 +113,17 @@ async function main() {
       const mainService = applianceServices.find((service) => service.serviceName === device.mainServiceName);
       const cycleService = applianceServices.find((service) => service.serviceName === "Cycle Status");
       if (!mainService || !cycleService) continue;
+      const doorService = applianceServices.find((service) => service.serviceName === `${device.accessoryName} Door`);
       await Promise.all(
-        [mainService, cycleService].map((service) => service.refreshCharacteristics().catch(() => undefined)),
+        [mainService, cycleService, doorService].filter(Boolean).map((service) => service.refreshCharacteristics().catch(() => undefined)),
       );
+      const signals = laundrySignals(heartbeatForAccessory(device.accessoryName));
+      const venting = appliance === "washer" && signals.cycleCode === 35 && booleanValue(characteristic(mainService, "InUse")) === true;
       devices[appliance] = {
         inUse: booleanValue(characteristic(mainService, "InUse")),
-        cycleActive: booleanValue(characteristic(cycleService, "MotionDetected")),
-        // SmartHQ returns no usable door ERD for these models. Treating the cached
-        // closed value as real would create false unload reminders.
-        doorOpen: null,
+        cycleActive: venting ? false : booleanValue(characteristic(cycleService, "MotionDetected")),
+        ventingActive: venting,
+        ...signals,
         remainingSeconds: characteristic(mainService, "RemainingDuration"),
         model: mainService.accessoryInformation?.Model ?? null,
         apiLastSuccessAt: heartbeatForAccessory(device.accessoryName).lastSuccessAt ?? null,
@@ -129,4 +147,5 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) main();
+module.exports = { laundrySignals };

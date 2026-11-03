@@ -88,10 +88,13 @@ def facts(data, now, sample=None):
         for name, device in laundry.get('devices',{}).items():
             if name not in ('washer','dryer','combo') or not fresh(device.get('apiLastSuccessAt'),now):
                 continue
+            # A venting timer is not a wash countdown or an idle contradiction.
+            if device.get('ventingActive') is True:
+                continue
             seconds = device.get('remainingSeconds')
             if number(seconds) and 0 < seconds <= 86400:
                 remaining.append(round(seconds/60,1))
-                if device.get('cycleActive') is False:
+                if device.get('inUse') is False:
                     conflicts += 1
     history = load(data/'jev_energy_state.json').get('history', [])
     usual = energy_low.baseline(sample, history, datetime.fromtimestamp(now,timezone.utc)) if sample['verified'] and energy_low.context(sample) is not None else None

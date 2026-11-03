@@ -99,6 +99,9 @@ def direct_appliance_state(
         "ventingActive": device.get("ventingActive"),
         "remainingSeconds": device.get("remainingSeconds"),
         "doorOpen": device.get("doorOpen"),
+        "doorLastOpenedAt": device.get("doorLastOpenedAt"),
+        "detergentTankLow": device.get("detergentTankLow"),
+        "detergentTankObservedAt": device.get("detergentTankObservedAt"),
         "apiLastSuccessAt": heartbeat_at.isoformat(timespec="seconds") if heartbeat_at else None,
         "apiLastChangedAt": device.get("apiLastChangedAt"),
         "heartbeatFresh": heartbeat_fresh,
@@ -172,6 +175,15 @@ def confirm_washer_venting(
         }
     )
     return state
+
+
+def door_opened_after(current, finished_at):
+    if current.get('doorOpen') is True:
+        return True
+    opened = parse_time(current.get('doorLastOpenedAt'))
+    captured = parse_time(current.get('capturedAt'))
+    return bool(opened and captured and finished_at
+                and finished_at <= opened <= captured)
 
 
 def evolve_washer_state(
@@ -296,7 +308,7 @@ def evolve_washer_state(
                 actions.append("announce_venting_stale")
 
     finished_at = parse_time(state.get("washFinishedAt"))
-    if state.get("awaitingUnload") and door_open:
+    if state.get("awaitingUnload") and door_opened_after(current, finished_at):
         state.update({"awaitingUnload": False, "unloadedAt": now_text})
         actions.extend(["finish_off", "reminder_off"])
     elif (
@@ -474,7 +486,7 @@ def evolve_state(
                 actions.append("announce_finish")
 
     finished_at = parse_time(state.get("finishedAt"))
-    if state.get("awaitingUnload") and door_open:
+    if state.get("awaitingUnload") and door_opened_after(current, finished_at):
         state.update({"awaitingUnload": False, "unloadedAt": now_text})
         actions.extend(["finish_off", "reminder_off"])
     elif (
@@ -490,6 +502,22 @@ def evolve_state(
 
     state.update({"lastInUse": in_use, "lastDoorOpen": door_open, "lastCheckedAt": now_text})
     return state, list(dict.fromkeys(actions))
+
+
+def tank_alert_actions(state, current, now):
+    observed = parse_time(current.get('detergentTankObservedAt'))
+    if (current.get('fresh') is not True or observed is None
+            or not timedelta(0) <= now-observed <= timedelta(minutes=5)):
+        return []
+    low = current.get('detergentTankLow')
+    if low is False:
+        state.update(detergentTankLowActive=False, detergentTankLowAnnounced=False)
+    elif low is True:
+        state['detergentTankLowActive'] = True
+        if not state.get('detergentTankLowAnnounced') and 8 <= now.hour < 21:
+            state['detergentTankLowAnnounced'] = True
+            return ['notify_tank_low', 'announce_tank_low']
+    return []
 
 
 def webhook_set(webhook_url: str, accessory_id: str, active: bool) -> dict[str, Any]:
@@ -815,6 +843,13 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
                 sensor_id = venting_id
             result = webhook_set(webhook_url, sensor_id, action.endswith("_on"))
             results.append({"action": action, **result})
+        elif action == 'notify_tank_low':
+            results.append({'action': action, **mac_notification(
+                'The washer detergent tank is low. Refill the SmartDispense tank.', 'Washer Detergent Low')})
+        elif action == 'announce_tank_low' and config.get('homepod_enabled', False):
+            results.append({'action': action, **homepod_announcement(
+                'The washer detergent tank is low. Refill the SmartDispense tank.',
+                {**config, 'id': 'detergent_tank_low'})})
         elif action == "notify_finish":
             results.append({
                 "action": action,
@@ -970,7 +1005,14 @@ def main() -> int:
         except ValueError as exc:
             parser.error(str(exc))
     state, actions = evolve_state(prior, current, now, config)
+    if appliance_id == 'washer':
+        actions.extend(tank_alert_actions(state, current, now))
     results = execute_actions(actions, config, args.dry_run)
+    if (not args.dry_run and current.get('fresh') is True
+            and (current.get('doorOpen') is True
+                 or state.get('unloadedAt') != prior.get('unloadedAt'))):
+        from announcement_ack import acknowledge_appliance
+        acknowledge_appliance(DATA_DIR, appliance_id)
     observation = power_observation(current, now, appliance_id)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with power_log_path.open("a") as handle:

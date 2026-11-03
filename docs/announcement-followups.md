@@ -88,6 +88,29 @@ The microphone helper completed and exited; no pending test reminder remains.
 
 ## Repeats until acknowledged
 
+November 3 reconciliation: a fresh open-door observation clears only that
+appliance's queued repeats and matching snooze. A remembered opening after the
+finish time also counts if the door has already closed by the next poll. Other
+appliance reminders and unrelated alerts are preserved.
+
+The live SmartHQ adapter now preserves actual door, cycle-selection, and tank
+pushes even when no HomeKit service reads those ERDs. The reviewed 0.9.0 patch is
+reproducible with `scripts/patch_smarthq_live_signals.py`; it refuses unknown
+plugin versions or layouts and keeps a backup. Tank-low delivery requires a
+fresh explicit low observation, fires once per episode, respects owner-away
+suppression, and rearms only after a fresh non-low observation. Unknown or stale
+values never mean the tank has been refilled. Low/full decoding follows
+[the SDK's tank-status enum](https://github.com/simbaja/gehome/blob/master/gehomesdk/erd/values/laundry/laundry_enums.py).
+No natural low-tank delivery or speaker playback was verified in this repair.
+
+The Alarm.com camera ring guard is likewise reproducible with
+`scripts/patch_alarm_camera_ring.py` for reviewed plugin version 1.13.1. Generic
+camera triggers are suppressed because they cannot prove a physical button press;
+this also suppresses any real press represented solely by the same ambiguous
+event. Physical chime and Alarm.com recording are separate and remain unchanged.
+Source announcement configuration now retains the same unverified-button guard
+as runtime, preventing a source deployment from re-enabling spoken false rings.
+
 November 2 repair: all speaker transports now require a fresh (at most 180 seconds)
 explicit `homePresent: true` from the owner's presence monitor. Away, missing,
 stale, or unknown presence suppresses new announcements and replays before any
