@@ -21,6 +21,10 @@ def stamp(value):
 def approved(event, now, max_age=600):
     try:
         identifier = event["announcementId"]
+        # Combined household prose cannot establish that its original conditions
+        # still exist. The source monitor owns once-per-episode delivery instead.
+        if identifier == 'household_reminder':
+            return False
         if identifier not in ROUTINE and not re.fullmatch(r"calendar-[0-9a-f]{64}", identifier):
             return False
         encode(event["message"])

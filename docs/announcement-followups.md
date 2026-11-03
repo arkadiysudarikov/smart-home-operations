@@ -136,10 +136,17 @@ delete the historical event log or prevent new source events when the owner retu
 Actionable announcements now remain pending and repeat every five minutes until
 explicitly acknowledged. Each source has its own pending item, persisted across
 service restarts; a newer message replaces that source's prior message. This
-covers laundry, appointment reminders, energy attention notices, household
-reminders, doorbell/help requests, laundry connectivity and freezer warnings.
+covers laundry, appointment reminders, energy attention notices,
+doorbell/help requests, laundry connectivity and freezer warnings.
 Energy-clear and health-recovery announcements clear the matching pending warning;
 status replies and announcement-control confirmations do not repeat.
+
+Combined household notices are excluded from automatic repeats and snoozes: their
+saved prose cannot establish that the original door or sensor condition still
+exists. The source monitor announces sustained garage openings once per episode
+and re-arms only after observing closure. Legacy household queue entries are
+discarded without speaking. This prevents a closed garage door from producing
+five-minute "unacknowledged" warnings.
 
 Run **Acknowledge announcements** by tapping the shortcut or asking Siri to run
 it. Its existing SSH key/host calls the restricted `acknowledge` command on M4.

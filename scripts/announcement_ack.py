@@ -7,7 +7,7 @@ from zoneinfo import ZoneInfo
 
 INTERVAL = 300
 ACTIONABLE = {'washer', 'dryer', 'combo', 'energy_high_on', 'energy_ok_off',
-              'household_reminder', 'laundry_health', 'freezer_temperature',
+              'laundry_health', 'freezer_temperature',
               'doorbell_press', 'help_request', 'energy_low'}
 
 
@@ -99,6 +99,11 @@ def tick(directory, now=None):
     with state(directory) as value:
         pending = value.setdefault('pending', {})
         for identifier, item in list(pending.items()):
+            # Legacy combined notices have no sensor identity or live-condition
+            # proof. Never replay them after the source episode has changed.
+            if identifier == 'household_reminder':
+                pending.pop(identifier)
+                continue
             event = item['event']
             if identifier.startswith('calendar-') and not can_disclose(event, now):
                 # Keep private while away, but discard ended/cancelled events.

@@ -8,6 +8,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 import announcement_ack as ack
 
 class AcknowledgementTests(unittest.TestCase):
+    def test_generic_household_notice_is_not_queued(self):
+        ack.record(self.root, dict(self.event, announcementId='household_reminder'), self.now)
+        self.assertEqual(ack.acknowledge(self.root), 0)
+
+    def test_legacy_household_repeat_is_removed_without_speaking(self):
+        event = dict(self.event, announcementId='household_reminder')
+        (self.root/'announcement_ack.json').write_text(json.dumps({'pending': {
+            'household_reminder': {'event': event, 'dueAt': self.now}}}))
+        self.assertEqual(ack.tick(self.root, self.now+300), 0)
+        self.mock_send.assert_not_called()
+        self.assertEqual(json.loads((self.root/'announcement_ack.json').read_text())['pending'], {})
+
     def test_opened_appliance_clears_only_its_queue_and_snooze(self):
         ack.record(self.root, self.event, self.now)
         ack.record(self.root, dict(self.event, announcementId='dryer'), self.now)
