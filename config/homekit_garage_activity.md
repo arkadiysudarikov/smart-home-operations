@@ -33,8 +33,20 @@ will be added even if an older Homebridge config omits it from the explicit
 
 ## Home App Automations
 
-These garage-only automations should trigger `Garage Activity`; they should not
-directly set `Garage Light`:
+Current camera automations (saved October 23):
+
+- `Garage camera activity — keep light on`: camera motion sets `Garage Camera Motion`
+  on and `Garage Light` to 100%, with no fixed off timer.
+- `When No Motion Detected in Garage`: clears `Garage Camera Motion`.
+
+The four Alarm.com garage-door rules turn the light on without a fixed off timer.
+The monitor calls `/action/garage-reconcile` to adopt a direct full-brightness
+activation into the controller. While the camera signal is active, the controller
+holds the light on; clearing the signal starts a full five-minute countdown.
+Camera-read failure preserves the light and retries. Phone Wi-Fi is not used as
+garage occupancy when the camera bridge is enabled.
+
+Earlier wiring used `Garage Activity` for these triggers:
 
 - `When Motion Detected in Garage`
 - `Garage Door Contact Opens`
@@ -42,19 +54,14 @@ directly set `Garage Light`:
 - `Garage Door Opener 2207 Opens`
 - `Garage Door Opener 2210 Opens`
 
-This arrival automation also currently targets `Garage Activity`, along with
-`🛡️ Off`:
+Once activity has cleared, the controller turns the light off if it is still in
+the controller-owned 100% state. A manual off or brightness change is preserved.
+Camera motion is not proof of stationary-person detection; that remains a separate
+limitation and must not be described as verified occupancy sensing.
 
-- `When The First Person Arrives Home`
-
-The controller endpoint then turns `Garage Light` on to 100% and holds it until
-at least five minutes after the latest activity. If any phone is currently
-connected to the UniFi access point currently aliased `Garage` (or its legacy
-alias `Extender`), presence extends the hold in five-minute increments. The
-check uses a privacy-safe live client count; it neither requires personal
-enrollment nor records device identifiers. Once activity and that occupancy
-have both cleared, the controller turns the light off if it is still in the
-controller-owned 100% state. A manual off or brightness change is preserved.
+November 3: a source deployment had overwritten the runtime-only camera handler
+and reconcile route. Both camera modules, the controller integration, and the
+refresh hooks are now tracked, with route and camera-priority regression tests.
 
 The explicit off policy avoids restoring an already-on starting state when an
 Alarm.com direct garage-door rule reaches the light just before the HomeKit

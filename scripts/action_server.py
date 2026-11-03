@@ -2881,6 +2881,10 @@ def garage_light_hold_seconds() -> int:
 
 
 def garage_occupancy_status() -> dict[str, Any]:
+    from garage_camera_occupancy import read
+    camera = read(garage_light_config())
+    if camera is not None:
+        return camera
     occupancy_config = garage_light_config().get("occupancy")
     if not isinstance(occupancy_config, dict) or occupancy_config.get("enabled") is not True:
         return {"occupied": False, "enabled": False}
@@ -3044,6 +3048,10 @@ def expire_garage_light_hold() -> None:
             return
 
         now = local_now()
+        from garage_camera_occupancy import guard
+        from types import SimpleNamespace
+        if guard(SimpleNamespace(**globals()), state, now):
+            return
         last_activity = parse_dt(state.get("lastActivityAt"))
         if last_activity is None:
             state.update({"active": False, "status": "invalid-last-activity", "finishedAt": now.isoformat(timespec="seconds")})
@@ -3369,6 +3377,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/action/refresh-alarm-cache":
             payload = refresh_alarm_cache()
             return (202 if payload["ok"] else 500), payload
+        if path == "/action/garage-reconcile":
+            if garage_light_config().get("camera_motion", {}).get("enabled"):
+                expire_garage_light_hold()
+            from garage_light_reconcile import adopt
+            from types import SimpleNamespace
+            payload = adopt(SimpleNamespace(**globals()))
+            return (200 if payload.get("ok") else 503), payload
         if path == "/action/garage-activity":
             payload = trigger_garage_light_activity(
                 trigger=(query.get("trigger") or [None])[0],

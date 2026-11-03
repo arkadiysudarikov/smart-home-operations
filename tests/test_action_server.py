@@ -23,6 +23,20 @@ SPEC.loader.exec_module(action_server)
 
 
 class ActionServerTest(unittest.TestCase):
+    def test_garage_reconcile_route_exists_and_uses_adopter(self):
+        handler = object.__new__(action_server.Handler)
+        handler.path, handler.command, handler.headers = '/action/garage-reconcile', 'POST', {}
+        with mock.patch.object(action_server, 'garage_light_config', return_value={'camera_motion': {'enabled': True}}), mock.patch.object(action_server, 'expire_garage_light_hold') as expire, mock.patch('garage_light_reconcile.adopt', return_value={'ok': True, 'adopted': True}) as adopt:
+            status, payload = handler.route()
+            self.assertEqual(status, 200)
+            self.assertTrue(payload['adopted'])
+            expire.assert_called_once()
+            adopt.assert_called_once()
+
+    def test_garage_camera_signal_takes_priority_over_phone_wifi(self):
+        with mock.patch.object(action_server, 'garage_light_config', return_value={'camera_motion': {'enabled': True}, 'occupancy': {'enabled': True}}), mock.patch('garage_camera_occupancy.read', return_value={'enabled': True, 'occupied': False}), mock.patch.object(action_server, 'json_run') as phone:
+            self.assertFalse(action_server.garage_occupancy_status()['occupied'])
+            phone.assert_not_called()
     def test_both_ack_routes_clear_without_briefing_or_speaker(self):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.object(action_server, 'ROOT', Path(tmp)), mock.patch.object(action_server, 'run') as run:
             data = Path(tmp)/'data'
