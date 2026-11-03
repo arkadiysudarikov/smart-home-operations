@@ -75,7 +75,7 @@ def run_step(command: str, timeout: int) -> dict[str, Any]:
 
 def refresh_once(timeout: int) -> dict[str, Any]:
     command = (
-        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; '
+        'export PATH="$HOME/.local/node-v24.22.2-darwin-arm64/bin:$PATH"; '
         "./scripts/smart_home_snapshot.py && "
         "./scripts/capture_alarm_com.js && "
         "./scripts/generate_alerts.py"

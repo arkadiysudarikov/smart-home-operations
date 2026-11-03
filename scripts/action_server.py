@@ -2221,7 +2221,7 @@ def gate_test_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/gate_test_mode.py --timeout 600 --interval 30',
+        'export PATH="$HOME/.local/node-v24.22.2-darwin-arm64/bin:$PATH"; ./scripts/gate_test_mode.py --timeout 600 --interval 30',
     ]
 
 
@@ -2229,7 +2229,7 @@ def alarm_cache_refresh_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/capture_alarm_com.js && ./scripts/smart_home_snapshot.py && ./scripts/generate_alerts.py',
+        'export PATH="$HOME/.local/node-v24.22.2-darwin-arm64/bin:$PATH"; ./scripts/capture_alarm_com.js && ./scripts/smart_home_snapshot.py && ./scripts/generate_alerts.py',
     ]
 
 

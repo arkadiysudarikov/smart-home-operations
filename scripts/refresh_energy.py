@@ -24,7 +24,8 @@ LOCK_PATH = DATA_DIR / "refresh_energy.lock"
 BUNDLED_PYTHON = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
 FAST_SCE_MIN_AGE_SECONDS = 3600
 FAST_SCE_MAX_COVERAGE_AGE_SECONDS = 36 * 3600
-FAST_ALARM_MIN_AGE_SECONDS = 900
+# Keep scheduled Alarm.com context inside the 180-second Jev evidence window.
+FAST_ALARM_MIN_AGE_SECONDS = 120
 FAST_SENSE_NOW_MIN_AGE_SECONDS = 90
 FAST_CHARGEPOINT_MIN_AGE_SECONDS = 3600
 ALARM_CACHE_AUTO_REFRESH_MIN_AGE_SECONDS = 900
@@ -44,7 +45,7 @@ def node_path() -> str | None:
         os.environ.get("NODE"),
         shutil.which("node"),
         str(Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"),
-        str(Path.home() / ".local/node-v24.16.0-darwin-arm64/bin/node"),
+        str(Path.home() / ".local/node-v24.22.2-darwin-arm64/bin/node"),
         "/opt/homebrew/bin/node",
         "/usr/local/bin/node",
     ]
