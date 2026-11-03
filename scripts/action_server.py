@@ -3382,6 +3382,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/action/screens-auto":
             payload = set_screens_override(False)
             return 200, payload
+        if path == "/action/dog-aware-departure":
+            from dog_aware_departure import depart
+            payload = depart(set_alarm_panel)
+            return (202 if payload["ok"] else 500), payload
         if path == "/action/panel-home":
             payload = set_alarm_panel("home")
             return (202 if payload["ok"] else 500), payload
