@@ -96,6 +96,7 @@ def direct_appliance_state(
         "fresh": capture_fresh and (heartbeat_fresh or not heartbeat_required),
         "inUse": bool(device["inUse"]),
         "cycleActive": bool(device["cycleActive"]),
+        "ventingActive": device.get("ventingActive"),
         "remainingSeconds": device.get("remainingSeconds"),
         "doorOpen": device.get("doorOpen"),
         "apiLastSuccessAt": heartbeat_at.isoformat(timespec="seconds") if heartbeat_at else None,
@@ -161,6 +162,8 @@ def confirm_washer_venting(
             "primaryArmed": False,
             "ventingArmed": True,
             "ventingStartedAt": now.isoformat(timespec="seconds"),
+            "ventingFinishedAt": None,
+            "lastWasherMode": "venting",
             "ventingStaleAlertSent": False,
             "ventingStaleAlertedAt": None,
             "lastInUse": True,
@@ -204,6 +207,8 @@ def evolve_washer_state(
 
     in_use = bool(current["inUse"])
     cycle_active = bool(current["cycleActive"])
+    venting_active = (current['ventingActive'] if isinstance(current.get('ventingActive'), bool)
+                      else in_use and not cycle_active)
     door_open = current.get("doorOpen")
     previous_in_use = state.get("lastInUse")
     previous_cycle_active = state.get("lastCycleActive")
@@ -249,8 +254,8 @@ def evolve_washer_state(
         if state.get("primaryArmed") and (duration_ok or samples_ok):
             state.update({
                 "primaryArmed": False,
-                "ventingArmed": in_use,
-                "ventingStartedAt": now_text if in_use else None,
+                "ventingArmed": venting_active,
+                "ventingStartedAt": now_text if venting_active else None,
                 "ventingStaleAlertSent": False,
                 "ventingStaleAlertedAt": None,
                 "awaitingUnload": door_open is False,
@@ -383,6 +388,18 @@ def evolve_state(
     prior: dict[str, Any], current: dict[str, Any], now: datetime, config: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
     if config.get("finish_signal") == "countdown_confirmed":
+        # The venting countdown is hours long and is not another wash cycle.
+        # Prefer the explicit SmartHQ mode; preserve countdown evidence for washes.
+        if current.get("fresh") and current.get("ventingActive") is True:
+            if not prior.get("lastCycleActive"):
+                prior = confirm_washer_venting(prior, current, now)
+            state, actions = evolve_washer_state(prior, {**current, "cycleActive": False}, now, config)
+            state['countdownEvidence'] = {}
+            state['countdownStatus'] = 'venting'
+            state['lastWasherMode'] = 'venting'
+            return state, actions
+        if prior.get('ventingArmed') and current.get('inUse') is False:
+            return evolve_washer_state(prior, {**current, "cycleActive": False}, now, config)
         return evolve_countdown_state(prior, current, now, config)
     if config.get("finish_signal") == "cycleActive":
         return evolve_washer_state(prior, current, now, config)
