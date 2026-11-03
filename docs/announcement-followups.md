@@ -111,6 +111,15 @@ event. Physical chime and Alarm.com recording are separate and remain unchanged.
 Source announcement configuration now retains the same unverified-button guard
 as runtime, preventing a source deployment from re-enabling spoken false rings.
 
+The reviewed Alarm.com light patch, `scripts/patch_alarm_light_power.py`, keeps
+retained brightness separate from power. A level-only event updates brightness
+and coalesces an authoritative refresh rather than publishing a false On event.
+The bridge also refreshes state when its WebSocket connects, so a restored cache
+or an event missed during disconnection cannot remain authoritative for an hour.
+Its `--verify` mode exercises the installed compiled handlers using fake HAP
+services and refresh functions, including stale-connection and shutdown guards;
+it sends no real device commands. Physical light state remains a separate check.
+
 November 2 repair: all speaker transports now require a fresh (at most 180 seconds)
 explicit `homePresent: true` from the owner's presence monitor. Away, missing,
 stale, or unknown presence suppresses new announcements and replays before any
