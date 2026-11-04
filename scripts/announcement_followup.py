@@ -53,29 +53,36 @@ def recent(now):
     return None
 
 
-def can_disclose(event, now):
+def calendar_disposition(event, now):
     """A calendar replay requires the exact event and its owner's phone at home."""
     if not event["announcementId"].startswith("calendar-"):
-        return True
+        return 'allowed'
     import calendar_announcements as cal
     try:
         config = json.loads(cal.CONFIG.read_text())
         snapshot = cal.invoke()
         checked = datetime.now(timezone.utc).timestamp()
         if not 0 <= checked - stamp(snapshot["generatedAt"]) <= 90:
-            return False
+            return 'unavailable'
         matching = [e for e in snapshot["events"] if "calendar-" + cal.occurrence(e) == event["announcementId"]]
+        if not matching:
+            return 'expired'
         if len(matching) != 1:
-            return False
+            return 'unavailable'
         appointment = matching[0]
         owner = appointment["calendar"]
         mac = config.get("phones", {}).get(owner)
-        return bool(owner in ("Arkadiy", "Maxim", "Jeanne") and mac
-                    and appointment.get("status") != 3 and not appointment.get("allDay")
-                    and stamp(appointment["start"]) > checked
-                    and cal.is_home(cal.active_clients(), mac, datetime.now(timezone.utc).timestamp()))
+        if appointment.get('status') == 3 or stamp(appointment['start']) <= checked:
+            return 'expired'
+        return ('allowed' if owner in ("Arkadiy", "Maxim", "Jeanne") and mac
+                and not appointment.get('allDay')
+                and cal.is_home(cal.active_clients(), mac, datetime.now(timezone.utc).timestamp()) else 'private')
     except (OSError, ValueError, KeyError, TypeError, RuntimeError, subprocess.SubprocessError):
-        return False
+        return 'unavailable'
+
+
+def can_disclose(event, now):
+    return calendar_disposition(event, now) == 'allowed'
 
 
 def explain(event):
@@ -89,6 +96,7 @@ def explain(event):
         "energy_ok_off": "The verified Energy OK indicator switched off.",
         "bubbler_on": "The bubbler switched back on.",
         "household_reminder": "The household monitor issued that reminder. Its exact sensor evidence was not saved with the spoken message.",
+        "detergent_tank_low": "A fresh washer SmartDispense reading reported a low detergent tank.",
     }
     if identifier.startswith("calendar-"):
         return "The calendar scheduler found an appointment reminder due and verified its owner's iPhone was home."
@@ -144,10 +152,17 @@ def tick(now=None):
         save(path, {})
         if now - due > 120 or not 8 <= datetime.fromtimestamp(now, LOCAL).hour < 21:
             return "expired_or_quiet"
-        if active(event["announcementId"]) or not can_disclose(event, now):
-            return "suppressed"
-        alerts.run_indoor_homepod_announcement("Earlier announcement: " + event["message"], "dr_house_snoozed")
-        return "attempted"
+    # Consume under the lock, but never block acknowledgments on external work.
+    if active(event["announcementId"]) or not can_disclose(event, now):
+        return "suppressed"
+    try:
+        acknowledged = json.loads((alerts.DATA_DIR/'announcement_ack.json').read_text()).get('acknowledgedAt', 0)
+    except (OSError, ValueError):
+        acknowledged = 0
+    if acknowledged >= requested:
+        return 'suppressed'
+    alerts.run_indoor_homepod_announcement("Earlier announcement: " + event["message"], "dr_house_snoozed")
+    return "attempted"
 
 
 if __name__ == "__main__":

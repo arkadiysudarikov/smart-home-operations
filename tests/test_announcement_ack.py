@@ -92,7 +92,7 @@ class AcknowledgementTests(unittest.TestCase):
         with patch('announcement_followup.active', return_value=True):
             self.assertEqual(ack.tick(self.root, self.now+300), 0)
         ack.record(self.root, dict(self.event, announcementId='calendar-'+'a'*64), self.now)
-        with patch('announcement_followup.can_disclose', return_value=False):
+        with patch('announcement_followup.calendar_disposition', side_effect=lambda event, now: 'private' if event['announcementId'].startswith('calendar-') else 'allowed'):
             self.assertEqual(ack.tick(self.root, self.now+300), 1)  # washer only
 
     def test_acknowledgement_cancels_snooze(self):

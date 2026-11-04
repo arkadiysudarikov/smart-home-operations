@@ -1,4 +1,5 @@
 {
+  "laundry_worker": {"enabled": true},
   "homebridge": {
     "storage_path": "/Users/arkadiysudarikov/.homebridge",
     "launchd_service": "gui/501/com.homebridge.server",

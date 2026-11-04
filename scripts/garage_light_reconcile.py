@@ -1,10 +1,21 @@
 """Adopt a direct Alarm.com light-on into the existing five-minute timer."""
 import json
+import fcntl
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def should_check(hold, previous, edges, now):
+    if hold.get('active') or now-previous.get('checkedAt',0) >= 120:
+        return True
+    try:
+        edge = datetime.fromisoformat(edges['lastActivityAt'].replace('Z','+00:00')).timestamp()
+        return 0 <= now-edge <= 300 and edge > previous.get('checkedAt',0)
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return False
 
 
 def needs_timer(snapshot, hold, now):
@@ -51,6 +62,15 @@ def adopt(controller):
 
 
 def main():
+    with (ROOT/'data/garage_reconcile.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        return reconcile()
+
+
+def reconcile():
     try:
         hold = json.loads((ROOT / 'data/garage_light_hold.json').read_text())
     except (OSError, ValueError):
@@ -59,7 +79,15 @@ def main():
     if hold.get('active') and not config.get('garage_light', {}).get('camera_motion', {}).get('enabled'):
         print(json.dumps({'ok': True, 'adopted': False}))
         return
-    config = json.loads((ROOT / 'config/sources.json').read_text())
+    status = ROOT/'data/latest_garage_reconcile.json'
+    def read(path):
+        try:return json.loads(path.read_text())
+        except (OSError,ValueError):return {}
+    now=datetime.now(timezone.utc).timestamp()
+    if not should_check(hold,read(status),read(ROOT/'data/garage_camera_edges.json'),now):
+        return
+    # Throttle idle provider logins independently of the energy monitor.
+    temp=status.with_suffix('.tmp');temp.write_text(json.dumps({'checkedAt':now})+'\n');temp.chmod(0o600);temp.replace(status)
     port = config['actions']['port']
     request = urllib.request.Request(f'http://127.0.0.1:{port}/action/garage-reconcile', method='POST')
     with urllib.request.urlopen(request, timeout=90) as response:

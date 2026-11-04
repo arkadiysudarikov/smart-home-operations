@@ -148,6 +148,34 @@ and re-arms only after observing closure. Legacy household queue entries are
 discarded without speaking. This prevents a closed garage door from producing
 five-minute "unacknowledged" warnings.
 
+The November 4 reliability repair keeps acknowledgment locks short: repeat and
+snooze delivery and Calendar/UniFi checks run outside them. Delivery claims are
+checked again after privacy checks, and attempts that began before acknowledgment
+cannot add themselves back to the repeat queue. A relay already accepted by the
+phone cannot be recalled. Expired/cancelled Calendar events are pruned separately
+from temporarily unavailable/private events. The detergent-low source uses the
+canonical `detergent_tank_low` identifier and obeys routine pauses.
+
+Laundry capture/notifiers now run in their own 60-second LaunchAgent when
+`laundry_worker.enabled` is true. Energy collection skips those steps in this
+mode. Notifiers commit cycle state and delivery jobs atomically before external
+work; a separate 15-second delivery job claims each action. Failed and uncertain
+attempts remain visible to announcement-health diagnostics rather than being
+blindly replayed. A new cycle or door acknowledgment cancels stale pending audio.
+
+Garage camera motion/clearance writes durable edge timestamps through the native
+Dummy switch command hooks. A separate reconciliation job checks every 15 seconds;
+an intervening motion pulse can therefore extend the timer even after the Boolean
+has cleared. This still supplies motion evidence, not stationary-person detection.
+Do not describe the latter as verified occupancy.
+
+Installation uses backed-up atomic file replacement without deleting runtime-only
+files or replacing existing home configuration. It preserves the compiled Calendar
+reader, installs Calendar/followup/laundry/delivery/garage agents, and resolves the
+running action-plugin Node installation before updating it. Drift checks include
+the actual installed plugin and all those agents. Calendar reader permission and
+on-device Siri/speaker outcomes remain separate operational checks.
+
 Run **Acknowledge announcements** by tapping the shortcut or asking Siri to run
 it. Its existing SSH key/host calls the restricted `acknowledge` command on M4.
 This acknowledges all pending announcements and cancels the ten-minute snooze.

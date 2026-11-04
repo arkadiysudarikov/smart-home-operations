@@ -4,11 +4,13 @@ from __future__ import annotations
 import argparse
 import bisect
 import csv
+import errno
 import hashlib
 import json
 import os
 import re
 import sqlite3
+import time
 import xml.etree.ElementTree as ET
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -108,11 +110,19 @@ def walk_sce_candidates(root: Path, max_depth: int | None, skip_dirs: set[str]) 
 
 
 def file_fingerprint(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+    for attempt in range(3):
+        try:
+            digest = hashlib.sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+        except OSError as exc:
+            if exc.errno not in {errno.EDEADLK, errno.EAGAIN} or attempt == 2:
+                raise
+            # Close and restart the whole read after a transient file-provider lock.
+            # Never accept a partial digest or silently omit an unreadable source.
+            time.sleep(0.1 * (attempt + 1))
 
 
 def external_file_scan_enabled() -> bool:

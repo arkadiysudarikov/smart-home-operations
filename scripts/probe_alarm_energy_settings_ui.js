@@ -5,7 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
-const WebSocket = require("ws");
+let WebSocket;
 
 const BASE = "https://www.alarm.com";
 const ENERGY_URL = `${BASE}/web/Energy/EnergyConsumption.aspx`;
@@ -171,6 +171,7 @@ async function main() {
       `refusing to automate Alarm.com settings outside the runtime root: ${ROOT} != ${RUNTIME_ROOT}`
     );
   }
+  WebSocket = require("ws");
   const alarm = require(findAlarmModule());
   const config = loadAlarmConfig();
   const auth = await alarm.login(config.username, config.password, config.mfaCookie);

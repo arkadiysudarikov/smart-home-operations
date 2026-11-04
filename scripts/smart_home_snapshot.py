@@ -25,6 +25,14 @@ DB_PATH = DATA_DIR / "smart_home.sqlite"
 SOURCE_ROOT = Path.home() / "Documents" / "Smart Home"
 RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor"
 DRIFT_CHECK_FILES = [
+    "scripts/deploy_runtime.py",
+    "scripts/deploy_actions_plugin.py",
+    "scripts/configure_garage_camera_hooks.py",
+    "scripts/garage_camera_event.py",
+    "scripts/laundry_worker.py",
+    "scripts/laundry_delivery.py",
+    "plugins/homebridge-smart-home-actions/index.js",
+    "plugins/homebridge-smart-home-actions/package.json",
     "scripts/patch_alarm_light_power.py",
     "scripts/patch_alarm_camera_ring.py",
     "scripts/smarthq_live_laundry_signals.mjs",
@@ -99,6 +107,9 @@ DRIFT_CHECK_FILES = [
     "scripts/dr_house_ssh.py",
 ]
 DRIFT_CHECK_EXTERNAL_FILES = [
+    *[(f"launchagents/com.arkadiy.smart-home-{name}.plist",
+       Path.home()/"Library/LaunchAgents"/f"com.arkadiy.smart-home-{name}.plist")
+      for name in ('calendar','followup','laundry-worker','laundry-delivery','garage-reconcile')],
     (
         "launchagents/com.arkadiy.smart-home-monitor.plist",
         Path.home() / "Library" / "LaunchAgents" / "com.arkadiy.smart-home-monitor.plist",
@@ -202,6 +213,10 @@ def collect_runtime_drift() -> dict[str, Any]:
     missing: list[str] = []
     check_items = [(relative, RUNTIME_ROOT / relative) for relative in DRIFT_CHECK_FILES]
     check_items.extend(DRIFT_CHECK_EXTERNAL_FILES)
+    installed = read_json(RUNTIME_ROOT/'data/installed_code_manifest.json') or {}
+    for entry in installed.get('files', []):
+        if entry.get('source') in {'plugins/homebridge-smart-home-actions/index.js','plugins/homebridge-smart-home-actions/package.json'}:
+            check_items.append((entry['source'],Path(entry['destination'])))
     for relative, runtime_path in check_items:
         source_path = SOURCE_ROOT / relative
         source_hash = file_sha256(source_path)

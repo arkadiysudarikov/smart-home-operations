@@ -6,6 +6,7 @@ import json
 import math
 import subprocess
 import tempfile
+from contextvars import ContextVar
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,7 @@ DIRECT_SMARTHQ_PATH = DATA_DIR / "latest_smarthq_laundry_state.json"
 SENSE_NOW_PATH = DATA_DIR / "sense_now_latest.json"
 ENVOY_PATH = DATA_DIR / "latest_envoy_direct.json"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+ANNOUNCEMENT_STARTED = ContextVar('announcement_started', default=None)
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -546,6 +548,7 @@ def record_homepod_announcement(result: dict[str, Any], message: str, appliance_
     event = {
         "at": datetime.now(timezone.utc).astimezone(LOCAL_TZ).isoformat(timespec="seconds"),
         "announcementId": appliance_id,
+        "attemptStartedAt": ANNOUNCEMENT_STARTED.get(),
         "message": message,
         **result,
     }
@@ -564,6 +567,15 @@ def record_homepod_announcement(result: dict[str, Any], message: str, appliance_
 
 
 def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]:
+    started = config.get('_announcement_created_at') or datetime.now(timezone.utc).isoformat()
+    token = ANNOUNCEMENT_STARTED.set(started)
+    try:
+        return _homepod_announcement(message, config)
+    finally:
+        ANNOUNCEMENT_STARTED.reset(token)
+
+
+def _homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]:
     from announcement_presence import allowed
     if not allowed(DATA_DIR):
         return record_homepod_announcement(
@@ -961,6 +973,7 @@ def main() -> int:
         help="arm washer venting completion after a physically confirmed manual venting start",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--queue-only", action="store_true", help="persist transitions and delivery jobs without waiting for transports")
     parser.add_argument("--now", help="override the current local time for testing")
     parser.add_argument("--announce-message", help="announce an arbitrary message using the configured indoor HomePods")
     parser.add_argument("--announcement-id", help="audio filename identifier for an arbitrary announcement")
@@ -1004,10 +1017,26 @@ def main() -> int:
             prior = confirm_washer_venting(prior, current, now)
         except ValueError as exc:
             parser.error(str(exc))
-    state, actions = evolve_state(prior, current, now, config)
-    if appliance_id == 'washer':
-        actions.extend(tank_alert_actions(state, current, now))
-    results = execute_actions(actions, config, args.dry_run)
+    from laundry_delivery import transaction, enqueue, process
+    if args.dry_run:
+        state, actions = evolve_state(prior, current, now, config)
+        if appliance_id == 'washer':
+            actions.extend(tank_alert_actions(state, current, now))
+        results = execute_actions(actions, config, True)
+    else:
+        with transaction(DATA_DIR, appliance_id) as durable:
+            # Delivery completion may have updated the outbox since capture.
+            if not args.confirm_venting_start:
+                prior = dict(durable)
+            else:
+                prior['deliveryOutbox'] = durable.get('deliveryOutbox', [])
+            state, actions = evolve_state(prior, current, now, config)
+            if appliance_id == 'washer':
+                actions.extend(tank_alert_actions(state, current, now))
+            enqueue(state, actions, now.isoformat())
+            durable.clear()
+            durable.update(state)
+        results = [] if args.queue_only else process(DATA_DIR, appliance_id, config, execute_actions)
     if (not args.dry_run and current.get('fresh') is True
             and (current.get('doorOpen') is True
                  or state.get('unloadedAt') != prior.get('unloadedAt'))):
@@ -1028,7 +1057,9 @@ def main() -> int:
         "powerFallback": {"mode": "shadow", "observation": observation},
     }
     if not args.dry_run:
-        write_json(state_path, state)
+        # State/outbox was committed atomically before any delivery attempt.
+        state = load_json(state_path, state)
+        payload['state'] = state
         write_json(status_path, payload)
         write_report(payload, report_path, appliance_name)
     print(json.dumps(payload, indent=2, sort_keys=True))

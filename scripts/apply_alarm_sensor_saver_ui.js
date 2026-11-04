@@ -5,7 +5,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
-const WebSocket = require("ws");
+let WebSocket;
 
 const BASE = "https://www.alarm.com";
 const RULE_NAME = "Sensor Left Open Energy Saver";
@@ -229,6 +229,7 @@ async function main() {
     );
   }
   const dryRun = args.dryRun;
+  WebSocket = require("ws");
   const alarm = require(findAlarmModule());
   const config = loadAlarmConfig();
   const auth = await alarm.login(config.username, config.password, config.mfaCookie);

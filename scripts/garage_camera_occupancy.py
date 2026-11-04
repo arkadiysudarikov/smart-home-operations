@@ -1,7 +1,8 @@
 """Read the Home camera-motion bridge without treating phone Wi-Fi as occupancy."""
 import json
 import urllib.request
-from datetime import timedelta
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 
 def read(config):
@@ -14,7 +15,13 @@ def read(config):
             value = json.load(response).get('value')
         if not isinstance(value, bool):
             raise ValueError('camera motion state is unavailable')
-        return {'enabled': True, 'source': 'home-camera-motion', 'occupied': value}
+        result = {'enabled': True, 'source': 'home-camera-motion', 'occupied': value}
+        try:
+            edges = json.loads((Path(__file__).resolve().parents[1]/'data/garage_camera_edges.json').read_text())
+            result['lastActivityAt'] = edges.get('lastActivityAt')
+        except (OSError, ValueError):
+            pass
+        return result
     except (OSError, ValueError) as exc:
         return {'enabled': True, 'source': 'home-camera-motion', 'occupied': None, 'error': str(exc)}
 
@@ -36,7 +43,15 @@ def guard(controller, state, now):
         state.update(lastActivityAt=now.isoformat(timespec='seconds'),status='camera-clear-countdown',
                      holdUntil=(now+timedelta(seconds=state.get('holdSeconds',300))).isoformat(timespec='seconds'))
     else:
-        return False
+        try:
+            edge = datetime.fromisoformat(occupancy.get('lastActivityAt', '').replace('Z', '+00:00'))
+            prior = datetime.fromisoformat(state['lastActivityAt'].replace('Z', '+00:00'))
+            if not edge.tzinfo or not 0 <= (now-edge).total_seconds() < state.get('holdSeconds',300) or edge <= prior:
+                return False
+        except (KeyError, ValueError, TypeError, AttributeError):
+            return False
+        state.update(lastActivityAt=edge.isoformat(), status='camera-edge-countdown',
+                     holdUntil=(edge+timedelta(seconds=state.get('holdSeconds',300))).isoformat())
     controller.write_garage_light_hold_state(state)
     controller.schedule_garage_light_hold_check(state)
     return True

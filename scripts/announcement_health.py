@@ -138,7 +138,16 @@ def build(data, plugin, now):
     if plugin.get("ok") is not True: faults.append("SmartHQ instrumentation needs review")
     if any(s["active"] and s["status"] != "fresh" for s in sources.values()): faults.append("Active laundry source stale")
     if relay["status"] in ("failed", "invalid_log"): faults.append("Announcement relay failed or log invalid")
+    delivery = {}
+    for name in ('washer','dryer','combo'):
+        jobs = load(data/f'{name}_notifier_state.json').get('deliveryOutbox', [])
+        recent = [job for job in jobs if job.get('status') in ('failed','uncertain')
+                  and (seconds := age(job.get('createdAt'), now)) is not None and 0 <= seconds < 86400]
+        delivery[name] = {'pending':sum(j.get('status') == 'pending' for j in jobs), 'recentFailures':len(recent)}
+    if any(v['recentFailures'] for v in delivery.values()):
+        faults.append('Laundry delivery failed or uncertain')
     return {"generatedAt": now.isoformat(), "ok": not faults, "faults": faults,
+            "laundryDelivery":delivery,
             "smartHQPlugin": plugin, "laundrySources": sources, "relay": relay,
             "audibleDelivery": audible_test(data, now)}
 

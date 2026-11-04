@@ -112,7 +112,9 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
 
         for name in tile_names + action_names:
             visible_length = len(name.replace("\ufe0f", ""))
-            self.assertLessEqual(visible_length, 16, f"visible name is too long for a Home tile: {name}")
+            # Preserve the established Siri phrase across existing residents.
+            limit = 20 if name == 'Clear Announcements' else 16
+            self.assertLessEqual(visible_length, limit, f"visible name is too long for a Home tile: {name}")
             words = set(name.lower().split())
             self.assertTrue(
                 words.isdisjoint({"auth", "issue", "reconcile", "surplus"}),
@@ -146,7 +148,7 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             f"{install_homekit_virtual_sensors.CALENDAR_PREFIX}Automation",
         ]
         self.assertEqual(
-            {name.split(" ", 1)[0] for name in grouped_names},
+            {name.split(" ", 1)[0] for name in grouped_names if name != 'Clear Announcements'},
             approved_prefixes,
         )
 

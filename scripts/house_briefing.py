@@ -226,6 +226,33 @@ def calendar_summary(now, departure_only=False):
         return ""
 
 
+def laundry_status_message(laundry, now):
+    if laundry.get("ok") is not True or not fresh(laundry, "capturedAt", now, 300):
+        return "Laundry readings are unavailable or stale. I cannot confirm the current cycle status."
+    parts = []
+    for key, label in (("washer", "The washer"), ("dryer", "The dryer"),
+                       ("combo", "The washer dryer combo")):
+        device = (laundry.get("devices") or {}).get(key, {})
+        if not fresh(device, "apiLastSuccessAt", now, 300):
+            parts.append(label + " status is unavailable or stale.")
+        elif device.get("cycleActive") is True:
+            text = label + " is running"
+            remaining = device.get("remainingSeconds")
+            if number(remaining) and remaining > 0:
+                minutes = math.ceil(remaining / 60)
+                text += f", with about {minutes} minute{'s' if minutes != 1 else ''} remaining"
+            parts.append(text + ".")
+        elif device.get("ventingActive") is True:
+            parts.append(label + " is venting.")
+        elif device.get("inUse") is True:
+            parts.append(label + " reports in use; no active cycle is confirmed.")
+        elif device.get("cycleActive") is False and device.get("inUse") is False:
+            parts.append(label + " is not running.")
+        else:
+            parts.append(label + " cycle status is unavailable.")
+    return " ".join(parts)
+
+
 def build(mode):
     if mode == "acknowledge":
         return "Announcements acknowledged. Repeats stopped."
@@ -233,6 +260,9 @@ def build(mode):
         from announcement_followup import request
         return request(mode)
     now = datetime.now(timezone.utc).isoformat()
+    if mode == "diagnostics":
+        return laundry_status_message(
+            alerts.load_json_file(alerts.DATA_DIR / "latest_smarthq_laundry_state.json") or {}, now)
     if mode in ('attention','savings','diagnostics','routine','changes','wait','laundrytime','unusual','recap'):
         from jev_house_advisor import render
         return render(mode, alerts.DATA_DIR, datetime.fromisoformat(now).timestamp())

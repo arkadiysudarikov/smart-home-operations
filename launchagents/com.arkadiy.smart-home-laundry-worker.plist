@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.arkadiy.smart-home-laundry-worker</string>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/arkadiysudarikov/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3</string>
+		<string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/scripts/laundry_worker.py</string>
+	</array>
+	<key>StandardErrorPath</key>
+	<string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/logs/laundry-worker.err.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/logs/laundry-worker.out.log</string>
+	<key>StartInterval</key>
+	<integer>60</integer>
+</dict>
+</plist>

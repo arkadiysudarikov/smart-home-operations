@@ -162,9 +162,11 @@ def run_node_step(name: str, script: str, timeout: int = 300, optional: bool = F
     return run_step(name, [node, script], timeout=timeout, optional=optional)
 
 
-def analyzer_cmd(py: str) -> list[str]:
+def analyzer_cmd(py: str, *, scan_external: bool = False) -> list[str]:
     script = ROOT / "scripts/analyze_all_energy_readings.py"
     cmd = [py, str(script)]
+    if not scan_external:
+        return cmd
     try:
         proc = subprocess.run(
             [py, str(script), "--help"],
@@ -312,12 +314,14 @@ def finalize_status(
 
 def acquire_refresh_lock() -> Any | None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    lock_file = LOCK_PATH.open("w")
+    lock_file = LOCK_PATH.open("a+")
     try:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         lock_file.close()
         return None
+    lock_file.seek(0)
+    lock_file.truncate()
     lock_file.write(f"{os.getpid()} {now()}\n")
     lock_file.flush()
     return lock_file
@@ -327,13 +331,14 @@ def release_refresh_lock(lock_file: Any | None) -> None:
     if lock_file is None:
         return
     try:
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.flush()
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
     finally:
         lock_file.close()
-    try:
-        LOCK_PATH.unlink()
-    except FileNotFoundError:
-        pass
+    # Keep the inode: unlinking after unlock lets a third process create a
+    # different lock file while a second process holds the original inode.
 
 
 def summarize_steps(steps: list[dict[str, Any]]) -> dict[str, Any]:
@@ -474,7 +479,7 @@ def main() -> int:
                 ),
                 (
                     "analyze_all_energy",
-                    [py, "scripts/analyze_all_energy_readings.py"],
+                    analyzer_cmd(py),
                     120,
                     True,
                     False,
@@ -512,6 +517,10 @@ def main() -> int:
                     "recent ChargePoint capture is still fresh",
                 ),
                 ("snapshot_post_capture", [py, "scripts/smart_home_snapshot.py"], 45, True, False, None),
+                ("analyze_chargepoint", [py, "scripts/analyze_chargepoint_pairing.py"], 300, True, False, None),
+                ("analyze_meter_reconciliation", [py, "scripts/analyze_meter_reconciliation.py"], 300, True, False, None),
+                ("analyze_bill_home_pairing", [py, "scripts/analyze_bill_home_pairing.py"], 300, True, False, None),
+                ("analyze_energy_costs", [py, "scripts/analyze_energy_costs.py"], 300, True, False, None),
                 ("analyze_combined_energy", [py, "scripts/analyze_combined_energy_monitor.py"], 300, True, False, None),
                 ("analyze_energy_observability", [py, "scripts/analyze_energy_observability.py"], 120, True, False, None),
                 ("generate_alerts", [py, "scripts/generate_alerts.py"], 300, True, False, None),
@@ -535,7 +544,7 @@ def main() -> int:
                 [
                     (
                         "analyze_all_energy",
-                        analyzer_cmd(py),
+                        analyzer_cmd(py, scan_external=True),
                         300,
                         False,
                         False,
@@ -564,6 +573,9 @@ def main() -> int:
         index = next(i for i, step in enumerate(plan) if step[0] == "combo_notifier") + 1
         plan.insert(index, ("announcement_health", [py, "scripts/announcement_health.py"], 30, True, False, None))
         plan.insert(index + 1, ("additional_announcements", [py, "scripts/additional_announcements.py", "--deliver"], 150, True, False, None))
+        if json.loads((ROOT/'config/sources.json').read_text()).get('laundry_worker', {}).get('enabled'):
+            independent = {'capture_smarthq_laundry', 'recover_smarthq_laundry', 'washer_notifier', 'dryer_notifier', 'combo_notifier'}
+            plan = [step for step in plan if step[0] not in independent]
         # Independent optional model step; never blocks laundry or changes its rules.
         plan.append(("jev_energy", [py, "scripts/jev_energy_monitor.py", "--deliver"], 60, True, False, None))
         for name, command, timeout, optional, is_node, skip_reason in plan:
