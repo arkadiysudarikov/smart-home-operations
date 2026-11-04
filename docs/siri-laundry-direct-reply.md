@@ -17,3 +17,12 @@ A separate live relay retry succeeded after restarting Mail. iPhone Siri speech
 requires a post-deployment phone test and is not claimed by these server checks.
 The Mac's local shortcut test encountered an acknowledgement-only SSH key;
 that restriction was retained rather than broadening the key's access.
+
+The laundry reply now renders fresh appliance readings directly: running state
+and rounded remaining minutes for active cycles, venting or in-use uncertainty,
+and idle status without asserting cycle completion. Both capture freshness and
+per-appliance API heartbeat freshness are required. Four additional tests cover
+active, idle, stale, ambiguous and invalid-duration readings. A live forced-command
+run during the user's load reported the washer running (51 minutes), dryer idle,
+and combo running (117 minutes), matching the current HAP capture. These values
+are a dated sample, not fixed expected results.
