@@ -2,6 +2,8 @@
 import os
 import json
 import sys
+import subprocess
+from pathlib import Path
 import urllib.request
 
 MODES = frozenset(("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "acknowledge", "attention", "savings", "diagnostics", "routine"))
@@ -32,6 +34,17 @@ def spoken_response(raw):
 def dispatch(command):
     if command not in MODES:
         raise ValueError("Only a Dr. House command name is permitted")
+    if command == "diagnostics":
+        # Siri owns this reply. A separate HomePod relay outage must not turn
+        # a successful read of laundry status into an HTTP 500 on the phone.
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).with_name("house_briefing.py")),
+             "--mode", "diagnostics"],
+            capture_output=True, text=True, timeout=30, check=False,
+        )
+        if result.returncode or not result.stdout.strip():
+            raise ValueError("The laundry status check could not produce a reply")
+        return result.stdout.strip()
     request = urllib.request.Request("http://127.0.0.1:18765/action/dr-house-" + command, data=b"", method="POST")
     with urllib.request.urlopen(request, timeout=125) as response:
         return spoken_response(response.read(16384).decode())
