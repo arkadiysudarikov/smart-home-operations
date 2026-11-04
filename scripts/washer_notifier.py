@@ -964,6 +964,17 @@ def write_report(payload: dict[str, Any], report_path: Path, appliance_name: str
     report_path.write_text("\n".join(lines) + "\n")
 
 
+def laundry_ack_needed(prior, state, current):
+    """A newly started load supersedes an old unload reminder, even if the door
+    was opened and closed between captures. Venting is not a new wash load.
+    """
+    return current.get('fresh') is True and (
+        current.get('doorOpen') is True
+        or state.get('unloadedAt') != prior.get('unloadedAt')
+        or any(state.get(key) and state.get(key) != prior.get(key)
+               for key in ('washStartedAt', 'cycleStartedAt')))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Send laundry-finished and unload-reminder notifications.")
     parser.add_argument("--appliance", choices=("washer", "dryer", "combo"), default="washer")
@@ -1037,9 +1048,7 @@ def main() -> int:
             durable.clear()
             durable.update(state)
         results = [] if args.queue_only else process(DATA_DIR, appliance_id, config, execute_actions)
-    if (not args.dry_run and current.get('fresh') is True
-            and (current.get('doorOpen') is True
-                 or state.get('unloadedAt') != prior.get('unloadedAt'))):
+    if not args.dry_run and laundry_ack_needed(prior, state, current):
         from announcement_ack import acknowledge_appliance
         acknowledge_appliance(DATA_DIR, appliance_id)
     observation = power_observation(current, now, appliance_id)

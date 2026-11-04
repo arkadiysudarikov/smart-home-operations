@@ -19,6 +19,7 @@ import garage_camera_occupancy as camera
 import garage_light_reconcile as garage
 import laundry_delivery as delivery
 import deploy_runtime
+import washer_notifier as notifier
 
 
 class ReliabilityTests(unittest.TestCase):
@@ -153,6 +154,17 @@ class ReliabilityTests(unittest.TestCase):
     def test_tank_alert_obeys_same_pause_as_washer(self):
         state={'startedAt':self.now,'until':self.now+3600}
         self.assertTrue(pause.paused('detergent_tank_low',state,self.now+1))
+
+    def test_new_load_clears_old_reminder_even_if_door_is_already_closed(self):
+        prior={'washStartedAt':'old','unloadedAt':None}
+        new={'washStartedAt':'new','unloadedAt':None}
+        self.assertTrue(notifier.laundry_ack_needed(prior,new,{'fresh':True,'doorOpen':False}))
+        self.assertFalse(notifier.laundry_ack_needed(prior,new,{'fresh':False,'doorOpen':False}))
+
+    def test_venting_does_not_acknowledge_an_unloaded_wash(self):
+        prior={'washStartedAt':'wash','unloadedAt':None}
+        venting={**prior,'ventingStartedAt':'now','ventingArmed':True}
+        self.assertFalse(notifier.laundry_ack_needed(prior,venting,{'fresh':True,'doorOpen':False}))
 
     def test_deploy_rolls_back_already_replaced_files_on_failure(self):
         source=self.data/'source';runtime=self.data/'runtime'
