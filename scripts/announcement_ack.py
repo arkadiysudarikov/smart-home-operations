@@ -1,4 +1,4 @@
-"""Durable five-minute reminders, stopped by explicit household acknowledgement."""
+"""Durable reminders with capped progressive backoff and acknowledgement."""
 import fcntl
 import json
 import uuid
@@ -7,9 +7,15 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 
 INTERVAL = 300
+MAX_INTERVAL = 3600
+
+
+def repeat_interval(count):
+    """Initial reminder at five minutes, then 10, 20, 40, and 60 minutes."""
+    return min(MAX_INTERVAL, INTERVAL * 2 ** min(max(int(count), 0), 4))
 ACTIONABLE = {'washer', 'dryer', 'combo', 'energy_high_on', 'energy_ok_off',
               'laundry_health', 'freezer_temperature',
-              'doorbell_press', 'help_request', 'energy_low'}
+              'doorbell_press', 'help_request', 'energy_low', 'detergent_tank_low'}
 
 
 def clock():
@@ -66,7 +72,7 @@ def record(directory, event, now=None):
         previous = pending.get(identifier)
         if previous and previous['event']['message'] == event['message']:
             return
-        pending[identifier] = {'event': event, 'dueAt': now + INTERVAL}
+        pending[identifier] = {'event': event, 'dueAt': now + INTERVAL, 'repeatCount': 0}
 
 
 def acknowledge(directory):
@@ -85,6 +91,13 @@ def acknowledge_appliance(directory, identifier):
     """Opening one appliance clears only its reminders and matching snooze."""
     if identifier not in {'washer', 'dryer', 'combo'}:
         raise ValueError('Unknown laundry appliance')
+    return clear_source(directory, identifier)
+
+
+def clear_source(directory, identifier):
+    """Resolve one observed source without clearing unrelated reminders."""
+    if identifier not in ACTIONABLE:
+        raise ValueError('Unknown announcement source')
     with state(directory) as value:
         removed = value.setdefault('pending', {}).pop(identifier, None) is not None
         value.setdefault('applianceAcknowledgedAt', {})[identifier] = clock()
@@ -121,6 +134,8 @@ def tick(directory, now=None):
                 continue
             if not 8 <= datetime.fromtimestamp(now, ZoneInfo('America/Los_Angeles')).hour < 21:
                 continue
+            # Suppression checks do not consume a repeat. Reserve a short retry
+            # while external checks run; the actual attempt advances backoff.
             item['dueAt'] = now + INTERVAL
             token = item['claim'] = uuid.uuid4().hex
             claims.append((identifier, token, event))
@@ -135,9 +150,11 @@ def tick(directory, now=None):
                 continue
             if disposition != 'allowed':
                 continue
+            item['repeatCount'] = int(item.get('repeatCount', 0)) + 1
+            item['dueAt'] = now + repeat_interval(item['repeatCount'])
         try:
             run_indoor_homepod_announcement('Unacknowledged announcement: ' + event['message'], 'dr_house_unacknowledged')
         except Exception:
-            pass  # Retry at the next five-minute interval, never a tight loop.
+            pass  # An uncertain delivery also backs off; never a tight loop.
         attempted += 1
     return attempted

@@ -1051,6 +1051,11 @@ def main() -> int:
     if not args.dry_run and laundry_ack_needed(prior, state, current):
         from announcement_ack import acknowledge_appliance
         acknowledge_appliance(DATA_DIR, appliance_id)
+    if (not args.dry_run and appliance_id == 'washer'
+            and prior.get('detergentTankLowActive') is True
+            and state.get('detergentTankLowActive') is False):
+        from announcement_ack import clear_source
+        clear_source(DATA_DIR, 'detergent_tank_low')
     observation = power_observation(current, now, appliance_id)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with power_log_path.open("a") as handle:

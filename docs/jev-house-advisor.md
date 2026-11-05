@@ -78,6 +78,10 @@ Each scheduled pass also writes `data/latest_jev_house_diagnostics.json`, so
 fresh laundry conflicts remain visible during the API cooldown. This record
 cannot alter the completion detector or send an announcement.
 
+The household review also receives a fresh detergent-low boolean (unknown when
+stale), with a locally gated detergent attention choice and a fixed refill
+template. Model priority never suppresses the deterministic tank-low alert.
+
 Focused verification: `python3 -m unittest discover -s tests -p 'test_jev*py'`.
 Tests cover fresh source adapters, model schemas, evidence gates, bounded requests,
 privacy, cooldown persistence, no-mail follow-ups, and no implicit controls.

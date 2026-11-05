@@ -34,6 +34,12 @@ class AcknowledgementTests(unittest.TestCase):
         (self.root/'announcement_followup.json').write_text(json.dumps({'event': {'announcementId':'dryer'}}))
         ack.acknowledge_appliance(self.root, 'washer')
         self.assertEqual(json.loads((self.root/'announcement_followup.json').read_text())['event']['announcementId'], 'dryer')
+
+    def test_refilled_tank_clears_only_detergent_reminder(self):
+        ack.record(self.root, self.event, self.now)
+        ack.record(self.root, dict(self.event, announcementId='detergent_tank_low'), self.now)
+        self.assertTrue(ack.clear_source(self.root, 'detergent_tank_low'))
+        self.assertEqual(set(json.loads((self.root/'announcement_ack.json').read_text())['pending']), {'washer'})
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -47,12 +53,15 @@ class AcknowledgementTests(unittest.TestCase):
         self.pause.start()
         self.addCleanup(self.pause.stop)
 
-    def test_repeats_every_five_minutes_until_acknowledged(self):
+    def test_repeats_with_progressive_backoff_until_acknowledged(self):
         ack.record(self.root, self.event, self.now)
         self.assertEqual(ack.tick(self.root, self.now+299), 0)
         self.assertEqual(ack.tick(self.root, self.now+300), 1)
         self.assertEqual(ack.tick(self.root, self.now+599), 0)
-        self.assertEqual(ack.tick(self.root, self.now+600), 1)
+        self.assertEqual(ack.tick(self.root, self.now+600), 0)
+        self.assertEqual(ack.tick(self.root, self.now+900), 1)
+        self.assertEqual(ack.tick(self.root, self.now+2099), 0)
+        self.assertEqual(ack.tick(self.root, self.now+2100), 1)
         self.assertEqual(ack.acknowledge(self.root), 1)
         self.assertEqual(ack.tick(self.root, self.now+900), 0)
 
@@ -80,12 +89,31 @@ class AcknowledgementTests(unittest.TestCase):
         ack.record(self.root, dict(self.event, announcementId='energy_high_clear'), self.now+1)
         self.assertEqual(ack.acknowledge(self.root), 0)
 
-    def test_uncertain_delivery_waits_five_minutes(self):
+    def test_uncertain_delivery_also_backs_off(self):
         ack.record(self.root, self.event, self.now)
         self.mock_send.side_effect=RuntimeError('uncertain')
         self.assertEqual(ack.tick(self.root, self.now+300), 1)
         self.assertEqual(ack.tick(self.root, self.now+301), 0)
-        self.assertEqual(ack.tick(self.root, self.now+600), 1)
+        self.assertEqual(ack.tick(self.root, self.now+600), 0)
+        self.assertEqual(ack.tick(self.root, self.now+900), 1)
+
+    def test_backoff_caps_and_survives_reload_without_duplicate_reset(self):
+        ack.record(self.root, self.event, self.now)
+        now = self.now
+        for delay, next_delay in [(300,600),(600,1200),(1200,2400),(2400,3600),(3600,3600)]:
+            now += delay
+            self.assertEqual(ack.tick(self.root, now), 1)
+            before = json.loads((self.root/'announcement_ack.json').read_text())
+            self.assertEqual(before['pending']['washer']['dueAt'], now+next_delay)
+            ack.record(self.root, self.event, now+1)
+            self.assertEqual(json.loads((self.root/'announcement_ack.json').read_text()), before)
+
+    def test_legacy_pending_starts_backoff_without_replaying_immediately(self):
+        (self.root/'announcement_ack.json').write_text(json.dumps({'pending': {
+            'washer': {'event':self.event,'dueAt':self.now+300}}}))
+        self.assertEqual(ack.tick(self.root, self.now+299), 0)
+        self.assertEqual(ack.tick(self.root, self.now+300), 1)
+        self.assertEqual(json.loads((self.root/'announcement_ack.json').read_text())['pending']['washer']['dueAt'], self.now+900)
 
     def test_pause_and_calendar_privacy(self):
         ack.record(self.root, self.event, self.now)

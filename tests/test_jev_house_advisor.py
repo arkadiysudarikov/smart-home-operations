@@ -121,6 +121,18 @@ class AdvisorTests(unittest.TestCase):
         self.assertIsNone(stale['load_kw'])
         self.assertEqual(stale['laundry_conflicts'],0)
 
+    def test_tank_advice_requires_fresh_explicit_reading(self):
+        j.save(self.data/'latest_smarthq_laundry_state.json',{'ok':True,'capturedAt':AT,'devices':{
+            'washer':{'apiLastSuccessAt':AT,'detergentTankLow':True,'detergentTankObservedAt':AT}}})
+        current=j.facts(self.data,NOW)
+        self.assertIs(current['detergent_low'], True)
+        self.assertIn('detergent',j.supported(current)['attention'])
+        self.assertIn('detergent tank is low',j.attention_text(current,{'attention':'detergent'}))
+        self.assertIn('detergent tank is low',j.attention_text(current,{}))
+        stale=j.facts(self.data,NOW+181)
+        self.assertIsNone(stale['detergent_low'])
+        self.assertNotIn('detergent',j.supported(stale)['attention'])
+
     def test_direct_portal_hvac_without_stale_dummy(self):
         j.save(self.data/'latest_alarm_com.json',{'generatedAt':AT,'alarmState':{'ok':True,'systems':[
             {'components':{'thermostats':[{'stateText':'Cooling'}]}}]}})

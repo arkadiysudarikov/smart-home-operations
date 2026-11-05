@@ -75,6 +75,32 @@ function heartbeatForAccessory(accessoryName) {
   }
 }
 
+async function readDetergentTank({ fetcher = fetch, now = () => new Date().toISOString(),
+  tokenPath = path.join(os.homedir(), '.homebridge', 'smarthq-token.json'),
+  heartbeatPath = HEARTBEAT_PATH } = {}) {
+  try {
+    const heartbeat = JSON.parse(fs.readFileSync(heartbeatPath, 'utf8'));
+    const ids = Object.entries(heartbeat.devices || {}).filter(([, d]) => d.nickname === 'Washer');
+    if (ids.length !== 1) throw new Error('washer_identity_unavailable');
+    const token = JSON.parse(fs.readFileSync(tokenPath, 'utf8')).tokenSet?.access_token;
+    if (!token) throw new Error('tank_auth_unavailable');
+    // GE's REST routes are case-sensitive: lowercase 0x203c returns HTTP 400.
+    // No refresh, redirects, writes, or retries; credentials stay on the GE origin.
+    const response = await fetcher(`https://api.brillion.geappliances.com/v1/appliance/${encodeURIComponent(ids[0][0])}/erd/0x203C`, {
+      headers: { Authorization: `Bearer ${token}` }, redirect: 'error', signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) throw new Error(`tank_http_${response.status}`);
+    const body = await response.json();
+    if (!['01','02'].includes(body.value)) throw new Error('tank_value_unknown');
+    return { detergentTankLow: body.value === '01', detergentTankObservedAt: now(),
+      detergentTankSource: 'smarthq-rest', detergentTankSourceUpdatedAt: body.time ?? null };
+  } catch (error) {
+    // Do not substitute an old full-tank reading when the current read fails.
+    return { detergentTankLow: null, detergentTankObservedAt: null,
+      detergentTankReadError: /^tank_|^washer_/.test(error.message) ? error.message : 'tank_read_failed' };
+  }
+}
+
 async function discoverLaundryServices(client) {
   let services = [];
   for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -118,6 +144,7 @@ async function main() {
         [mainService, cycleService, doorService].filter(Boolean).map((service) => service.refreshCharacteristics().catch(() => undefined)),
       );
       const signals = laundrySignals(heartbeatForAccessory(device.accessoryName));
+      if (appliance === 'washer') Object.assign(signals, await readDetergentTank());
       const venting = appliance === "washer" && signals.cycleCode === 35 && booleanValue(characteristic(mainService, "InUse")) === true;
       devices[appliance] = {
         inUse: booleanValue(characteristic(mainService, "InUse")),
@@ -148,4 +175,4 @@ async function main() {
 }
 
 if (require.main === module) main();
-module.exports = { laundrySignals };
+module.exports = { laundrySignals, readDetergentTank };

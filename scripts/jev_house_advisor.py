@@ -27,6 +27,7 @@ OPTIONS = {
     'contributor': {'hvac':'Measured HVAC contributor', 'ev':'Measured EV contributor',
         'laundry':'Measured laundry contributor', 'multiple':'Multiple measured contributors', 'unknown':'No supported explanation'},
     'attention': {'temperature':'Abnormal temperature', 'laundry':'Conflicting laundry readings',
+        'detergent':'Freshly observed low detergent tank',
         'openings':'Open or unlocked entry', 'energy':'High consumption', 'none':'No verified issue'},
     'laundry': {'conflict':'Positive countdown conflicts with idle cycle flag', 'unknown':'No verified conflict'},
     'routine': {'announce':'A routine issue merits attention', 'combine':'Combine multiple routine issues',
@@ -83,11 +84,14 @@ def facts(data, now, sample=None):
     cold = any(k.startswith('temperature:cold:') and v['state']=='open' for k,v in observed.items())
     cooling_open = any(k.startswith('cooling:') and v['state']=='open' for k,v in observed.items())
     laundry = load(data/'latest_smarthq_laundry_state.json')
-    conflicts, remaining = 0, []
+    conflicts, remaining, tank_low = 0, [], None
     if laundry.get('ok') is True and fresh(laundry.get('capturedAt'),now):
         for name, device in laundry.get('devices',{}).items():
             if name not in ('washer','dryer','combo') or not fresh(device.get('apiLastSuccessAt'),now):
                 continue
+            if (name == 'washer' and fresh(device.get('detergentTankObservedAt'), now)
+                    and type(device.get('detergentTankLow')) is bool):
+                tank_low = device['detergentTankLow']
             # A venting timer is not a wash countdown or an idle contradiction.
             if device.get('ventingActive') is True:
                 continue
@@ -105,7 +109,7 @@ def facts(data, now, sample=None):
         'cooling_open':cooling_open, 'laundry_conflicts':conflicts, 'remaining_minutes':remaining[:3],
         'owner_home':sample['home'], 'usual_kw':usual,
         'away_high':sample['home'] is False and usual is not None and sample['load_kw'] > 2*usual,
-        'daytime':daytime(now)}
+        'daytime':daytime(now), 'detergent_low':tank_low}
     from jev_house_features import enrich
     return enrich(data,evidence,now)
 
@@ -128,6 +132,7 @@ def supported(e):
     attention = set()
     if e['hot'] or e['cold']: attention.add('temperature')
     if e['laundry_conflicts']: attention.add('laundry')
+    if e.get('detergent_low') is True: attention.add('detergent')
     if e['openings']: attention.add('openings')
     if e['high'] is True: attention.add('energy')
     details = ({'energy'} if e['load_kw'] is not None else set())
@@ -222,10 +227,11 @@ def attention_text(e, choices):
     issues = {}
     if e['hot'] or e['cold']: issues['temperature']='Indoor temperature is unusually '+('hot' if e['hot'] else 'cold')+'.'
     if e['laundry_conflicts']: issues['laundry']='Laundry reports time remaining despite an idle flag. Completion is not confirmed.'
+    if e.get('detergent_low') is True: issues['detergent']='The washer detergent tank is low. Refill the SmartDispense tank.'
     if e['openings']: issues['openings']=f"{e['openings']} reporting doors, windows, garages, or locks are open or unlocked."
     if e['high']: issues['energy']='Energy use is high.'
     # Temperature is never demoted; Jev reorders other verified facts, never drops them.
-    order = ['temperature',choices.get('attention'),'laundry','openings','energy']
+    order = ['temperature',choices.get('attention'),'laundry','detergent','openings','energy']
     result = []
     for key in order:
         if key in issues and issues[key] not in result: result.append(issues[key])

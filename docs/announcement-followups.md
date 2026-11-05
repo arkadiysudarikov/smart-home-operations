@@ -133,8 +133,10 @@ lets residents clear reminders without a personal shortcut: “Siri, turn on Cle
 Announcements.” This clears pending repeats and the one-shot snooze; it does not
 delete the historical event log or prevent new source events when the owner returns.
 
-Actionable announcements now remain pending and repeat every five minutes until
-explicitly acknowledged. Each source has its own pending item, persisted across
+Actionable announcements remain pending with progressively longer repeat gaps:
+5, 10, 20, 40, then 60 minutes until explicitly acknowledged. The one-hour cap
+applies to subsequent repeats, including uncertain delivery attempts. Pauses,
+away presence and Calendar privacy do not consume a repeat. Each source has its own pending item, persisted across
 service restarts; a newer message replaces that source's prior message. This
 covers laundry, appointment reminders, energy attention notices,
 doorbell/help requests, laundry connectivity and freezer warnings.
@@ -155,6 +157,11 @@ cannot add themselves back to the repeat queue. A relay already accepted by the
 phone cannot be recalled. Expired/cancelled Calendar events are pruned separately
 from temporarily unavailable/private events. The detergent-low source uses the
 canonical `detergent_tank_low` identifier and obeys routine pauses.
+It now joins the progressive repeat queue, cleared by acknowledgment or a fresh
+full-tank reading. Laundry capture explicitly reads the case-sensitive SmartHQ
+REST address `0x203C` once per worker pass; failed or unknown responses remain
+unknown rather than reusing an old full-tank value. Only a fresh explicit low
+reading may generate the warning.
 
 Laundry capture/notifiers now run in their own 60-second LaunchAgent when
 `laundry_worker.enabled` is true. Energy collection skips those steps in this
@@ -186,7 +193,7 @@ Ordinary quiet hours and pauses defer repeats. Calendar repeats retain the fresh
 occurrence and owner-at-home privacy gate, so expired, cancelled or unavailable
 appointments are never disclosed. Repeats say “Unacknowledged announcement” to
 identify recorded text rather than claim a fresh observation. Failed/uncertain
-replays wait another five minutes; they cannot recursively enqueue themselves.
+replays use the same capped progressive backoff; they cannot recursively enqueue themselves.
 No historical log entries are backfilled when deploying this feature.
 
 October 20 live validation: the marked synthetic household test was accepted at
