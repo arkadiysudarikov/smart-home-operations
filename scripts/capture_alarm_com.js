@@ -1836,6 +1836,15 @@ async function main() {
       systemCount: Array.isArray(auth.systems) ? auth.systems.length : 0,
       identityCount: Array.isArray(auth.identities?.data) ? auth.identities.data.length : null,
     };
+    if (args.has('--rules-only')) {
+      const [automationRules,videoRules] = await Promise.all([fetchAutomationRules(auth),fetchRecordingRules(auth)]);
+      const report = {generatedAt:new Date().toISOString(),automationRules,videoRules,
+        ok:automationRules.ok && videoRules.ok,controlsExecuted:false};
+      writeJson(path.join(root,'data/latest_automation_consistency_sources.json'),report);
+      console.log(JSON.stringify({ok:report.ok,generatedAt:report.generatedAt,
+        ruleCount:automationRules.ruleCount,videoRuleCount:videoRules.ruleCount}));
+      return;
+    }
     try {
       payload.alarmState = await captureSystemStates(alarm, auth);
     } catch (error) {

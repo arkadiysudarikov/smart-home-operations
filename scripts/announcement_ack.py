@@ -117,6 +117,8 @@ def tick(directory, now=None):
     from announcement_followup import active, calendar_disposition
     from generate_alerts import run_indoor_homepod_announcement
     now = clock() if now is None else now
+    from home_operations import enabled, condition, ROUTINE, routine_order
+    smart = enabled(directory)
     attempted = 0
     claims = []
     # Claim and persist before any external work. Never hold the queue lock
@@ -124,6 +126,13 @@ def tick(directory, now=None):
     with state(directory) as value:
         pending = value.setdefault('pending', {})
         for identifier, item in list(pending.items()):
+            if smart:
+                live = condition(directory, identifier, now)
+                if live is False:
+                    pending.pop(identifier)
+                    continue
+                if live is None:
+                    continue
             # Legacy combined notices have no sensor identity or live-condition
             # proof. Never replay them after the source episode has changed.
             if identifier == 'household_reminder':
@@ -139,6 +148,7 @@ def tick(directory, now=None):
             item['dueAt'] = now + INTERVAL
             token = item['claim'] = uuid.uuid4().hex
             claims.append((identifier, token, event))
+    routine = []
     for identifier, token, event in claims:
         disposition = calendar_disposition(event, now)
         with state(directory) as value:
@@ -152,9 +162,23 @@ def tick(directory, now=None):
                 continue
             item['repeatCount'] = int(item.get('repeatCount', 0)) + 1
             item['dueAt'] = now + repeat_interval(item['repeatCount'])
+        if smart and identifier in ROUTINE:
+            routine.append((identifier,token,event))
+            continue
         try:
             run_indoor_homepod_announcement('Unacknowledged announcement: ' + event['message'], 'dr_house_unacknowledged')
         except Exception:
             pass  # An uncertain delivery also backs off; never a tight loop.
         attempted += 1
+    if routine:
+        order = routine_order(directory,[i for i,_,_ in routine],now)
+        # Model ranking runs outside the queue lock; acknowledge cancels claims.
+        with state(directory) as value:
+            ready = {i:e for i,t,e in routine if value.get('pending',{}).get(i,{}).get('claim')==t
+                     and condition(directory,i,now) is True}
+        if ready:
+            message = 'Home reminder. '+' '.join(dict.fromkeys(ready[i]['message'] for i in order if i in ready))
+            try: run_indoor_homepod_announcement(message,'dr_house_unacknowledged')
+            except Exception: pass
+            attempted += len(ready)
     return attempted
