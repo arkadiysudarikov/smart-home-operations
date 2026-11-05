@@ -70,6 +70,25 @@ class Operations(unittest.TestCase):
         self.assertFalse(report['complete']);self.assertEqual(report['findings'],[])
         self.assertEqual(report['coverage']['appleHome'],'stale_manual_review')
 
+    def test_jev_reorders_household_attention_without_demoting_temperature(self):
+        self.put('jev_house_advice.json',{'model':'jev-1.13.0','at':self.now,'choices':{'attention':'energy'}})
+        pending=['door:garage','cooling:bedroom','temperature:kitchen']
+        self.assertEqual(h.household_order(self.data,pending,self.now),
+                         ['temperature:kitchen','cooling:bedroom','door:garage'])
+
+    def test_disabled_inspected_camera_mirror_is_detected(self):
+        self.put('home_automation_review.json',{'reviewedAt':self.at(),'rules':[
+            {'enabled':False,'trigger':'garage-motion','target':'garage-camera-mirror','action':'on'}]})
+        self.assertIn('home_camera_rule',{x['id'] for x in h.consistency(self.data,{},self.now)['findings']})
+
+    def test_local_runtime_reports_connection_failure_without_operating_devices(self):
+        config={'platforms':[{'platform':'SmartHQ','_bridge':{'port':12345}}]}
+        with patch('home_operations.socket.create_connection',side_effect=OSError), \
+             patch('home_operations.urllib.request.urlopen',side_effect=OSError):
+            report=h.local_runtime(config,self.now)
+        self.assertFalse(report['ok'])
+        self.assertEqual(report['checks'],{'SmartHQ':False,'householdActions':False})
+
     def test_conflicting_garage_timers_and_unguarded_away_are_detected_without_controls(self):
         self.put('latest_automation_consistency_sources.json',{'generatedAt':self.at(),'automationRules':{
             'ok':True,'garageLightRules':[{'isPaused':False,'followUpAction':'Turn OFF after 5 mins'}]}})

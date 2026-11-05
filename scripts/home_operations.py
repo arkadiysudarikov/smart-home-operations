@@ -9,6 +9,8 @@ import json
 import math
 import subprocess
 import shlex
+import socket
+import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -49,6 +51,21 @@ def condition(data, identifier, now):
         if all(type(v) in (int,float) and math.isfinite(v) for v in (watts,threshold)) and threshold > 0:
             return watts >= threshold
         return None
+    if identifier == 'energy_ok_off':
+        energy = load(data/'energy_ok_announcement.json')
+        if fresh(energy,'updatedAt',now) and type(energy.get('energyOkActive')) is bool:
+            return not energy['energyOkActive']
+        return None
+    if identifier == 'energy_low':
+        from jev_energy_monitor import sample_from
+        from energy_low import baseline,context
+        sample = sample_from(data,now)
+        if sample.get('verified') is not True or context(sample) is None:
+            return None
+        usual = baseline(sample,load(data/'jev_energy_state.json').get('history',[]),
+                         datetime.fromtimestamp(now,timezone.utc))
+        if usual is None:return None
+        return sample['load_kw'] <= usual*.5 and usual-sample['load_kw'] >= .3
     if identifier in ('washer','dryer','combo'):
         laundry = load(data/'latest_smarthq_laundry_state.json')
         device = laundry.get('devices',{}).get(identifier,{})
@@ -77,6 +94,15 @@ def routine_order(data, identifiers, now):
                  and type(at) in (int,float) and 0 <= now-at <= 600 else None)
     preferred = {'detergent':'detergent_tank_low','energy':'energy_high_on'}.get(attention)
     return sorted(identifiers, key=lambda key:(key != preferred, key))
+
+
+def household_order(data, pending, now):
+    advice = load(data/'jev_house_advice.json');at=advice.get('at')
+    attention = (advice.get('choices',{}).get('attention') if advice.get('model')=='jev-1.13.0'
+                 and type(at) in (int,float) and 0 <= now-at <= 600 else None)
+    def category(key):
+        return 'temperature' if key.startswith('temperature:') else 'energy' if key.startswith('cooling:') else 'openings'
+    return sorted(pending,key=lambda key:(category(key)!='temperature',category(key)!=attention))
 
 
 def solar_sample(envoy, now, minimum=1000):
@@ -187,6 +213,11 @@ def consistency(data, homebridge, now):
             groups.setdefault(key,set()).add(row.get('action'))
         if any({'on','off'} <= actions for actions in groups.values()):
             findings.append({'id':'home_opposite_actions','message':'Apple Home contains opposing actions for the same trigger and target. Review the conflicting automations.'})
+        for trigger,target,action in [('garage-motion','garage-camera-mirror','on'),('garage-no-motion','garage-camera-mirror','off')]:
+            covered = any(r.get('trigger')==trigger for r in home.get('rules',[]))
+            if covered and not any(r.get('trigger')==trigger and r.get('target')==target
+                                   and r.get('action')==action for r in active):
+                findings.append({'id':'home_camera_rule','message':'An inspected Apple Home camera-mirror rule is disabled or conflicts with occupancy control. Review the garage motion automations.'})
     return {'generatedAt':datetime.fromtimestamp(now,timezone.utc).isoformat(),
             'findings':list({f['id']:f for f in findings}.values()),
             'coverage':{'alarmRules':'fresh' if alarm_fresh else 'unknown',
@@ -215,7 +246,28 @@ def health_issues(data, now, review):
     rules = load(data/'latest_automation_consistency_sources.json')
     if not fresh(rules,'generatedAt',now,3600) or rules.get('ok') is False:
         issues['rules_source'] = 'The automatic Alarm.com rule check cannot obtain current rules. Check the saved Alarm.com session.'
+    runtime = load(data/'latest_home_local_runtime.json')
+    if fresh(runtime,'generatedAt',now) and runtime.get('ok') is False:
+        issues['local_runtime'] = 'A critical local Homebridge bridge or the household action service is unreachable. Check the local home services.'
     return issues
+
+
+def local_runtime(homebridge, now):
+    checks = {}
+    for row in homebridge.get('platforms',[]):
+        platform = row.get('platform')
+        if platform not in ('Alarmdotcom','SmartHQ','HomebridgeDummy','SmartHomeActions') or row.get('disabled') is True:
+            continue
+        port = row.get('_bridge',{}).get('port')
+        if type(port) is not int or not 1 <= port <= 65535:continue
+        try:
+            with socket.create_connection(('127.0.0.1',port),timeout=.5):checks[platform]=True
+        except OSError:checks[platform]=False
+    try:
+        with urllib.request.urlopen('http://127.0.0.1:18765/health',timeout=2) as response:
+            checks['householdActions'] = response.status==200
+    except OSError:checks['householdActions']=False
+    return {'generatedAt':datetime.fromtimestamp(now,timezone.utc).isoformat(),'ok':all(checks.values()),'checks':checks}
 
 
 def incidents(previous, issues, now, hold=600):
@@ -313,16 +365,20 @@ def main():
         from generate_alerts import run_indoor_homepod_announcement
         from washer_notifier import mac_notification
         hb = load(Path.home()/'.homebridge/config.json')
+        save(data/'latest_home_local_runtime.json',local_runtime(hb,datetime.now(timezone.utc).timestamp()))
         report=tick(data,datetime.now(timezone.utc).timestamp(),config,
                     deliver=run_indoor_homepod_announcement if args.deliver else None,
                     notify=mac_notification if args.deliver else None,homebridge=hb)
         # Advice stays bounded, private and optional. Only changed issue categories
         # request a review; never poll the model on every watt/countdown change.
-        fingerprint = hashlib.sha256(json.dumps(sorted(report['issues'])).encode()).hexdigest()
+        pending = load(data/'announcement_ack.json').get('pending',{})
+        routine = sorted(set(pending).intersection(ROUTINE))
+        fingerprint = hashlib.sha256(json.dumps([sorted(report['issues']),routine,report['laundryAdvice']['status']]).encode()).hexdigest()
         attempt = load(data/'home_operations_model_review.json')
         now = datetime.now(timezone.utc).timestamp()
         if (args.deliver and fingerprint != attempt.get('fingerprint')
-                and report['issues'] and now-attempt.get('at',0) >= config.get('model_review_seconds',1800)):
+                and (report['issues'] or routine or report['laundryAdvice']['status']=='solar_opportunity')
+                and now-attempt.get('at',0) >= config.get('model_review_seconds',1800)):
             save(data/'home_operations_model_review.json',{'at':now,'fingerprint':fingerprint})
             from jev_house_advisor import refresh
             report['modelReview'] = refresh(data,now)

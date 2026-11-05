@@ -44,8 +44,22 @@ input and starts a Codex CLI request in `Documents/Codex Voice Tasks`. It keeps
 ordinary on-request approval and workspace-write sandboxing, saves private job
 records, and offers a separate status command. Dictation is never interpolated
 into a shell command. There is no listening server or new remote credential.
-The Shortcuts/on-device Siri path and Muse integration must be validated
-separately; a successful CLI test is only backend evidence.
+Two Mac shortcuts are installed: **In Codex** asks for the request, submits it,
+and confirms acceptance; **Codex Request Status** reads the latest result.
+Both were exercised through the actual Shortcuts UI on November 5, 2026:
+the submitted harmless request finished and the status shortcut displayed
+"Codex finished. Siri shortcut handoff verified." This does not prove Siri
+recognition. The Mac's Siri settings currently say support is being added and
+Siri is unavailable until its update completes. These shell-script shortcuts
+are Mac interfaces; iCloud name synchronization does not make them executable
+on iPhone. A single utterance containing arbitrary trailing arguments is not
+established; the supported interaction asks for text after invocation.
+
+Muse 11.0 (`com.meta.endo`) has a native call action and a connected WhatsApp
+channel. No Muse-specific Mac Shortcuts action was found. iPhone-only action
+inspection remains blocked by iPhone Mirroring reconnecting to its Mac-password
+screen. No guessed URL route, recipient, new account or background keystroke
+script has been installed.
 
 ## Engineering tradeoffs requested by the owner
 
@@ -67,3 +81,25 @@ Residual limits: this does not infer stationary-person occupancy from camera
 motion, provide per-announcement HomePod playback receipts, establish unverified
 meter wiring, or autonomously change security policy. Siri submission remains
 a separate user-directed interface, not an expansion of unattended home control.
+
+## Validation and live coverage
+
+The independent scheduler has executed successfully in the deployed runtime.
+Alarm.com returned 27 automation rules and 12 recording rules using its exact
+JSON API media type; mixed Accept values had returned HTTP 500. The four garage
+light rules have no fixed off action, and both doorbell recording rules are
+enabled. This verifies saved rules, not natural person detection or stationary
+occupancy behavior.
+
+The current Apple Home review lists six automations and directly inspects the
+garage motion, garage no-motion and last-person-departure actions. The motion
+rule has no fixed off timer; clearance resets the mirror. Departure invokes the
+existing dog-aware controller and turns Garage Light off. The remaining actions
+are not represented as fully audited. A daily 09:00 Pacific read-only Home UI
+review refreshes only observed metadata; the independent monitor debounces and
+reports actionable findings. No rule, door, lock or alarm was operated by checks.
+
+Local bridge TCP and household-action HTTP probes establish reachability only.
+The monitor does not confuse them with actual appliance control, Home pairing,
+or HomePod playback receipts. Sustained natural solar advice and new real fault
+notifications remain unobserved until their conditions occur.
