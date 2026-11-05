@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import math
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -17,6 +17,12 @@ REPORT_DIR = ROOT / "reports"
 OUT_JSON = DATA_DIR / "latest_combined_energy_monitor.json"
 OUT_REPORT = REPORT_DIR / "combined_energy_monitor.md"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+
+
+def expected_day_intervals(day: str) -> int:
+    start = datetime.fromisoformat(day).replace(tzinfo=LOCAL_TZ)
+    end = start + timedelta(days=1)
+    return int((end.timestamp() - start.timestamp()) / 900)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -434,7 +440,7 @@ def load_sce_daily_totals() -> dict[str, dict[str, Any]]:
             add_sum(item, "sceNetImportKwh", row.get("net_import_kwh"))
             item["sceIntervalCount"] = int(item.get("sceIntervalCount") or 0) + 1
     for item in daily.values():
-        item["sceComplete"] = item.get("sceIntervalCount") in {92, 96, 100}
+        item["sceComplete"] = item.get("sceIntervalCount") == expected_day_intervals(item["date"])
     return daily
 
 
@@ -508,8 +514,8 @@ def build_daily_summary(
     today = datetime.now(timezone.utc).astimezone().date().isoformat()
     for day in sorted(days):
         item = days[day]
-        item["envoyComplete"] = item.get("envoyIntervalCount") in {92, 96, 100}
-        item["senseIntervalComplete"] = item.get("senseIntervalCount") in {92, 96, 100}
+        item["envoyComplete"] = item.get("envoyIntervalCount") == expected_day_intervals(day)
+        item["senseIntervalComplete"] = item.get("senseIntervalCount") == expected_day_intervals(day)
         item["senseComplete"] = bool(item.get("senseTrendAvailable") and day < today)
         cp = num(item.get("chargepointKwh"))
         site = num(item.get("envoySiteLoadKwh")) or num(item.get("alarmEnergyClampKwh"))
