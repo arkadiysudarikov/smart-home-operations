@@ -3335,6 +3335,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+        if path == "/status/services":
+            import service_health
+            return 200, service_health.build(DATA_DIR, datetime.now(timezone.utc).timestamp())
         if path == "/health":
             return 200, {"ok": True}
         if path == "/status":

@@ -25,6 +25,7 @@ DB_PATH = DATA_DIR / "smart_home.sqlite"
 SOURCE_ROOT = Path.home() / "Documents" / "Smart Home"
 RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor"
 DRIFT_CHECK_FILES = [
+    "scripts/service_health.py",
     "scripts/deploy_runtime.py",
     "scripts/deploy_actions_plugin.py",
     "scripts/configure_garage_camera_hooks.py",
@@ -572,7 +573,7 @@ def collect_log_signals(lines: list[str]) -> dict[str, Any]:
         "runStartedAt": parse_log_timestamp(first_timestamp) if first_timestamp else None,
         "latestTimestamp": latest_timestamp,
         "alarmWebsocketEstablished": "WebSocket connection established" in joined,
-        "moparLoginSuccessful": "Login successful" in joined and "[Mopar]" in joined,
+        "moparLoginSuccessful": any("[Mopar]" in line and "Login successful" in line for line in lines),
         "unifiOccupancy": {
             "trackedAccessories": len(unifi_status),
             "active": sorted([name for name, state in unifi_status.items() if state == "active"]),

@@ -195,6 +195,14 @@ class RefreshEnergyTest(unittest.TestCase):
                 refresh_energy.REPORT_DIR = original_report_dir
                 refresh_energy.STATUS_PATH = original_status_path
 
+    def test_optional_fault_is_visible_without_failing_the_refresh(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp, patch.object(refresh_energy,'DATA_DIR',Path(tmp)), patch.object(refresh_energy,'write_status'):
+            result=refresh_energy.finalize_status({},[{'name':'announcement_health','ok':False,'optional':True}],'fast')
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['status'],'complete')
+        self.assertEqual(result['operationalStatus'],'degraded')
+
     def test_finalize_status_marks_required_failures_failed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             original_data_dir = refresh_energy.DATA_DIR

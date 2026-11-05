@@ -15,6 +15,28 @@ class Features(unittest.TestCase):
         self.data=Path(self.temp.name)
         self.now=datetime(2026,9,30,2,5,tzinfo=timezone.utc).timestamp()
 
+    def test_tariff_hint_is_conditional_expiring_and_keeps_bills_private(self):
+        source='https://www.sce.com/save-money/rates-financing/residential-rate-plans/time-of-use-plans'
+        profile={'plan':'TOU-D-PRIME','billing':'solar_billing_plan','scheduleSource':source,
+            'scheduleVerifiedAt':self.solar_at(self.now),'accountBillAt':self.solar_at(self.now-120*86400),
+            'accountBillSha256':'a'*64,'privateAccount':'PRIVATE ACCOUNT'}
+        f.save(self.data/'verified_tariff_profile.json',profile)
+        with patch('generate_alerts.solar_surplus_sample',return_value=None):
+            # Test setup is September; winter advice must not leak into summer.
+            e=f.enrich(self.data,evidence(),self.now)
+            self.assertFalse(e['tariff_hint_available'])
+            winter=datetime(2026,11,5,20,tzinfo=timezone.utc).timestamp()
+            profile['scheduleVerifiedAt']=self.solar_at(winter)
+            f.save(self.data/'verified_tariff_profile.json',profile)
+            e=f.enrich(self.data,evidence(),winter)
+            self.assertTrue(e['tariff_hint_available']);self.assertTrue(e['tariff_low_window_now'])
+            text=f.render('laundrytime',e,{})
+            self.assertIn('If that plan is unchanged',text)
+            self.assertIn('not a cheapest-hour guarantee',text)
+            self.assertNotIn('PRIVATE',str(a.request(e)))
+            self.assertNotIn(source,str(a.request(e)))
+            self.assertFalse(f.enrich(self.data,evidence(),winter+31*86400)['tariff_hint_available'])
+
     def test_model_cannot_invent_solar_or_defer_urgent(self):
         e=evidence(solar_window=False)
         c=a.validated(response(timing='solar',defer='energy'),e)
@@ -36,14 +58,38 @@ class Features(unittest.TestCase):
         result=f.render('unusual',evidence(),{'oddity':'cooling'})
         self.assertIn('Cooling',result); self.assertIn('not confirmed finished',result)
 
-    def test_solar_requires_ten_minutes_and_fresh_samples(self):
-        e=evidence()
-        with patch('generate_alerts.solar_surplus_sample',return_value=('now',True)), patch('announcement_pause.active',return_value=False):
-            f.scheduled(self.data,e,{},self.now,{},None)
-            self.assertFalse(f.enrich(self.data,e,self.now)['solar_window'])
-            for offset in range(120,721,120): f.scheduled(self.data,e,{},self.now+offset,{},None)
-            self.assertTrue(f.enrich(self.data,e,self.now+720)['solar_window'])
-            self.assertFalse(f.enrich(self.data,e,self.now+1000)['solar_window'])
+    def solar_at(self, seconds):
+        return datetime.fromtimestamp(seconds,timezone.utc).isoformat()
+
+    def test_solar_requires_ten_minutes_of_meter_readings(self):
+        for offset in range(0,601,120):
+            with patch('generate_alerts.solar_surplus_sample',return_value=(self.solar_at(self.now+offset),True)):
+                f.scheduled(self.data,evidence(),{},self.now+offset,{},None)
+                self.assertEqual(f.enrich(self.data,evidence(),self.now+offset)['solar_window'],offset>=600)
+        with patch('generate_alerts.solar_surplus_sample',return_value=None):
+            self.assertFalse(f.enrich(self.data,evidence(),self.now+1000)['solar_window'])
+
+    def test_polling_cannot_inflate_slow_meter_history(self):
+        for offset in range(0,601,120):
+            at=self.solar_at(self.now+offset*.6)
+            with patch('generate_alerts.solar_surplus_sample',return_value=(at,True)):
+                f.scheduled(self.data,evidence(),{},self.now+offset,{},None)
+                self.assertFalse(f.enrich(self.data,evidence(),self.now+offset)['solar_window'])
+
+    def test_repeated_rollback_gap_and_legacy_samples_do_not_qualify(self):
+        for offset in range(0,241,120):
+            with patch('generate_alerts.solar_surplus_sample',return_value=(self.solar_at(self.now),True)):
+                f.scheduled(self.data,evidence(),{},self.now+offset,{},None)
+        state=f.load(self.data/'jev_solar_window.json')
+        self.assertEqual(state['since'],state['last_sample'])
+        for offset in (120,720):
+            with patch('generate_alerts.solar_surplus_sample',return_value=(self.solar_at(self.now+offset),True)):
+                f.scheduled(self.data,evidence(),{},self.now+offset,{},None)
+                self.assertFalse(f.enrich(self.data,evidence(),self.now+offset)['solar_window'])
+        f.save(self.data/'jev_solar_window.json',{'active':True,'since':self.solar_at(self.now-1000),'last':self.solar_at(self.now)})
+        with patch('generate_alerts.solar_surplus_sample',return_value=(self.solar_at(self.now),True)):
+            f.scheduled(self.data,evidence(),{},self.now,{},None)
+            self.assertFalse(f.enrich(self.data,evidence(),self.now)['solar_window'])
 
     def test_recap_once_occupied_evening_and_unpaused(self):
         send=Mock(return_value={'status':'accepted'}); config={'evening_recap_enabled':True}

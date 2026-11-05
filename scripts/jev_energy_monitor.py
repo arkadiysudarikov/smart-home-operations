@@ -79,7 +79,30 @@ def review_request(sample, usual):
                          'insufficient_data': 'Any context or baseline is unknown.'}}}}
 
 
+def review_allowed(sample, usual):
+    if (sample.get('verified') is not True or low.context(sample) is None
+            or not low.number(sample.get('load_kw')) or not low.number(usual) or usual <= 0):
+        return {'insufficient_data'}
+    if sample['load_kw'] < usual * .5:
+        return {'unusual_low'}
+    if sample['load_kw'] > usual * 2:
+        return {'unusual_high'}
+    return {'typical'}
+
+
 def tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
+    # Serialize scheduled and interactive advice: both publish the same cache/attempt files.
+    if not mutate:
+        return _tick(data, config, now, mutate=False, ask=ask, deliver=deliver)
+    with (data/'jev_house.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return {'status':'busy','reviewStatus':'busy','calls':0}
+        return _tick(data, config, now, mutate=True, ask=ask, deliver=deliver)
+
+
+def _tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
     sample = sample_from(data, now)
     path = data/'jev_energy_state.json'
     state = load(path)
@@ -128,13 +151,17 @@ def tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
     candidate_due = decision['status'] == 'needs_jev' and now-last_call >= 21600
     report['reviewStatus'] = ('dry_run' if not mutate else 'stale_power' if not sample['verified']
         else 'quiet_hours' if not daytime(now) else 'due' if review_due or candidate_due else 'cooldown')
-    if mutate and sample['verified'] and daytime(now) and (review_due or candidate_due):
+    last_attempt = load(data/'jev_house_attempt.json').get('at',0)
+    shared_ready = low.number(last_attempt) and now-last_attempt >= 300
+    if not shared_ready and report['reviewStatus']=='due': report['reviewStatus']='cooldown'
+    if mutate and shared_ready and sample['verified'] and daytime(now) and (review_due or candidate_due):
         state['lastCall'] = now
         if evening_due: state['eveningReviewDay'] = local.date().isoformat()
         save(path, state)
         report['callAttempted'] = True
         is_candidate = candidate_due
-        request = decision['request'] if is_candidate else review_request(sample, low.baseline(sample, history, low.timestamp(now_text)))
+        usual = low.baseline(sample, history, low.timestamp(now_text))
+        request = decision['request'] if is_candidate else review_request(sample, usual)
         try:
             if not is_candidate:
                 batch = advisor.request(evidence)
@@ -164,10 +191,10 @@ def tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
                         report['delivery'] = deliver(result['message'], 'energy_low').get('status')
             else:
                 advisor.remember(data, evidence, response, now)
-                answer = response.get('answers', {}).get('energy_review', {})
-                choice = answer.get('choice')
-                if response.get('model') != 'jev-1.13.0' or answer.get('type') != 'choice' or choice not in request['questions']['energy_review']['criteria']:
-                    raise ValueError('Invalid advisory answer')
+                choice = advisor.validated_choice(response, 'energy_review',
+                    request['questions']['energy_review']['criteria'], review_allowed(sample, usual))
+                if choice is None:
+                    raise ValueError('Invalid or unsupported advisory answer')
                 report['advisory'] = choice
                 state['lastAdvisory'] = {'at': now_text, 'choice': choice}
         except Exception as error:

@@ -299,6 +299,7 @@ def finalize_status(
             "stepSummary": summarize_steps(steps),
             "requiredFailures": [step["name"] for step in required_failed],
             "optionalFailures": [step["name"] for step in optional_failed],
+            "operationalStatus": "unknown" if status == "interrupted" else "degraded" if required_failed or optional_failed else "checks_passed",
             "sceCoverageEnd": sce_summary.get("coverageEnd"),
             "sceIntervalRows": sce_summary.get("intervalCount") or sce_api.get("intervalRows"),
             "combinedEnergyGeneratedAt": combined.get("generatedAt"),
@@ -577,6 +578,7 @@ def main() -> int:
             independent = {'capture_smarthq_laundry', 'recover_smarthq_laundry', 'washer_notifier', 'dryer_notifier', 'combo_notifier'}
             plan = [step for step in plan if step[0] not in independent]
         # Independent optional model step; never blocks laundry or changes its rules.
+        plan.append(("service_health", [py, "scripts/service_health.py", "--write"], 15, True, False, None))
         plan.append(("jev_energy", [py, "scripts/jev_energy_monitor.py", "--deliver"], 60, True, False, None))
         for name, command, timeout, optional, is_node, skip_reason in plan:
             if command is None:
