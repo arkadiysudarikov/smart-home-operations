@@ -105,6 +105,20 @@ class AnalyzeAllEnergyReadingsTest(unittest.TestCase):
         self.assertEqual(pair["envoyProductionKwhEstimate"], 0.0)
         self.assertNotIn("envoyProductionKwhEstimate", pair.get("invalidMetrics", []))
 
+    def test_interval_estimate_rejects_missing_boundaries_and_long_outage(self) -> None:
+        start = analyze_all_energy_readings.parse_iso("2026-07-15T10:00:00-07:00")
+        end = analyze_all_energy_readings.parse_iso("2026-07-15T10:15:00-07:00")
+        from datetime import timedelta
+        for samples in [
+            [{"capturedAt": start, "kw": 2.0}],
+            [{"capturedAt": start - timedelta(hours=1), "kw": 2.0},
+             {"capturedAt": start, "kw": 2.0},
+             {"capturedAt": end + timedelta(hours=1), "kw": 2.0}],
+        ]:
+            with self.subTest(samples=samples):
+                index = analyze_all_energy_readings.build_sample_index(samples)
+                self.assertIsNone(analyze_all_energy_readings.estimate_interval_kwh(index, start, end))
+
     def test_interval_estimate_uses_time_weighted_integration(self) -> None:
         start = analyze_all_energy_readings.parse_iso("2026-07-15T10:00:00-07:00")
         end = analyze_all_energy_readings.parse_iso("2026-07-15T10:15:00-07:00")

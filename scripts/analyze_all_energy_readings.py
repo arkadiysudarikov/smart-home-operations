@@ -389,6 +389,14 @@ def estimate_interval_kwh(index: dict[str, list[float]], start: datetime, end: d
     values = index["values"]
     start_ts = start.timestamp()
     end_ts = end.timestamp()
+    # Require bracketing measurements and reject outages longer than one
+    # quarter-hour. A lone sample must not become a full interval estimate.
+    if timestamps[0] > start_ts or timestamps[-1] < end_ts:
+        return None
+    first = max(0, bisect.bisect_right(timestamps, start_ts) - 1)
+    last = bisect.bisect_left(timestamps, end_ts)
+    if any(timestamps[i + 1] - timestamps[i] > 900 for i in range(first, last)):
+        return None
     left = bisect.bisect_left(timestamps, start_ts)
     right = bisect.bisect_right(timestamps, end_ts)
     if left == right:
