@@ -204,7 +204,7 @@ def write_report(pairs: list[dict[str, Any]]) -> None:
                 "",
                 f"- Recent pairs summarized: `{len(recent)}`",
                 "- Sense `Watts` is treated as Sense whole-home usage/load, not grid import/export.",
-                "- Sense total appears to exclude Enphase battery charge/discharge; the closest Envoy comparator is `Consumption Total - abs(Storage)`.",
+                "- Compare Sense monitored load with `Consumption Total + signed Storage`; confirm physical measurement coverage before treating either as whole-house load.",
                 "- Envoy `Consumption Net` is grid import/export after solar, not a Sense load comparator.",
                 f"- Average raw Envoy total minus Sense: `{avg_delta:.3f} kW`",
                 f"- Average Sense / raw Envoy total ratio: `{avg_ratio:.1%}`",
