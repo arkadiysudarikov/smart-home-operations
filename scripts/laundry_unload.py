@@ -11,6 +11,10 @@ def acknowledge_unloaded(root, appliance):
     data = root / 'data'
     now = datetime.now(timezone.utc).isoformat()
     with transaction(data, appliance) as state:
+        if (not state.get('awaitingUnload') and not state.get('reminderLatched')
+                and state.get('unloadedBy') != 'user'):
+            return {'ok': True, 'appliance': appliance, 'alreadyClear': True,
+                    'message': f'{appliance.title()} has no pending unload reminder.'}
         state.update(awaitingUnload=False, reminderLatched=False,
                      reminderPulseUntil=None, finishPulseUntil=None,
                      unloadedAt=now, unloadedBy='user')

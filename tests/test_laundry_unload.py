@@ -10,6 +10,14 @@ import washer_notifier
 
 
 class LaundryUnloadTest(unittest.TestCase):
+    def test_no_pending_unload_does_not_invent_an_unload_event(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            result = laundry_unload.acknowledge_unloaded(root, 'washer')
+            self.assertTrue(result['alreadyClear'])
+            saved = json.loads((root/'data/washer_notifier_state.json').read_text())
+            self.assertNotIn('unloadedAt', saved)
+
     def test_acknowledgement_persists_and_only_clears_selected_appliance(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
