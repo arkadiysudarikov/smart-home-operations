@@ -118,3 +118,18 @@ Quiet until morning; When should I leave; Anything unusual). They have no SSH
 host to migrate and were not represented as working commands by this change.
 Phone sync, acoustic delivery, and Siri voice recognition remain separate checks,
 not established by relay acceptance.
+
+## November 5 service review
+
+Household questions now include evidence-gated service triage and security or
+detergent maintenance. `/status/services` and runtime `reports/service_health.md`
+separate configured bridges, reachable bridges, fresh source results, disabled
+integrations, and manual functional verification. Model inputs contain only
+fixed fault categories and counts; labels, device IDs, raw logs, and calendar
+contents remain local.
+
+Scheduled energy advice uses the same strict Choice validation as household
+advice, with a local classification gate. Solar timing measures meter timestamp
+span rather than scheduler duration. Automatic evening recaps skip unchanged
+accepted issue sets; on-request recaps remain available. Interactive and scheduled
+reviews share their publication lock and five-minute attempt cooldown.

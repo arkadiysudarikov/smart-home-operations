@@ -14,6 +14,13 @@ import jev_laundry_review as transport
 NOW = datetime(2026,9,28,19,tzinfo=timezone.utc)
 
 
+def review_response(choice, **extra):
+    options = ('unusual_low','unusual_high','typical','insufficient_data')
+    return {'model':'jev-1.13.0','answers':{'energy_review':{
+        'type':'choice','choice':choice,'confidence':1.,
+        'probabilities':{k:float(k == choice) for k in options}, **extra}}}
+
+
 class MonitorTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -21,6 +28,43 @@ class MonitorTests(unittest.TestCase):
         self.data = Path(self.temp.name)
         self.sample = {'at': NOW.isoformat(), 'source': 'sense_whole_house', 'load_kw': .3,
                        'verified': True, 'home': True, 'hvac': False, 'ev': False}
+
+    def test_advisory_rejects_missing_low_or_invalid_confidence_and_distribution(self):
+        responses = [review_response('insufficient_data', confidence=0),
+                     review_response('insufficient_data', confidence=True),
+                     review_response('insufficient_data', probabilities={}),
+                     review_response('insufficient_data', confidence=float('nan')),
+                     {'model':'jev-1.13.0','answers':{'energy_review':{'type':'choice','choice':'insufficient_data'}}}]
+        for response in responses:
+            with self.subTest(response=response), patch.object(j,'sample_from',return_value=self.sample):
+                (self.data/'jev_energy_state.json').unlink(missing_ok=True)
+                (self.data/'jev_house_attempt.json').unlink(missing_ok=True)
+                result=j.tick(self.data,{'enabled':True},NOW.timestamp(),mutate=True,ask=lambda _:response)
+                self.assertNotIn('advisory', result)
+                self.assertEqual(result['reviewStatus'],'unavailable')
+
+    def test_advisory_requires_local_context_and_matching_baseline(self):
+        with patch.object(j,'sample_from',return_value={**self.sample,'ev':None}):
+            result=j.tick(self.data,{'enabled':True},NOW.timestamp(),mutate=True,
+                          ask=lambda _:review_response('typical'))
+        self.assertNotIn('advisory',result)
+        self.assertNotIn('lastAdvisory',j.load(self.data/'jev_energy_state.json'))
+        for watts,expected in ((.9,'unusual_low'),(1,'typical'),(4,'typical'),(4.1,'unusual_high')):
+            self.assertEqual(j.review_allowed({**self.sample,'load_kw':watts},2),{expected})
+        self.assertEqual(j.review_allowed(self.sample,None),{'insufficient_data'})
+
+    def test_scheduled_and_interactive_requests_share_lock_and_cooldown(self):
+        import fcntl
+        ask=Mock()
+        with (self.data/'jev_house.lock').open('a') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            result=j.tick(self.data,{'enabled':True},NOW.timestamp(),mutate=True,ask=ask)
+            self.assertEqual(result['status'],'busy')
+        j.save(self.data/'jev_house_attempt.json',{'at':NOW.timestamp()-10})
+        with patch.object(j,'sample_from',return_value=self.sample):
+            result=j.tick(self.data,{'enabled':True},NOW.timestamp(),mutate=True,ask=ask)
+        self.assertEqual(result['reviewStatus'],'cooldown')
+        ask.assert_not_called()
 
     def test_dry_run_never_calls_or_writes(self):
         ask = Mock()
@@ -34,7 +78,7 @@ class MonitorTests(unittest.TestCase):
         def ask(payload):
             self.assertEqual(json.loads((self.data/'jev_energy_state.json').read_text())['lastCall'],NOW.timestamp())
             self.assertNotIn('at',payload['state'])
-            return {'model':'jev-1.13.0','answers':{'energy_review':{'type':'choice','choice':'insufficient_data'}}}
+            return review_response('insufficient_data')
         with patch.object(j,'sample_from',return_value=self.sample):
             report = j.tick(self.data,{'enabled':True},NOW.timestamp(),mutate=True,ask=ask)
             self.assertEqual(report['calls'],1)

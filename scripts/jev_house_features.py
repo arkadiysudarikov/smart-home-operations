@@ -1,4 +1,6 @@
 """Evidence-only household features; no arbitrary model prose or device controls."""
+import hashlib
+import json
 from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from additional_announcements import load, save, stamp
@@ -6,7 +8,7 @@ from additional_announcements import load, save, stamp
 LOCAL = ZoneInfo('America/Los_Angeles')
 OPTIONS = {
     'change': {'energy':'Energy status changed', 'openings':'Reporting opening count changed',
-               'laundry':'Laundry countdown availability changed', 'none':'No comparable change'},
+               'laundry':'Laundry countdown availability changed', 'services':'Service fault status changed', 'none':'No comparable change'},
     'defer': {'energy':'Energy optimization can wait', 'none':'No supported deferral'},
     'timing': {'solar':'Sustained measured solar surplus now', 'unknown':'No verified best time'},
     'oddity': {'laundry':'Laundry status conflicts with countdown', 'cooling':'Cooling with an opening',
@@ -27,23 +29,29 @@ def enrich(data, e, now):
             # Do not turn countdown progress into repeated changes or imply completion.
             comparable = False
         if comparable and e[key] != old[key]: changes.append(category)
+    if any(type(old.get('service_faults',{}).get(k)) is bool and type(v) is bool
+           and old['service_faults'][k] != v for k,v in e.get('service_faults',{}).items()):
+        changes.append('services')
     import generate_alerts as alerts
     solar = alerts.solar_surplus_sample(load(data/'latest_envoy_direct.json'),
         datetime.fromtimestamp(now,timezone.utc).isoformat())
     solar_state = load(data/'jev_solar_window.json')
     sustained = (solar is not None and solar[1] is True and solar_state.get('active') is True
         and 0 <= now-stamp(solar_state.get('last')) <= 180
-        and 600 <= now-stamp(solar_state.get('since')) <= 86400)
+        and solar[0] == solar_state.get('last_sample')
+        and 600 <= stamp(solar_state.get('last_sample'))-stamp(solar_state.get('since')) <= 86400)
     return {**e, 'changes':changes, 'comparison_available':bool(old), 'solar_window':bool(sustained)}
 
 
 def supported(e):
-    urgent = e.get('hot') or e.get('cold') or e.get('laundry_conflicts') or e.get('openings')
+    service_faults = e.get('service_faults',{})
+    urgent = (e.get('hot') or e.get('cold') or e.get('laundry_conflicts') or e.get('openings')
+              or any(service_faults.get(k) is True for k in ('alarm','laundry','homebridge')))
     odd = {'none'}
     if e.get('laundry_conflicts'): odd.add('laundry')
     if e.get('cooling_open'): odd.add('cooling')
     if e.get('away_high'): odd.add('energy')
-    issues = urgent or e.get('high')
+    issues = urgent or e.get('high') or e.get('detergent_low') is True or any(v is True for v in service_faults.values())
     return {'change':set(e.get('changes',[]))|{'none'},
         'defer':{'energy','none'} if e.get('high') is True and not urgent else {'none'},
         'timing':{'solar','unknown'} if e.get('solar_window') else {'unknown'},
@@ -52,14 +60,15 @@ def supported(e):
 
 def checkpoint(data, e, now):
     save(data/'jev_house_check_baseline.json', {'at':datetime.fromtimestamp(now,timezone.utc).isoformat(),
-        'facts':{k:e.get(k) for k in ('high','openings','reporting_openings','remaining_minutes')}})
+        'facts':{k:e.get(k) for k in ('high','openings','reporting_openings','remaining_minutes','service_faults')}})
 
 
 def render(mode,e,c):
     if mode=='changes':
         if not e.get('comparison_available'): return 'No recent check to compare. This check establishes a baseline.'
         messages={'energy':'Energy is now '+('high.' if e.get('high') else 'normal.'),
-            'openings':f"There are now {e.get('openings',0)} reporting openings or locks open or unlocked."}
+            'openings':f"There are now {e.get('openings',0)} reporting openings or locks open or unlocked.",
+            'services':'Household service fault status changed. Ask for the current attention report.'}
         keys=list(e.get('changes',[])); first=c.get('change')
         if first in keys: keys.remove(first); keys.insert(0,first)
         return ' '.join(messages[k] for k in keys if k in messages) or 'No changes in comparable energy and opening readings. Missing readings are not an all-clear.'
@@ -86,6 +95,12 @@ def render(mode,e,c):
     raise ValueError('Unknown feature')
 
 
+def recap_fingerprint(e):
+    # Ignore ordinary watt/countdown drift. Only changed issue facts merit a new automatic recap.
+    keys = ('hot','cold','laundry_conflicts','openings','high','detergent_low','service_faults')
+    return hashlib.sha256(json.dumps({k:e.get(k) for k in keys},sort_keys=True).encode()).hexdigest()
+
+
 def scheduled(data,e,c,now,config,deliver):
     """Track solar independently; recap once/day, occupied, unpaused, 19–20 local."""
     from generate_alerts import solar_surplus_sample
@@ -93,19 +108,34 @@ def scheduled(data,e,c,now,config,deliver):
     iso=datetime.fromtimestamp(now,timezone.utc).isoformat()
     sample=solar_surplus_sample(load(data/'latest_envoy_direct.json'),iso)
     solar=load(data/'jev_solar_window.json')
-    if sample and sample[1]:
-        if not solar.get('active') or not 0<=now-stamp(solar.get('last'))<=180:
-            solar={'since':iso}
-        solar.update(active=True,last=iso)
-    else: solar={'active':False,'last':iso}
+    if sample and sample[1] and 0 <= now-stamp(sample[0]) <= 300:
+        reading = stamp(sample[0])
+        previous = stamp(solar.get('last_sample'))
+        if (not solar.get('active') or not 0 <= now-stamp(solar.get('last')) <= 180
+                or not 0 <= reading-previous <= 300):
+            solar = {'since':sample[0]}
+        # Repeated samples do not advance the observed meter window.
+        solar.update(active=True, last=iso, last_sample=sample[0])
+    else:
+        solar = {'active':False, 'last':iso}
     save(data/'jev_solar_window.json',solar)
     local=datetime.fromtimestamp(now,LOCAL); day=local.date().isoformat()
     state=load(data/'jev_evening_recap.json')
+    fingerprint = recap_fingerprint(e)
+    if state.get('lastObservedFingerprint') != fingerprint:
+        # A changed episode may be announced again, even if it later returns to an old set.
+        state.pop('acceptedFingerprint',None)
+        state['lastObservedFingerprint'] = fingerprint
+        save(data/'jev_evening_recap.json',state)
     if (not config.get('evening_recap_enabled') or local.hour!=19 or e.get('owner_home') is not True
         or not e.get('daytime') or c.get('recap')!='issues' or active('jev_evening_recap')
         or state.get('day')==day or not deliver): return 'not_due'
+    if state.get('acceptedFingerprint') == fingerprint:
+        return 'unchanged'
     # Persist before dispatch; no retry storm or catch-up announcement overnight.
-    state={'day':day,'at':iso,'status':'attempted'}; save(data/'jev_evening_recap.json',state)
+    state={**state,'day':day,'at':iso,'status':'attempted'}; save(data/'jev_evening_recap.json',state)
     result=deliver(render('recap',e,c),'jev_evening_recap')
-    state['status']=result.get('status','unknown'); save(data/'jev_evening_recap.json',state)
+    state['status']=result.get('status','unknown')
+    if state['status']=='accepted': state['acceptedFingerprint']=fingerprint
+    save(data/'jev_evening_recap.json',state)
     return state['status']

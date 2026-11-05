@@ -14,6 +14,12 @@ SPEC.loader.exec_module(smart_home_snapshot)
 
 
 class SmartHomeSnapshotTest(unittest.TestCase):
+    def test_mopar_success_must_belong_to_mopar(self):
+        lines = ['[Mopar] Login failed', '[SmartHQ] Login successful']
+        self.assertFalse(smart_home_snapshot.collect_log_signals(lines)['moparLoginSuccessful'])
+        self.assertTrue(smart_home_snapshot.collect_log_signals(lines + ['[Mopar] Login successful'])['moparLoginSuccessful'])
+
+
     def test_homebridge_advertisements_detect_wrong_resolved_ip(self) -> None:
         config = {
             "bridge": {"name": "Main", "username": "0E:DE:C1:97:D1:CA", "port": 51179},

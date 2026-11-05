@@ -23,6 +23,17 @@ SPEC.loader.exec_module(action_server)
 
 
 class ActionServerTest(unittest.TestCase):
+    def test_service_status_is_read_only_and_does_not_claim_all_healthy(self):
+        handler=object.__new__(action_server.Handler)
+        handler.path,handler.command,handler.headers='/status/services','GET',{}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(action_server,'DATA_DIR',Path(tmp)), mock.patch.object(action_server,'run') as run:
+            status,payload=handler.route()
+        self.assertEqual(status,200)
+        self.assertFalse(payload['coverageComplete'])
+        self.assertIsNone(payload['faults']['alarm'])
+        run.assert_not_called()
+
+
     def test_garage_reconcile_route_exists_and_uses_adopter(self):
         handler = object.__new__(action_server.Handler)
         handler.path, handler.command, handler.headers = '/action/garage-reconcile', 'POST', {}
