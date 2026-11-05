@@ -29,3 +29,16 @@ follows Meadows' feedback lens: the reminder remains visible until observed or
 explicit feedback resolves the condition, rather than disappearing on a timer.
 Longer appliance-specific names trade compact Home tiles for explicit meaning at
 the user's request; existing accessory identities are preserved.
+
+## Verification and remaining Siri limitation
+
+600 tests and CI passed. The four washer/dryer names and both combo names were
+saved and verified in the Home app. The M4 acknowledgement endpoint returned
+alreadyClear=true for the running washer without fabricating an unload event.
+The three SSH shortcuts were installed and visible in the library. Actual SSH
+shortcut execution stalled on this Mac; a temporary HTTP comparison also stalled.
+Therefore spoken Siri execution and iPhone sync are not verified. A temporary
+washer shortcut duplicate remains from that diagnostic; native Shortcuts menu
+commands could not be applied through the computer-use interface. Do not call
+this end-to-end Siri proof. Family Remote's Include in Home Summaries switch was
+separately set off and verified in Home.
