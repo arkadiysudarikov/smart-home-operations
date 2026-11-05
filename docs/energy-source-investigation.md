@@ -68,3 +68,27 @@ CAPTCHA; no CAPTCHA was bypassed and no paid UtilityAPI collection was enabled.
 UtilityAPI's meter metadata separately shows monitoring off and a June 16 last
 update. This is why repeated API downloads cannot produce current intervals.
 Do not mark that API healthy merely because a newer manual export is imported.
+
+## Vendor guidance and deployment proof
+
+Sense's [solar-inaccuracy guide](https://help.sense.com/hc/en-us/articles/360043674773-How-can-I-learn-more-about-inaccurate-solar-readings)
+identifies monitoring a different circuit/subpanel as a possible installation
+cause. Its [subpanel guide](https://help.sense.com/hc/en-us/articles/360046144413-How-can-I-learn-more-about-solar-feeding-into-a-subpanel)
+explains that feeder sensors can measure production minus subpanel loads and
+also distort device detection. Both were read in the built-in browser. These
+sources support checking the physical measurement point; they do not prove this
+installation's wiring. Do not assume opposite CT polarity merely from a small
+net reading: under higher net generation, both aux phase values had the same sign.
+
+Deployed six changed modules with a hash-checked preflight and rollback backup.
+Fresh Sense and Envoy captures and both reconciliation reports then completed
+successfully. The new sample had approximately 2.005 kW PV, -0.886 kW storage,
+and 0.923 kW Sense solar. The net error was 0.196 kW, so the strict 0.150 kW
+single-sample diagnostic correctly refused a scope match in that transient.
+No physical topology was marked verified. All 593 tests and CI pass.
+
+A private `latest_sce_portal_summary.json` preserves the authenticated dashboard's
+current-period summary through November 3 separately from raw interval coverage.
+This file is explicitly a dashboard summary, not an imported interval dataset;
+it cannot clear the stale-interval warning. Current account plan verification
+was added to the private tariff profile without claiming current prices.
