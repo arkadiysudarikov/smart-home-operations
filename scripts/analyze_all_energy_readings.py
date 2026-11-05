@@ -262,23 +262,21 @@ def parse_sce_xml(path: Path, intervals: dict[tuple[str, str], SceInterval]) -> 
             continue
         if content is None or direction is None:
             continue
-        block = content.find("espi:IntervalBlock", ns)
-        if block is None:
-            continue
-        for reading in block.findall("espi:IntervalReading", ns):
-            period = reading.find("espi:timePeriod", ns)
-            value_raw = reading.findtext("espi:value", namespaces=ns)
-            if period is None or value_raw is None:
-                continue
-            start_raw = period.findtext("espi:start", namespaces=ns)
-            duration_raw = period.findtext("espi:duration", namespaces=ns)
-            if start_raw is None or duration_raw is None:
-                continue
-            start = datetime.fromtimestamp(int(start_raw), tz=LOCAL_TZ)
-            end = datetime.fromtimestamp(int(start_raw) + int(duration_raw), tz=LOCAL_TZ)
-            quality = reading.findtext("espi:ReadingQuality/espi:quality", default="", namespaces=ns)
-            merge_interval(intervals, start, end, direction, float(value_raw) / 1000.0, quality, path)
-            count += 1
+        for block in content.findall("espi:IntervalBlock", ns):
+            for reading in block.findall("espi:IntervalReading", ns):
+                period = reading.find("espi:timePeriod", ns)
+                value_raw = reading.findtext("espi:value", namespaces=ns)
+                if period is None or value_raw is None:
+                    continue
+                start_raw = period.findtext("espi:start", namespaces=ns)
+                duration_raw = period.findtext("espi:duration", namespaces=ns)
+                if start_raw is None or duration_raw is None:
+                    continue
+                start = datetime.fromtimestamp(int(start_raw), tz=LOCAL_TZ)
+                end = datetime.fromtimestamp(int(start_raw) + int(duration_raw), tz=LOCAL_TZ)
+                quality = reading.findtext("espi:ReadingQuality/espi:quality", default="", namespaces=ns)
+                merge_interval(intervals, start, end, direction, float(value_raw) / 1000.0, quality, path)
+                count += 1
     return count
 
 

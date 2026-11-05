@@ -18,6 +18,33 @@ SPEC.loader.exec_module(analyze_all_energy_readings)
 
 
 class AnalyzeAllEnergyReadingsTest(unittest.TestCase):
+    def test_xml_reads_every_block_and_preserves_repeated_hour(self) -> None:
+        # SCE puts many daily IntervalBlocks inside a single Atom content.
+        starts = [1793520000, 1793523600]
+        entries = []
+        for title, value in [("Energy Delivered", 200), ("Energy Received", 10)]:
+            blocks = "".join(
+                f"<IntervalBlock><IntervalReading><timePeriod><start>{start}</start>"
+                f"<duration>900</duration></timePeriod><value>{value}</value>"
+                "</IntervalReading></IntervalBlock>" for start in starts
+            )
+            entries.append(f'<entry><title>{title}</title></entry><entry><content>{blocks}</content></entry>')
+        xml = '<feed xmlns="http://www.w3.org/2005/Atom" xmlns:e="http://naesb.org/espi">' + "".join(entries) + '</feed>'
+        # Only ESPI payload elements use the ESPI namespace.
+        for tag in ["IntervalBlock", "IntervalReading", "timePeriod", "start", "duration", "value"]:
+            xml = xml.replace(f"<{tag}>", f"<e:{tag}>").replace(f"</{tag}>", f"</e:{tag}>")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "usage.xml"
+            path.write_text(xml)
+            intervals = {}
+            self.assertEqual(analyze_all_energy_readings.parse_sce_xml(path, intervals), 4)
+        self.assertEqual(len(intervals), 2)
+        self.assertEqual(sum(x.delivered_kwh for x in intervals.values()), 0.4)
+        self.assertEqual(sum(x.received_kwh for x in intervals.values()), 0.02)
+        values = list(intervals.values())
+        self.assertEqual(values[0].start.hour, values[1].start.hour)
+        self.assertNotEqual(values[0].start.utcoffset(), values[1].start.utcoffset())
+
     def test_battery_discharge_repairs_negative_envoy_meter_total(self) -> None:
         start = analyze_all_energy_readings.parse_iso("2026-07-15T10:00:00-07:00")
         end = analyze_all_energy_readings.parse_iso("2026-07-15T10:15:00-07:00")
