@@ -9,7 +9,7 @@ import urllib.request
 MODES = frozenset(("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "acknowledge", "attention", "savings", "diagnostics", "routine"))
 
 
-MODES = MODES | {'wait', 'laundrytime', 'recap'}
+MODES = MODES | {'wait', 'laundrytime', 'recap', 'washer-unloaded', 'dryer-unloaded', 'combo-unloaded'}
 
 
 def spoken_response(raw):
@@ -19,6 +19,8 @@ def spoken_response(raw):
         raise ValueError("The house check failed")
     if "acknowledged" in payload:
         return "Announcements acknowledged."
+    if isinstance(payload.get("message"), str) and payload["message"].strip():
+        return payload["message"].strip()
     result = payload.get("stdout", "")
     if isinstance(result, str):
         try:
@@ -45,7 +47,9 @@ def dispatch(command):
         if result.returncode or not result.stdout.strip():
             raise ValueError("The laundry status check could not produce a reply")
         return result.stdout.strip()
-    request = urllib.request.Request("http://127.0.0.1:18765/action/dr-house-" + command, data=b"", method="POST")
+    endpoint = ("laundry-unloaded?appliance=" + command.removesuffix("-unloaded")
+                if command.endswith("-unloaded") else "dr-house-" + command)
+    request = urllib.request.Request("http://127.0.0.1:18765/action/" + endpoint, data=b"", method="POST")
     with urllib.request.urlopen(request, timeout=125) as response:
         return spoken_response(response.read(16384).decode())
 
