@@ -133,3 +133,10 @@ advice, with a local classification gate. Solar timing measures meter timestamp
 span rather than scheduler duration. Automatic evening recaps skip unchanged
 accepted issue sets; on-request recaps remain available. Interactive and scheduled
 reviews share their publication lock and five-minute attempt cooldown.
+
+Tariff timing can now use a private `data/verified_tariff_profile.json` containing
+bill evidence and a current public schedule check. The model sees only hint
+availability and whether the historical winter low-rate window is now open.
+The local reply states that the bill-verified plan may have changed and does not
+claim current account prices or guaranteed cheapest total cost. Missing or
+expired evidence disables the hint; solar timing retains its distinct meter gate.

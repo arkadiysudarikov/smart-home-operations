@@ -2079,7 +2079,7 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         return "Open Alarm.com device status, resolve the listed device trouble, then recapture Alarm.com."
     if title == "Alarm.com trouble conditions active":
         if "Video Device - Not Responding" in detail:
-            return "Power-cycle the named Alarm.com camera(s), verify Wi-Fi/network connectivity, then recapture Alarm.com after the portal clears the camera trouble."
+            return "Reconcile the named cameras against the devices still in service; retired devices need inventory cleanup, not recovery. Check connectivity of active cameras, then recapture Alarm.com."
         return "Open Alarm.com Issues, resolve the listed trouble condition, then recapture Alarm.com."
     if title == "SCE interval data is stale":
         if "utilityapi_payment_required" in detail:

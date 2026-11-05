@@ -68,7 +68,7 @@ class ServiceHealthTests(unittest.TestCase):
         self.assertEqual(accepted,{'maintenance':'security','attention':'services'})
         text=j.attention_text(e,{'attention':'none'})
         self.assertIn('Alarm.com reports device trouble',text)
-        self.assertIn('named devices',j.CHECKS['alarm'])
+        self.assertIn('retired devices',j.CHECKS['alarm'])
         self.assertNotIn('energy',f.supported(e)['defer'])
 
     def test_actual_source_request_stays_bounded(self):

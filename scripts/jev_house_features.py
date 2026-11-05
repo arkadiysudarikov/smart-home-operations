@@ -10,7 +10,7 @@ OPTIONS = {
     'change': {'energy':'Energy status changed', 'openings':'Reporting opening count changed',
                'laundry':'Laundry countdown availability changed', 'services':'Service fault status changed', 'none':'No comparable change'},
     'defer': {'energy':'Energy optimization can wait', 'none':'No supported deferral'},
-    'timing': {'solar':'Sustained measured solar surplus now', 'unknown':'No verified best time'},
+    'timing': {'solar':'Sustained measured solar surplus now', 'tariff_hint':'Conditional winter timing for the last bill-verified plan, not current prices', 'unknown':'No verified best time'},
     'oddity': {'laundry':'Laundry status conflicts with countdown', 'cooling':'Cooling with an opening',
                'energy':'High use while owner device is away', 'none':'No supported combination'},
     'recap': {'issues':'Briefly summarize verified issues', 'quiet':'No useful routine recap'},
@@ -40,7 +40,16 @@ def enrich(data, e, now):
         and 0 <= now-stamp(solar_state.get('last')) <= 180
         and solar[0] == solar_state.get('last_sample')
         and 600 <= stamp(solar_state.get('last_sample'))-stamp(solar_state.get('since')) <= 86400)
-    return {**e, 'changes':changes, 'comparison_available':bool(old), 'solar_window':bool(sustained)}
+    tariff = load(data/'verified_tariff_profile.json')
+    local = datetime.fromtimestamp(now,LOCAL)
+    hint = (tariff.get('plan') == 'TOU-D-PRIME' and tariff.get('billing') == 'solar_billing_plan'
+        and tariff.get('scheduleSource') == 'https://www.sce.com/save-money/rates-financing/residential-rate-plans/time-of-use-plans'
+        and 0 <= now-stamp(tariff.get('scheduleVerifiedAt')) <= 30*86400
+        and 0 <= now-stamp(tariff.get('accountBillAt')) <= 366*86400
+        and isinstance(tariff.get('accountBillSha256'),str) and len(tariff['accountBillSha256']) == 64
+        and local.month not in (6,7,8,9))
+    return {**e, 'changes':changes, 'comparison_available':bool(old), 'solar_window':bool(sustained),
+        'tariff_hint_available':bool(hint), 'tariff_low_window_now':bool(hint and 8 <= local.hour < 16)}
 
 
 def supported(e):
@@ -52,9 +61,12 @@ def supported(e):
     if e.get('cooling_open'): odd.add('cooling')
     if e.get('away_high'): odd.add('energy')
     issues = urgent or e.get('high') or e.get('detergent_low') is True or any(v is True for v in service_faults.values())
+    timing = {'unknown'}
+    if e.get('solar_window'): timing.add('solar')
+    if e.get('tariff_hint_available'): timing.add('tariff_hint')
     return {'change':set(e.get('changes',[]))|{'none'},
         'defer':{'energy','none'} if e.get('high') is True and not urgent else {'none'},
-        'timing':{'solar','unknown'} if e.get('solar_window') else {'unknown'},
+        'timing':timing,
         'oddity':odd, 'recap':{'issues','quiet'} if issues else {'quiet'}}
 
 
@@ -79,6 +91,9 @@ def render(mode,e,c):
     if mode=='laundrytime':
         if c.get('timing')=='solar' and e.get('solar_window'):
             return 'Surplus solar has lasted ten minutes. Now is a solar opportunity for laundry, not a guaranteed cheapest time. A verified time-of-use rate schedule is unavailable.'
+        if e.get('tariff_hint_available'):
+            return ('Your last verified bill lists TOU-D-PRIME with solar billing. If that plan is unchanged, the winter super-off-peak delivery window is 8 a.m. to 4 p.m.; 4 p.m. to 9 p.m. is the higher-rate window. '
+                    'Generation charges and solar export credits still affect total cost, so this is timing guidance, not a cheapest-hour guarantee.')
         return 'No best laundry time is verified yet. I need sustained solar surplus or a verified time-of-use rate schedule.'
     if mode=='unusual':
         messages={'laundry':'Laundry shows time remaining with an idle flag; it is not confirmed finished.',

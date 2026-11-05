@@ -43,7 +43,7 @@ pairing, security rules, physical controls, and household credentials are preser
 | AT&T | Both local gateway addresses answered ICMP; this is not proof of WAN reliability. |
 | Enphase / Envoy | Direct meter capture live; production, total and net consumption available. |
 | Sense | Live capture; EV category absent. Sense solar and Envoy production disagree; verify CT coverage/calibration physically. |
-| SCE / Green Button | API coverage ends June 16; imported interval coverage ends September 16. Both stale. Current tariff/solar settlement terms need verification. |
+| SCE / Green Button | API coverage ends June 16; imported interval coverage ends September 16. Both stale. June bill verifies TOU-D-PRIME, CPA 100% Green Power generation, Solar Billing Plan and 2018 vintage charges. Current public SCE schedule confirms winter 8 a.m.–4 p.m. super-off-peak and 4–9 p.m. mid-peak. The live account is signed out and no saved SCE credential was available; current account prices are not established. |
 | ChargePoint | Recent successful refresh status; charging-session history is not live charging proof. |
 | Mopar / Jeep | Plugin explicitly disabled. No automatic re-enable or invented EV-off state. |
 | SmartHQ | Three appliances configured; active washer heartbeat went stale; watchdog restarted the reviewed child. Observe recovery and next real completion. |
@@ -58,7 +58,7 @@ pairing, security rules, physical controls, and household credentials are preser
 | Home Status dashboard | Cached characteristics exist; an active platform/fresh telemetry is not established. |
 | HomeKit virtual sensors | Configured; source freshness and physical outcomes remain separate. |
 | Household actions | Running; new read-only service endpoint tested separately from control actions. |
-| JEV / TypeSafe | Existing model and spending bounds retained; provider verification recorded separately from fixtures. |
+| JEV / TypeSafe | Existing model and spending bounds retained. A real GUI-context review succeeded with 1,856 input and 568 output tokens; three answers passed the confidence/evidence gates. No audio or physical controls executed. |
 | Alarm.com | Websocket live. Gate reports malfunction; Sideyard and Backyard cameras plus gate sensor have not-responding trouble. Portal malfunction versus Homebridge open is not a trustworthy open/closed reading. |
 
 ## Operational repair
@@ -68,8 +68,29 @@ that it is an owned directory, not a symlink. No backup contents were removed.
 
 ## Remaining external evidence
 
-- Confirm whether the nonresponding cameras/gate sensor are still expected devices.
-- Obtain current utility intervals and the actual SCE tariff/solar billing terms.
+- The user confirmed some devices are retired. Reconcile their exact identities before recovery or removing account records; no specific device is assumed retired.
+- Obtain current utility intervals and current account-specific delivery/generation/export prices. Historical plan identity and public winter timing are verified separately.
 - Validate solar CT measurement coverage; do not fix disagreement by changing units or offsets without evidence.
 - Test TV pairing, blind motion, household voice entry points and every-room audio
   when the household is ready. Do not equate network responses with those outcomes.
+
+## Tariff evidence and timing limits
+
+The June 11 bill was read locally, including the rendered time-period table and
+SCE/CPA detail pages. It establishes TOU-D-PRIME delivery, CPA 100% Green Power
+generation, Solar Billing Plan export credits and 2018 vintage charges. No bill,
+account identifier, or source path is sent to JEV. The private runtime profile
+stores the source hash and observation dates, and JEV receives only two booleans.
+
+The current [SCE TOU schedule](https://www.sce.com/save-money/rates-financing/residential-rate-plans/time-of-use-plans)
+confirms the same winter timing. The app may report this as conditional guidance
+for the last bill-verified plan; it cannot claim that the online account has not
+changed, quote SCE bundled prices as CPA prices, or calculate a guaranteed cheapest
+hour. Public schedule verification expires after 30 days; the historical bill
+profile expires after one year. Current CPA generation and hourly export prices,
+battery opportunity costs and appliance duration remain necessary for a full cost optimizer.
+
+The first SSH JEV review failed at credential access and consumed no provider
+reservation. After the existing cooldown, a temporary GUI LaunchAgent completed
+one review and was unloaded/removed. Its fixed-status proof remains in runtime
+`data/review-jev-once.log`. Credentials were not printed or copied.

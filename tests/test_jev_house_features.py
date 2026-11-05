@@ -15,6 +15,28 @@ class Features(unittest.TestCase):
         self.data=Path(self.temp.name)
         self.now=datetime(2026,9,30,2,5,tzinfo=timezone.utc).timestamp()
 
+    def test_tariff_hint_is_conditional_expiring_and_keeps_bills_private(self):
+        source='https://www.sce.com/save-money/rates-financing/residential-rate-plans/time-of-use-plans'
+        profile={'plan':'TOU-D-PRIME','billing':'solar_billing_plan','scheduleSource':source,
+            'scheduleVerifiedAt':self.solar_at(self.now),'accountBillAt':self.solar_at(self.now-120*86400),
+            'accountBillSha256':'a'*64,'privateAccount':'PRIVATE ACCOUNT'}
+        f.save(self.data/'verified_tariff_profile.json',profile)
+        with patch('generate_alerts.solar_surplus_sample',return_value=None):
+            # Test setup is September; winter advice must not leak into summer.
+            e=f.enrich(self.data,evidence(),self.now)
+            self.assertFalse(e['tariff_hint_available'])
+            winter=datetime(2026,11,5,20,tzinfo=timezone.utc).timestamp()
+            profile['scheduleVerifiedAt']=self.solar_at(winter)
+            f.save(self.data/'verified_tariff_profile.json',profile)
+            e=f.enrich(self.data,evidence(),winter)
+            self.assertTrue(e['tariff_hint_available']);self.assertTrue(e['tariff_low_window_now'])
+            text=f.render('laundrytime',e,{})
+            self.assertIn('If that plan is unchanged',text)
+            self.assertIn('not a cheapest-hour guarantee',text)
+            self.assertNotIn('PRIVATE',str(a.request(e)))
+            self.assertNotIn(source,str(a.request(e)))
+            self.assertFalse(f.enrich(self.data,evidence(),winter+31*86400)['tariff_hint_available'])
+
     def test_model_cannot_invent_solar_or_defer_urgent(self):
         e=evidence(solar_window=False)
         c=a.validated(response(timing='solar',defer='energy'),e)

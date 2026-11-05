@@ -29,7 +29,7 @@ FAULT_LABELS = {
 }
 CHECKS = {
     'laundry': 'Check per-appliance heartbeats and the recovery report before relying on completion alerts.',
-    'alarm': 'Check the named devices in the local Alarm.com trouble report and verify their connectivity.',
+    'alarm': 'Reconcile retired devices in the local Alarm.com trouble report, then check connectivity of devices still in service.',
     'sce': 'Import a current SCE Green Button export, then compare its coverage with the API result.',
     'meters': 'Compare simultaneous Envoy and Sense solar readings and verify CT coverage and orientation.',
     'permissions': 'Review and restrict exposed Homebridge storage paths while preserving service access.',
@@ -91,6 +91,8 @@ def build(data, now):
     faults = {key:None for key in FAULT_LABELS}
     if launchd.get('ok') is True:
         faults['homebridge']=launchd.get('state')!='running'
+    privacy = hb.get('security',{}).get('homebridgePermissions',{})
+    if type(privacy.get('ok')) is bool: faults['permissions'] = not privacy['ok']
     health = load(data/'latest_announcement_health.json')
     if fresh(health,'generatedAt',now,180) and type(health.get('ok')) is bool:
         # Restrict the signal to laundry faults, not an unrelated relay event.

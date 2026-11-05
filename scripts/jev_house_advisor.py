@@ -120,10 +120,18 @@ def facts(data, now, sample=None):
     return enrich(data,evidence,now)
 
 
+QUESTION_INSTRUCTIONS = {
+    'attention':'Rank the most urgent verified issue. Prioritize temperature and conflicting laundry, then entries/security, then optimization. Never omit other issues.',
+    'service':'Choose the next verified service check: Homebridge outage, laundry telemetry, reported security trouble, meter reliability, utility coverage, then permissions. Unknown if none.',
+    'maintenance':'Choose a verified maintenance need: review reported security trouble before detergent refill. Never infer a device fault or treat missing readings as healthy.',
+    'timing':'Prefer measured sustained solar surplus. Otherwise only conditional historical-plan tariff guidance is allowed when tariff_hint_available is true. Never claim current prices or cheapest total cost.',
+}
+
+
 def request(evidence):
     return {'model':MODEL, 'state':evidence, 'questions':{
         key:{'type':'choice', 'criteria':choices,
-             'instructions':'Use verified evidence only; null is unknown. Never infer completion, faults, or permission to mute alerts.'}
+             'instructions':QUESTION_INSTRUCTIONS.get(key,'Use verified evidence only; null is unknown. Never infer completion, faults, or permission to mute alerts.')}
         for key,choices in OPTIONS.items()}}
 
 

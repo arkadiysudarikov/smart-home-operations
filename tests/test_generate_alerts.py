@@ -1532,7 +1532,7 @@ class GenerateAlertsTest(unittest.TestCase):
         alert = next(item for item in alerts if item["title"] == "Alarm.com trouble conditions active")
         self.assertIn("Video Device - Not Responding (Sideyard)", alert["detail"])
         self.assertIn("mac=504074958A80", alert["detail"])
-        self.assertIn("Power-cycle", generate_alerts.recommended_action(alert) or "")
+        self.assertIn("retired devices need inventory cleanup", generate_alerts.recommended_action(alert) or "")
 
     def test_sce_stale_action_does_not_claim_auto_collection_by_default(self) -> None:
         action = generate_alerts.recommended_action({"title": "SCE interval data is stale", "detail": ""})
