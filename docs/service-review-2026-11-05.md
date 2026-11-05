@@ -94,3 +94,20 @@ The first SSH JEV review failed at credential access and consumed no provider
 reservation. After the existing cooldown, a temporary GUI LaunchAgent completed
 one review and was unloaded/removed. Its fixed-status proof remains in runtime
 `data/review-jev-once.log`. Credentials were not printed or copied.
+
+## Utility feed producer traced
+
+A read-only UtilityAPI meter request confirms `ongoing_monitoring.frequency=off`.
+Its meter status timestamp is June 16, bill coverage ends June 9, and interval
+coverage ends June 16. The meter's reported tariff is TOU-D-PRIME-(SCE), matching
+the local bill. Repeated download refreshes therefore cannot create current
+coverage. No paid historical collection, recurring monitoring purchase, or
+account-plan change was enabled.
+
+Final deployment verification: all eight changed runtime modules match the
+review source, drift checking reports no mismatched files, the read-only endpoint
+lists 25 services, and the bill-backed timing reply renders without a model call
+or audio. A later scheduled refresh completed with zero optional failures and
+`operationalStatus=checks_passed`; announcement health and Homebridge permission
+checks both passed. These checks do not establish physical operation of every
+accessory or resolve retired-device identity.
