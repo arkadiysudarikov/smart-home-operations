@@ -244,7 +244,7 @@ async function fetchText(url, auth, options = {}) {
 async function fetchJson(url, auth, options = {}) {
   const res = await fetchText(url, auth, {
     ...options,
-    accept: options.accept || "application/vnd.api+json,application/json,*/*",
+    accept: options.accept || "application/vnd.api+json",
   });
   if (res.status < 200 || res.status >= 300 || !res.text.trim()) {
     return { ok: false, status: res.status, body: null };
@@ -1919,7 +1919,8 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((error) => {
-  console.error(error.stack || String(error));
+if (require.main === module) main().catch((error) => {
+  console.error(JSON.stringify({ok:false,errorType:error.name || 'Error'}));
   process.exit(1);
 });
+module.exports = {fetchJson};

@@ -213,7 +213,7 @@ def health_issues(data, now, review):
     if not fresh(laundry,'capturedAt',now,300):
         issues['laundry_capture'] = 'Laundry capture stopped updating. Check the independent laundry worker.'
     rules = load(data/'latest_automation_consistency_sources.json')
-    if not fresh(rules,'generatedAt',now,3600):
+    if not fresh(rules,'generatedAt',now,3600) or rules.get('ok') is False:
         issues['rules_source'] = 'The automatic Alarm.com rule check cannot obtain current rules. Check the saved Alarm.com session.'
     return issues
 
@@ -290,7 +290,9 @@ def refresh_sources(data, config, now):
                 node = node_path()
                 result = subprocess.run([node,str(ROOT/'scripts/capture_alarm_com.js'),'--rules-only'],
                     capture_output=True,timeout=45,check=False) if node else None
-                outcomes['rules'] = 'captured' if result and result.returncode==0 else 'failed'
+                captured = load(data/'latest_automation_consistency_sources.json')
+                outcomes['rules'] = ('captured' if result and result.returncode==0
+                                     and captured.get('ok') is True else 'failed')
             except (OSError,subprocess.TimeoutExpired): outcomes['rules'] = 'failed'
             save(data/'home_rules_refresh_attempt.json',{'at':now,'status':outcomes['rules']})
         else: outcomes['rules'] = 'cooldown'
