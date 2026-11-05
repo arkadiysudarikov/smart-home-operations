@@ -49,7 +49,7 @@ pairing, security rules, physical controls, and household credentials are preser
 | SmartHQ | Three appliances configured; active washer heartbeat went stale; watchdog restarted the reviewed child. Observe recovery and next real completion. |
 | TaHoma | Seven bridges configured, with cached blind characteristics. Each blind's motion and gateway health require direct functional checks. |
 | Dyson | Purifier, fan, temperature/humidity and filter cache present. Values lack per-reading timestamps; do not use cache as fresh maintenance proof. |
-| Sony Bravia | Three TVs configured and HTTP ports reachable; zero cached accessories. Check plugin startup and separate TV accessory pairing. |
+| Sony Bravia | All three read-only TV APIs pass. Family and Bar expose active PIN-entry pages and still need TV registration. Office has a persisted registered external accessory. External TVs need not appear in the ordinary bridge cache; Apple Home pairing remains a separate check. |
 | AirPlay | Network reachability does not prove playback, Intercom reception, or media resumption. |
 | Matter / Thread | Pairing, commissioned fabrics and real accessory operation remain a separate functional check. |
 | Calendar | Fresh scheduled log at 11:50 Pacific: two events, zero due, no announcement attempts. SSH dry-run cannot read Calendar; this does not establish a failure of the authorized scheduled GUI context. |
