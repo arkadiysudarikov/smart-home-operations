@@ -111,3 +111,18 @@ or audio. A later scheduled refresh completed with zero optional failures and
 `operationalStatus=checks_passed`; announcement health and Homebridge permission
 checks both passed. These checks do not establish physical operation of every
 accessory or resolve retired-device identity.
+
+## Apple Home surface review
+
+Read the live Home dashboard and Office room without operating a physical control.
+The dashboard exposed the virtual energy/health tiles, laundry, security, blinds,
+lighting and kitchen appliances. The Office room shows two TV tiles; one exposes
+HDMI inputs and Sony XR-55A80K / firmware 6.8224.976 metadata. Compare their native
+versus external-bridge identities before renaming or removing either; duplicate
+room-relative labels alone are not proof that an accessory should be deleted.
+Home showed HomePod playing states and refreshed both visible camera thumbnails;
+these are UI observations, not acoustic or full video-stream verification.
+
+Kitchen oven/dishwasher tiles and the cached Home Status dashboard also deserve
+fresh per-device telemetry adapters before JEV can diagnose them. Cached values
+without observation timestamps remain excluded from maintenance decisions.
