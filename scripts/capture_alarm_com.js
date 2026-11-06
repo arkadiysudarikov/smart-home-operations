@@ -244,7 +244,7 @@ async function fetchText(url, auth, options = {}) {
 async function fetchJson(url, auth, options = {}) {
   const res = await fetchText(url, auth, {
     ...options,
-    accept: options.accept || "application/vnd.api+json,application/json,*/*",
+    accept: options.accept || "application/vnd.api+json",
   });
   if (res.status < 200 || res.status >= 300 || !res.text.trim()) {
     return { ok: false, status: res.status, body: null };
@@ -1836,6 +1836,15 @@ async function main() {
       systemCount: Array.isArray(auth.systems) ? auth.systems.length : 0,
       identityCount: Array.isArray(auth.identities?.data) ? auth.identities.data.length : null,
     };
+    if (args.has('--rules-only')) {
+      const [automationRules,videoRules] = await Promise.all([fetchAutomationRules(auth),fetchRecordingRules(auth)]);
+      const report = {generatedAt:new Date().toISOString(),automationRules,videoRules,
+        ok:automationRules.ok && videoRules.ok,controlsExecuted:false};
+      writeJson(path.join(root,'data/latest_automation_consistency_sources.json'),report);
+      console.log(JSON.stringify({ok:report.ok,generatedAt:report.generatedAt,
+        ruleCount:automationRules.ruleCount,videoRuleCount:videoRules.ruleCount}));
+      return;
+    }
     try {
       payload.alarmState = await captureSystemStates(alarm, auth);
     } catch (error) {
@@ -1910,7 +1919,8 @@ async function main() {
   process.exit(0);
 }
 
-main().catch((error) => {
-  console.error(error.stack || String(error));
+if (require.main === module) main().catch((error) => {
+  console.error(JSON.stringify({ok:false,errorType:error.name || 'Error'}));
   process.exit(1);
 });
+module.exports = {fetchJson};

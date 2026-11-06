@@ -62,8 +62,9 @@ and export intervals are needed to cross-check the grid boundary independently.
 Authenticated in the built-in browser using the user's verification code. The
 live dashboard confirms TOU-D-PRIME, Solar Billing Plan and Clean Power Alliance,
 with current usage through November 3. Prepared the Green Button CSV export for
-November 1, 2025 through November 5, 2026. Download/import awaits the site's
-CAPTCHA; no CAPTCHA was bypassed and no paid UtilityAPI collection was enabled.
+November 1, 2025 through November 5, 2026. After the user completed the
+CAPTCHA, downloaded both CSV and XML and imported the XML on M4. No paid
+UtilityAPI collection was enabled. See [current reconciliation](sce-current-reconciliation.md).
 
 UtilityAPI's meter metadata separately shows monitoring off and a June 16 last
 update. This is why repeated API downloads cannot produce current intervals.

@@ -23,6 +23,18 @@ SPEC.loader.exec_module(action_server)
 
 
 class ActionServerTest(unittest.TestCase):
+    def test_unload_route_requires_post_and_valid_appliance(self):
+        handler = object.__new__(action_server.Handler)
+        handler.path, handler.command, handler.headers = '/action/laundry-unloaded?appliance=washer', 'GET', {}
+        with mock.patch('laundry_unload.acknowledge_unloaded', return_value={'ok': True}) as ack:
+            self.assertEqual(handler.route()[0], 405)
+            ack.assert_not_called()
+            handler.command = 'POST'
+            self.assertEqual(handler.route()[0], 200)
+            ack.assert_called_once_with(action_server.ROOT, 'washer')
+            handler.path = '/action/laundry-unloaded?appliance=all'
+            self.assertEqual(handler.route()[0], 400)
+
     def test_service_status_is_read_only_and_does_not_claim_all_healthy(self):
         handler=object.__new__(action_server.Handler)
         handler.path,handler.command,handler.headers='/status/services','GET',{}
