@@ -153,3 +153,12 @@ path after re-registration, not proof of every speaker or a new natural cycle.
   observations and dated acoustic evidence are retained, targeted files are
   backed up before replacement, and the remaining phone-only checks are stated
   explicitly rather than treated as automated proof.
+
+A second post-repair automatic test ran with iPhone Mirroring fully quit. The
+relay accepted it at 15:27:15 Pacific; the Office recording contains the generated
+background-test sentence around 15:27:54 (about 39 seconds later). Both local
+recognizers matched the complete sentence without a supplied prompt. The dated
+runtime proof now points to this recording and preserves the previous proof.
+Apple Home's Garage room settings also show membership in Indoors, the receiver's
+destination. That verifies routing coverage, not individual Garage acoustic
+playback. No room-zone or speaker settings were changed by that inspection.
