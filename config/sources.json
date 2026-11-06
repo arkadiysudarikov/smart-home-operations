@@ -506,13 +506,13 @@
       },
       {
         "id": "smart_home_washer_finished_v1",
-        "name": "🧺 Wash Done",
+        "name": "🧺 Washer Cycle Finished",
         "sensor_type": "MotionSensor",
         "externally_managed": true
       },
       {
         "id": "smart_home_washer_unload_v1",
-        "name": "🧺 Unload Washer",
+        "name": "🧺 Washer Unload Reminder",
         "sensor_type": "MotionSensor",
         "externally_managed": true
       },
@@ -524,25 +524,25 @@
       },
       {
         "id": "smart_home_dryer_finished_v1",
-        "name": "🧺 Dryer Done",
+        "name": "🧺 Dryer Cycle Finished",
         "sensor_type": "MotionSensor",
         "externally_managed": true
       },
       {
         "id": "smart_home_dryer_unload_v1",
-        "name": "🧺 Unload Dryer",
+        "name": "🧺 Dryer Unload Reminder",
         "sensor_type": "MotionSensor",
         "externally_managed": true
       },
       {
         "id": "smart_home_combo_finished_v1",
-        "name": "🧺 Combo Done",
+        "name": "🧺 Combo Cycle Finished",
         "sensor_type": "MotionSensor",
         "externally_managed": true
       },
       {
         "id": "smart_home_combo_unload_v1",
-        "name": "🧺 Unload Combo",
+        "name": "🧺 Combo Unload Reminder",
         "sensor_type": "MotionSensor",
         "externally_managed": true
       }

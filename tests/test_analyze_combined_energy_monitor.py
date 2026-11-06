@@ -21,6 +21,11 @@ SPEC.loader.exec_module(combined)
 
 
 class AnalyzeCombinedEnergyMonitorTest(unittest.TestCase):
+    def test_expected_day_intervals_uses_actual_dst_day_length(self) -> None:
+        self.assertEqual(combined.expected_day_intervals("2026-11-01"), 100)
+        self.assertEqual(combined.expected_day_intervals("2026-03-08"), 92)
+        self.assertEqual(combined.expected_day_intervals("2026-11-04"), 96)
+
     def test_sense_daily_completeness_follows_plotted_cloud_trend(self) -> None:
         today = datetime.now().astimezone().date()
         yesterday = today.fromordinal(today.toordinal() - 1).isoformat()

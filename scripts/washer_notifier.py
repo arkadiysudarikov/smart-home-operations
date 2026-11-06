@@ -198,13 +198,18 @@ def evolve_washer_state(
 
     for field, action in (
         ("finishPulseUntil", "finish_off"),
-        ("reminderPulseUntil", "reminder_off"),
         ("ventingPulseUntil", "venting_off"),
     ):
         deadline = parse_time(state.get(field))
         if deadline and now >= deadline:
             state[field] = None
             actions.append(action)
+
+    # Upgrade old two-minute reminders to durable, acknowledged state.
+    state["reminderPulseUntil"] = None
+    if state.get("awaitingUnload") and state.get("reminderSent") and not state.get("reminderLatched"):
+        state["reminderLatched"] = True
+        actions.append("reminder_on")
 
     if not current.get("fresh") or current.get("inUse") is None or current.get("cycleActive") is None:
         state["lastCheckedAt"] = now_text
@@ -254,6 +259,7 @@ def evolve_washer_state(
                 "washStartedAt": now_text,
                 "runningSamples": 1,
                 "awaitingUnload": False,
+                "reminderLatched": False,
                 "washFinishedAt": None,
                 "reminderSent": False,
             })
@@ -311,7 +317,8 @@ def evolve_washer_state(
 
     finished_at = parse_time(state.get("washFinishedAt"))
     if state.get("awaitingUnload") and door_opened_after(current, finished_at):
-        state.update({"awaitingUnload": False, "unloadedAt": now_text})
+        state.update({"awaitingUnload": False,
+                "reminderLatched": False, "unloadedAt": now_text})
         actions.extend(["finish_off", "reminder_off"])
     elif (
         state.get("awaitingUnload")
@@ -321,7 +328,7 @@ def evolve_washer_state(
         and now >= finished_at + timedelta(minutes=int(config.get("reminder_minutes", 20)))
     ):
         state["reminderSent"] = True
-        state["reminderPulseUntil"] = (now + timedelta(seconds=pulse_seconds)).isoformat(timespec="seconds")
+        state["reminderLatched"] = True
         actions.extend(["reminder_on", "notify_reminder"])
 
     state.update({
@@ -423,11 +430,17 @@ def evolve_state(
     now_text = now.isoformat(timespec="seconds")
     pulse_seconds = int(config.get("pulse_seconds", 120))
 
-    for field, action in (("finishPulseUntil", "finish_off"), ("reminderPulseUntil", "reminder_off")):
+    for field, action in (("finishPulseUntil", "finish_off"),):
         deadline = parse_time(state.get(field))
         if deadline and now >= deadline:
             state[field] = None
             actions.append(action)
+
+    # Upgrade old two-minute reminders to durable, acknowledged state.
+    state["reminderPulseUntil"] = None
+    if state.get("awaitingUnload") and state.get("reminderSent") and not state.get("reminderLatched"):
+        state["reminderLatched"] = True
+        actions.append("reminder_on")
 
     if not current.get("fresh") or current.get("inUse") is None:
         state["lastCheckedAt"] = now_text
@@ -463,6 +476,7 @@ def evolve_state(
                 "cycleStartedAt": now_text,
                 "runningSamples": 1,
                 "awaitingUnload": False,
+                "reminderLatched": False,
                 "finishedAt": None,
                 "reminderSent": False,
             })
@@ -489,7 +503,8 @@ def evolve_state(
 
     finished_at = parse_time(state.get("finishedAt"))
     if state.get("awaitingUnload") and door_opened_after(current, finished_at):
-        state.update({"awaitingUnload": False, "unloadedAt": now_text})
+        state.update({"awaitingUnload": False,
+                "reminderLatched": False, "unloadedAt": now_text})
         actions.extend(["finish_off", "reminder_off"])
     elif (
         state.get("awaitingUnload")
@@ -499,7 +514,7 @@ def evolve_state(
         and now >= finished_at + timedelta(minutes=int(config.get("reminder_minutes", 20)))
     ):
         state["reminderSent"] = True
-        state["reminderPulseUntil"] = (now + timedelta(seconds=pulse_seconds)).isoformat(timespec="seconds")
+        state["reminderLatched"] = True
         actions.extend(["reminder_on", "notify_reminder"])
 
     state.update({"lastInUse": in_use, "lastDoorOpen": door_open, "lastCheckedAt": now_text})

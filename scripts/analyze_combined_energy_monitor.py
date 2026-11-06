@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import math
 import csv
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -17,6 +17,12 @@ REPORT_DIR = ROOT / "reports"
 OUT_JSON = DATA_DIR / "latest_combined_energy_monitor.json"
 OUT_REPORT = REPORT_DIR / "combined_energy_monitor.md"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+
+
+def expected_day_intervals(day: str) -> int:
+    start = datetime.fromisoformat(day).replace(tzinfo=LOCAL_TZ)
+    end = start + timedelta(days=1)
+    return int((end.timestamp() - start.timestamp()) / 900)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -434,7 +440,7 @@ def load_sce_daily_totals() -> dict[str, dict[str, Any]]:
             add_sum(item, "sceNetImportKwh", row.get("net_import_kwh"))
             item["sceIntervalCount"] = int(item.get("sceIntervalCount") or 0) + 1
     for item in daily.values():
-        item["sceComplete"] = item.get("sceIntervalCount") in {92, 96, 100}
+        item["sceComplete"] = item.get("sceIntervalCount") == expected_day_intervals(item["date"])
     return daily
 
 
@@ -508,8 +514,8 @@ def build_daily_summary(
     today = datetime.now(timezone.utc).astimezone().date().isoformat()
     for day in sorted(days):
         item = days[day]
-        item["envoyComplete"] = item.get("envoyIntervalCount") in {92, 96, 100}
-        item["senseIntervalComplete"] = item.get("senseIntervalCount") in {92, 96, 100}
+        item["envoyComplete"] = item.get("envoyIntervalCount") == expected_day_intervals(day)
+        item["senseIntervalComplete"] = item.get("senseIntervalCount") == expected_day_intervals(day)
         item["senseComplete"] = bool(item.get("senseTrendAvailable") and day < today)
         cp = num(item.get("chargepointKwh"))
         site = num(item.get("envoySiteLoadKwh")) or num(item.get("alarmEnergyClampKwh"))
@@ -541,8 +547,8 @@ def build_daily_summary(
 
 def live_solar_gap(pair: dict[str, Any], now: datetime, max_age_seconds: float = 300,
                    max_skew_seconds: float = 120) -> float | None:
-    envoy_at = parse_dt(pair.get("envoyCapturedAt"))
-    sense_at = parse_dt(pair.get("senseCapturedAt"))
+    envoy_at = parse_dt(pair.get("envoyMeasurementAt",pair.get("envoyCapturedAt")))
+    sense_at = parse_dt(pair.get("senseMeasurementAt",pair.get("senseCapturedAt")))
     if not envoy_at or not sense_at or pair.get("envoyStatus") != "live":
         return None
     ages = [(now - value).total_seconds() for value in (envoy_at, sense_at)]
@@ -659,9 +665,12 @@ def build_payload() -> dict[str, Any]:
 
     solar_gap = live_solar_gap(meter.get("liveEnvoySensePairing") or {}, now)
     if solar_gap is not None and abs(solar_gap) >= float(thresholds.get("sense_envoy_solar_gap_kw", 0.75)):
+        scope=(meter.get('liveEnvoySensePairing') or {}).get('solarScope') or {}
+        scope_note = (' This sample matches Envoy production plus signed battery power within 0.15 kW; Sense may be measuring a combined solar/battery feed. Verify measurement scope before calibration.'
+                      if scope.get('status')=='consistent_with_combined_feed' else ' Meter coverage or calibration needs verification.')
         alerts.append(alert(
             "warning", "Solar meters disagree",
-            f"Fresh matched Envoy production minus Sense solar is `{fmt(solar_gap, 3)}` kW; meter coverage or calibration needs verification.",
+            f"Fresh matched Envoy production minus Sense solar is `{fmt(solar_gap, 3)}` kW." + scope_note,
         ))
 
     metrics = latest.get("homebridge", {}).get("logs", {}).get("latestMetrics", {})
@@ -755,7 +764,7 @@ def build_payload() -> dict[str, Any]:
         )
     if sense_envoy_non_battery_gap is not None:
         insights.append(
-            f"After removing Enphase storage charge/discharge from Envoy total, Envoy non-battery load minus Sense is {fmt(sense_envoy_non_battery_gap, 3)} kW."
+            f"Using Envoy total plus signed storage power, storage-adjusted site load minus Sense is {fmt(sense_envoy_non_battery_gap, 3)} kW."
         )
     latest_solar_pair = next(
         (

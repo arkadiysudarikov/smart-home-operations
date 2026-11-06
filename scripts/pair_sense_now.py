@@ -7,6 +7,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from analyze_meter_reconciliation import site_load_kw
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -86,9 +87,9 @@ def main() -> int:
     if total:
         result["envoyMinusSenseKw"] = total["kw"] - sense_kw
     if total and storage:
-        result["envoyNonBatteryLoadKw"] = total["kw"] - abs(storage["kw"])
+        result["envoyNonBatteryLoadKw"] = site_load_kw(total["kw"], storage["kw"])
         result["envoyNonBatteryLoadMinusSenseKw"] = result["envoyNonBatteryLoadKw"] - sense_kw
-        result["envoyTotalMinusStorageAbsMinusSenseKw"] = result["envoyNonBatteryLoadMinusSenseKw"]
+        result["envoySiteLoadMinusSenseKw"] = result["envoyNonBatteryLoadMinusSenseKw"]
     production = envoy.get("Production")
     if production and storage:
         result["envoySolarAfterStorageKw"] = production["kw"] + storage["kw"]
@@ -118,15 +119,15 @@ def main() -> int:
     if "envoyMinusSenseKw" in result:
         lines.extend(["", f"- Raw Envoy total minus Sense: `{result['envoyMinusSenseKw']:.3f} kW`"])
     if "envoyNonBatteryLoadKw" in result:
-        lines.append(f"- Envoy non-battery load estimate (`total - abs(storage)`): `{result['envoyNonBatteryLoadKw']:.3f} kW`")
+        lines.append(f"- Envoy non-battery load estimate (`total + signed storage`): `{result['envoyNonBatteryLoadKw']:.3f} kW`")
     if "envoyNonBatteryLoadMinusSenseKw" in result:
         lines.append(f"- Envoy non-battery load estimate minus Sense: `{result['envoyNonBatteryLoadMinusSenseKw']:.3f} kW`")
     if "envoySolarAfterStorageKw" in result:
         lines.append(f"- Envoy solar after battery charge/discharge: `{result['envoySolarAfterStorageKw']:.3f} kW`")
-    if "envoyTotalMinusStorageAbsMinusSenseKw" in result:
+    if "envoySiteLoadMinusSenseKw" in result:
         lines.append(
-            "- Envoy total minus battery charge/discharge magnitude minus Sense: "
-            f"`{result['envoyTotalMinusStorageAbsMinusSenseKw']:.3f} kW`"
+            "- Storage-adjusted Envoy site load minus Sense: "
+            f"`{result['envoySiteLoadMinusSenseKw']:.3f} kW`"
         )
     PAIRING_REPORT_PATH.write_text("\n".join(lines) + "\n")
     print(PAIRING_REPORT_PATH)

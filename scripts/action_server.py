@@ -3354,6 +3354,13 @@ class Handler(BaseHTTPRequestHandler):
             return 405, {"ok": False, "error": "action endpoints require POST"}
         if path.startswith("/action/") and not self.request_origin_allowed():
             return 403, {"ok": False, "error": "request origin is not allowed"}
+        if path == "/action/laundry-unloaded":
+            appliance = (query.get("appliance") or [""])[0]
+            if appliance not in {"washer", "dryer", "combo"}:
+                return 400, {"ok": False, "error": "appliance must be washer, dryer, or combo"}
+            from laundry_unload import acknowledge_unloaded
+            payload = acknowledge_unloaded(ROOT, appliance)
+            return (200 if payload["ok"] else 503), payload
         if path in {"/action/acknowledge-announcements", "/action/dr-house-acknowledge"}:
             from announcement_ack import acknowledge
             count = acknowledge(ROOT / "data")
