@@ -96,6 +96,9 @@ def facts(data, now, sample=None):
             if (name == 'washer' and fresh(device.get('detergentTankObservedAt'), now)
                     and type(device.get('detergentTankLow')) is bool):
                 tank_low = device['detergentTankLow']
+                from home_operations import condition
+                if tank_low is True and condition(data,'detergent_tank_low',now) is False:
+                    tank_low = None  # User resolved an older cloud episode; do not claim a new full reading.
             # A venting timer is not a wash countdown or an idle contradiction.
             if device.get('ventingActive') is True:
                 continue
