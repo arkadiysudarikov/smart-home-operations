@@ -22,23 +22,27 @@ class LaundryUnloadTest(unittest.TestCase):
             self.assertNotIn('unloadedAt', saved)
 
     def test_acknowledgement_persists_and_only_clears_selected_appliance(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            data = root / 'data'
-            data.mkdir()
-            prior = {'awaitingUnload': True, 'reminderSent': True, 'reminderLatched': True}
-            for appliance in ['washer', 'dryer']:
-                (data / f'{appliance}_notifier_state.json').write_text(json.dumps(prior))
-            with mock.patch.object(washer_notifier, 'execute_actions', side_effect=lambda actions, config, dry: [{'ok': True, 'action': a} for a in actions]):
-                result = laundry_unload.acknowledge_unloaded(root, 'washer')
-            self.assertTrue(result['ok'])
-            washer = json.loads((data / 'washer_notifier_state.json').read_text())
-            self.assertFalse(washer['awaitingUnload'])
-            self.assertFalse(washer['reminderLatched'])
-            self.assertEqual(washer['unloadedBy'], 'user')
-            self.assertEqual(json.loads((data / 'dryer_notifier_state.json').read_text()), prior)
-            with self.assertRaises(ValueError):
-                laundry_unload.acknowledge_unloaded(root, 'all')
+        for selected in ['washer', 'dryer', 'combo']:
+            with self.subTest(appliance=selected), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                data = root / 'data'
+                data.mkdir()
+                prior = {'awaitingUnload': True, 'reminderSent': True, 'reminderLatched': True}
+                for appliance in ['washer', 'dryer', 'combo']:
+                    (data / f'{appliance}_notifier_state.json').write_text(json.dumps(prior))
+                with mock.patch.object(washer_notifier, 'execute_actions', side_effect=lambda actions, config, dry: [{'ok': True, 'action': a} for a in actions]):
+                    result = laundry_unload.acknowledge_unloaded(root, selected)
+                self.assertTrue(result['ok'])
+                for appliance in ['washer', 'dryer', 'combo']:
+                    saved = json.loads((data / f'{appliance}_notifier_state.json').read_text())
+                    if appliance == selected:
+                        self.assertFalse(saved['awaitingUnload'])
+                        self.assertFalse(saved['reminderLatched'])
+                        self.assertEqual(saved['unloadedBy'], 'user')
+                    else:
+                        self.assertEqual(saved, prior)
+                with self.assertRaises(ValueError):
+                    laundry_unload.acknowledge_unloaded(root, 'all')
 
     def test_tile_delivery_failure_is_not_reported_as_success(self):
         with tempfile.TemporaryDirectory() as tmp:
