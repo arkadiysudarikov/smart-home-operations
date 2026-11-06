@@ -50,3 +50,20 @@ readiness (Kleppmann's event-time/data-provenance distinction). A newly exported
 identical CSV may still look old without authoritative export metadata; use a
 verified portal fetch to establish a new observation. Backoff prevents the stricter
 freshness check from turning a blocked provider into repeated login traffic.
+
+## Current pairing pipeline repair
+
+The saved Sense Now pairing artifact was dated July 22 because neither refresh
+mode ran its producer. Both refresh modes now regenerate the pairing after the
+post-capture snapshot. Pairing uses Sense measurement time, requires fresh verified
+Sense readings, and rejects Envoy log samples more than 90 seconds apart or more
+than 180 seconds old. Nonfinite values cannot make comparisons. The report labels
+log alignment separately from physical sensor/CT verification. Reconciliation
+also refuses old pairing files, including the observed July artifact.
+
+626 tests pass. The added freshness gates trade sparse availability for truthful
+comparisons (Kleppmann's event-time distinction); missing evidence produces an
+explicit partial/unavailable result rather than a plausible-looking old delta.
+Scheduled regeneration adds bounded local work to the refresh cycle, justified
+by keeping the shared report usable and mitigated by its existing runtime lock
+and a 60-second job timeout (Continuous Delivery feedback).

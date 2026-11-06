@@ -225,8 +225,12 @@ def load_sense_now_pairing() -> dict[str, Any]:
     if not SENSE_NOW_PAIRING_PATH.exists():
         return {}
     try:
-        return json.loads(SENSE_NOW_PAIRING_PATH.read_text())
-    except json.JSONDecodeError:
+        payload = json.loads(SENSE_NOW_PAIRING_PATH.read_text())
+        at = datetime.fromisoformat(str(payload.get('senseCapturedAtLocal', '')).replace('Z', '+00:00'))
+        if at.tzinfo is None or not 0 <= (datetime.now(timezone.utc) - at).total_seconds() <= 180:
+            return {}
+        return payload
+    except (OSError, ValueError, TypeError, AttributeError):
         return {}
 
 
