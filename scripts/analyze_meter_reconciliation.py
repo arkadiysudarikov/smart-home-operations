@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 from bisect import bisect_left
@@ -180,7 +181,7 @@ def pair_sense_envoy(grouped: dict[tuple[str, str], list[Sample]], max_seconds: 
             row["envoyProductionKw"] = envoy_production.kw
         if envoy_storage:
             row["envoyStorageKw"] = envoy_storage.kw
-            row["envoyNonBatteryLoadKw"] = envoy_total.kw - abs(envoy_storage.kw)
+            row["envoyNonBatteryLoadKw"] = site_load_kw(envoy_total.kw,envoy_storage.kw)
             row["envoyNonBatteryLoadMinusSenseKw"] = row["envoyNonBatteryLoadKw"] - sense.kw
         pairs.append(row)
     return sorted(pairs, key=lambda item: item["senseCapturedAt"], reverse=True)
@@ -224,8 +225,12 @@ def load_sense_now_pairing() -> dict[str, Any]:
     if not SENSE_NOW_PAIRING_PATH.exists():
         return {}
     try:
-        return json.loads(SENSE_NOW_PAIRING_PATH.read_text())
-    except json.JSONDecodeError:
+        payload = json.loads(SENSE_NOW_PAIRING_PATH.read_text())
+        at = datetime.fromisoformat(str(payload.get('senseCapturedAtLocal', '')).replace('Z', '+00:00'))
+        if at.tzinfo is None or not 0 <= (datetime.now(timezone.utc) - at).total_seconds() <= 180:
+            return {}
+        return payload
+    except (OSError, ValueError, TypeError, AttributeError):
         return {}
 
 
@@ -239,56 +244,87 @@ def load_json_file(path: Path) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {}
 
 
+def site_load_kw(total, signed_storage):
+    """Envoy total is production + grid; battery charging is negative."""
+    return total + signed_storage
+
+
+def valid_number(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def reading_at(epoch):
+    if not valid_number(epoch) or epoch <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(epoch,timezone.utc).isoformat()
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def solar_scope_diagnostic(pair, now=None):
+    now = now or datetime.now(timezone.utc)
+    times = []
+    for key in ('envoyMeasurementAt','envoyStorageAt','senseMeasurementAt'):
+        try:
+            at = datetime.fromisoformat(pair[key].replace('Z','+00:00'))
+            if at.tzinfo is None or not -5 <= (now-at).total_seconds() <= 300:
+                return {'status':'unavailable','physicalTopologyVerified':False}
+            times.append(at)
+        except (KeyError,AttributeError,TypeError,ValueError):
+            return {'status':'unavailable','physicalTopologyVerified':False}
+    if (max(times)-min(times)).total_seconds() > 10:
+        return {'status':'unmatched','physicalTopologyVerified':False}
+    values=[pair.get(k) for k in ('envoyProductionKw','envoyStorageKw','senseSolarKw')]
+    if not all(valid_number(v) for v in values):
+        return {'status':'unavailable','physicalTopologyVerified':False}
+    pv,battery,solar=values
+    net=pv+battery # Envoy: charging is negative, discharging is positive.
+    gross_error=abs(pv-solar);net_error=abs(net-solar)
+    match=(pv>=.25 and abs(battery)>=.5 and gross_error>=.75 and net_error<=.15)
+    return {'status':'consistent_with_combined_feed' if match else 'no_scope_match',
+        'envoyNetGenerationKw':net,'grossSolarErrorKw':gross_error,
+        'netGenerationErrorKw':net_error,'physicalTopologyVerified':False}
+
+
 def live_envoy_sense_pairing() -> dict[str, Any]:
     envoy = load_json_file(ENVOY_DIRECT_PATH)
     sense = load_json_file(SENSE_NOW_PATH)
-    reachable = next((item for item in envoy.get("probes") or [] if item.get("reachable")), {})
-    production_payload = reachable.get("production") or {}
-    production_rows = production_payload.get("production") or []
-    consumption_rows = production_payload.get("consumption") or []
-    rows = production_rows + consumption_rows
-
-    def row_kw(measurement_type: str) -> float | None:
-        for row in rows:
-            if row.get("measurementType") == measurement_type:
-                return (row.get("wNow") or 0) / 1000.0
-        return None
-
-    def inverter_kw() -> float | None:
-        for row in production_rows:
-            if row.get("type") == "inverters":
-                return (row.get("wNow") or 0) / 1000.0
-        return None
-
-    envoy_production_kw = row_kw("production") or inverter_kw()
-    envoy_total_kw = row_kw("total-consumption")
-    envoy_net_kw = row_kw("net-consumption")
-    sense_kw = (sense.get("watts") or 0) / 1000.0 if sense.get("watts") is not None else None
-    sense_solar_kw = None
-    for device in sense.get("devices") or []:
-        if device.get("id") == "solar":
-            sense_solar_kw = (device.get("watts") or 0) / 1000.0
-            break
-
+    reachable = next((item for item in envoy.get('probes') or []
+                      if item.get('productionStatus') == 200), {})
+    production_payload = reachable.get('production') or {}
+    production_rows = production_payload.get('production') or []
+    rows = production_rows + (production_payload.get('consumption') or [])
+    def row(kind):
+        return next((r for r in rows if r.get('type')=='eim' and r.get('measurementType')==kind), {})
+    def kw(record, key='wNow'):
+        value=record.get(key)
+        return value/1000 if valid_number(value) else None
+    pv=row('production');total=row('total-consumption');grid=row('net-consumption')
+    storage_ids={m.get('eid') for m in reachable.get('meterInfo') or []
+                 if m.get('measurementType')=='storage' and m.get('state')=='enabled'}
+    storage=next((m for m in reachable.get('meters') or [] if m.get('eid') in storage_ids),{})
+    sense_solar = sense.get('solarWatts')
+    if 'solarWatts' not in sense: # Legacy captures remain readable, never coerce missing to zero.
+        sense_solar=next((d.get('watts') for d in sense.get('devices') or [] if d.get('id')=='solar'),None)
     pairing = {
-        "envoyStatus": envoy.get("status"),
-        "envoyCapturedAt": envoy.get("finishedAt"),
-        "envoyTokenSource": envoy.get("tokenSource"),
-        "envoyHost": envoy.get("host"),
-        "senseCapturedAt": sense.get("capturedAt"),
-        "envoyProductionKw": envoy_production_kw,
-        "envoyTotalConsumptionKw": envoy_total_kw,
-        "envoyNetConsumptionKw": envoy_net_kw,
-        "senseLoadKw": sense_kw,
-        "senseSolarKw": sense_solar_kw,
+        'envoyStatus':envoy.get('status'),'envoyCapturedAt':envoy.get('finishedAt'),
+        'envoyTokenSource':envoy.get('tokenSource'),'envoyHost':envoy.get('host'),
+        'envoyMeasurementAt':reading_at(pv.get('readingTime')),
+        'envoyStorageAt':reading_at(storage.get('timestamp')),
+        'senseCapturedAt':sense.get('capturedAt'),'senseMeasurementAt':sense.get('sampleAt'),
+        'envoyProductionKw':kw(pv),'envoyTotalConsumptionKw':kw(total),
+        'envoyNetConsumptionKw':kw(grid),'envoyStorageKw':kw(storage,'activePower'),
+        'senseLoadKw':kw(sense,'watts'),'senseSolarKw':sense_solar/1000 if valid_number(sense_solar) else None,
     }
-    if envoy_total_kw is not None and sense_kw is not None:
-        pairing["envoyTotalMinusSenseKw"] = envoy_total_kw - sense_kw
-        pairing["senseToEnvoyTotalRatio"] = sense_kw / envoy_total_kw if envoy_total_kw else None
-    if envoy_production_kw is not None and sense_solar_kw is not None:
-        pairing["envoyProductionMinusSenseSolarKw"] = envoy_production_kw - sense_solar_kw
-    if envoy_net_kw is not None:
-        pairing["gridState"] = "exporting" if envoy_net_kw < 0 else "importing"
+    load=pairing['senseLoadKw'];total_kw=pairing['envoyTotalConsumptionKw']
+    production=pairing['envoyProductionKw'];solar=pairing['senseSolarKw'];battery=pairing['envoyStorageKw']
+    if total_kw is not None and load is not None:
+        pairing.update(envoyTotalMinusSenseKw=total_kw-load,senseToEnvoyTotalRatio=load/total_kw if total_kw else None)
+    if production is not None and solar is not None:pairing['envoyProductionMinusSenseSolarKw']=production-solar
+    if total_kw is not None and battery is not None:pairing['envoySiteLoadKw']=total_kw+battery
+    if pairing['envoyNetConsumptionKw'] is not None:pairing['gridState']='exporting' if pairing['envoyNetConsumptionKw']<0 else 'importing'
+    pairing['solarScope']=solar_scope_diagnostic(pairing)
     return pairing
 
 
@@ -358,7 +394,7 @@ def build_reconciliation() -> dict[str, Any]:
         if sense:
             row["alarmMinusSenseKw"] = alarm_kw - sense.kw
         if envoy_total and envoy_storage and sense:
-            row["envoyNonBatteryLoadKw"] = envoy_total.kw - abs(envoy_storage.kw)
+            row["envoyNonBatteryLoadKw"] = site_load_kw(envoy_total.kw,envoy_storage.kw)
             row["envoyNonBatteryLoadMinusSenseKw"] = row["envoyNonBatteryLoadKw"] - sense.kw
         instant_pairs.append(row)
 
@@ -491,6 +527,9 @@ def write_report(payload: dict[str, Any]) -> None:
             "",
             f"- Envoy captured: `{live.get('envoyCapturedAt') or 'n/a'}` via `{live.get('envoyTokenSource') or 'n/a'}`.",
             f"- Sense captured: `{live.get('senseCapturedAt') or 'n/a'}`.",
+            f"- Signed battery power: {fmt(live.get('envoyStorageKw'))} kW (negative charging, positive discharging).",
+            f"- Solar scope diagnostic: `{live.get('solarScope',{}).get('status','unavailable')}`. Gross error: {fmt(live.get('solarScope',{}).get('grossSolarErrorKw'))} kW; net-generation error: {fmt(live.get('solarScope',{}).get('netGenerationErrorKw'))} kW.",
+            "- A combined-feed match is evidence of different measurement scope, not physical wiring verification or authorization to recalibrate CTs.",
             "- Treat Envoy as the live site-energy source of truth; Sense is useful as a secondary load/device-classifier signal.",
             "",
             "## Instantaneous Pairing",
@@ -550,7 +589,7 @@ def write_report(payload: dict[str, Any]) -> None:
             "## Sense / Envoy Regimes",
             "",
             "- Sense `Watts` is treated as whole-home usage/load. Sense solar is a separate production device stream when available.",
-            "- Sense total appears to exclude Enphase battery charge/discharge, so the closest Envoy comparator is `Consumption Total - abs(Storage)`.",
+            "- Compare Sense monitored load with storage-adjusted Envoy site load using `Consumption Total + signed Storage`.",
             "- Envoy `Consumption Net` is grid import/export after solar, not a Sense load comparator.",
             "",
             "| Regime | Pairs | Avg raw Envoy total - Sense kW | Avg Sense / raw Envoy total | Avg Envoy non-battery load - Sense kW |",
@@ -592,7 +631,7 @@ def write_report(payload: dict[str, Any]) -> None:
                 f"- Sense total: `{fmt(sense_now.get('senseKw'))}` kW at `{sense_now.get('senseCapturedAtLocal')}`.",
                 f"- Sense device list: Solar `{fmt((solar.get('watts') or 0) / 1000.0)}` kW, Other `{fmt((other.get('watts') or 0) / 1000.0)}` kW, Always On `{fmt((always_on.get('watts') or 0) / 1000.0)}` kW.",
                 f"- Envoy at nearest sample: Total `{fmt((envoy.get('Consumption Total') or {}).get('kw'))}` kW, Production `{fmt((envoy.get('Production') or {}).get('kw'))}` kW, Net `{fmt((envoy.get('Consumption Net') or {}).get('kw'))}` kW, Storage `{fmt((envoy.get('Storage') or {}).get('kw'))}` kW.",
-                f"- Envoy non-battery load estimate (`total - abs(storage)`) minus Sense: `{fmt(sense_now.get('envoyTotalMinusStorageAbsMinusSenseKw'))}` kW.",
+                f"- Envoy non-battery load estimate (`total + signed storage`) minus Sense: `{fmt(sense_now.get('envoyNonBatteryLoadMinusSenseKw'))}` kW.",
                 "- The Sense device list shows Solar separately from the Sense total load reading, so Sense solar should be reconciled to Envoy Production rather than added to grid import.",
             ]
         )
@@ -683,7 +722,7 @@ def write_report(payload: dict[str, Any]) -> None:
             "- Alarm.com Energy Clamp tracks Envoy Consumption Total closely for the 10:59 local instant.",
             "- Envoy Consumption Net is grid import/export after solar, not house load.",
             "- Sense `Watts` is also a whole-home usage/load stream, not grid import/export.",
-            "- Sense total appears to exclude Enphase battery charge/discharge. Compare it first to Envoy non-battery load (`Consumption Total - abs(Storage)`), then to raw Envoy Consumption Total for battery-inclusive site load.",
+            "- Sense measurement coverage remains unverified. Compare it first to storage-adjusted Envoy site load (`Consumption Total + signed Storage`), and keep the unadjusted meter total separate.",
             "- Sense Solar is a separate production stream. Compare it to Envoy Production when the Sense device list is available.",
             "- Recent battery-adjusted Sense/Envoy load pairs are close enough to use Sense as a secondary non-battery load signal, but Envoy remains the stronger source of truth because it also exposes production, net grid, and storage consistently.",
             "- Alarm.com child meters explain only a tiny share of Energy Clamp consumption; most usage remains unclassified under the parent clamp.",

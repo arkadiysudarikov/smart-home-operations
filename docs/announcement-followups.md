@@ -88,13 +88,100 @@ The microphone helper completed and exited; no pending test reminder remains.
 
 ## Repeats until acknowledged
 
-Actionable announcements now remain pending and repeat every five minutes until
-explicitly acknowledged. Each source has its own pending item, persisted across
+November 3 reconciliation: a fresh open-door observation clears only that
+appliance's queued repeats and matching snooze. A remembered opening after the
+finish time also counts if the door has already closed by the next poll. Other
+appliance reminders and unrelated alerts are preserved.
+
+The live SmartHQ adapter now preserves actual door, cycle-selection, and tank
+pushes even when no HomeKit service reads those ERDs. The reviewed 0.9.0 patch is
+reproducible with `scripts/patch_smarthq_live_signals.py`; it refuses unknown
+plugin versions or layouts and keeps a backup. Tank-low delivery requires a
+fresh explicit low observation, fires once per episode, respects owner-away
+suppression, and rearms only after a fresh non-low observation. Unknown or stale
+values never mean the tank has been refilled. Low/full decoding follows
+[the SDK's tank-status enum](https://github.com/simbaja/gehome/blob/master/gehomesdk/erd/values/laundry/laundry_enums.py).
+No natural low-tank delivery or speaker playback was verified in this repair.
+
+The Alarm.com camera ring guard is likewise reproducible with
+`scripts/patch_alarm_camera_ring.py` for reviewed plugin version 1.13.1. Generic
+camera triggers are suppressed because they cannot prove a physical button press;
+this also suppresses any real press represented solely by the same ambiguous
+event. Physical chime and Alarm.com recording are separate and remain unchanged.
+Source announcement configuration now retains the same unverified-button guard
+as runtime, preventing a source deployment from re-enabling spoken false rings.
+
+The reviewed Alarm.com light patch, `scripts/patch_alarm_light_power.py`, keeps
+retained brightness separate from power. A level-only event updates brightness
+and coalesces an authoritative refresh rather than publishing a false On event.
+The bridge also refreshes state when its WebSocket connects, so a restored cache
+or an event missed during disconnection cannot remain authoritative for an hour.
+Its `--verify` mode exercises the installed compiled handlers using fake HAP
+services and refresh functions, including stale-connection and shutdown guards;
+it sends no real device commands. Physical light state remains a separate check.
+
+November 2 repair: all speaker transports now require a fresh (at most 180 seconds)
+explicit `homePresent: true` from the owner's presence monitor. Away, missing,
+stale, or unknown presence suppresses new announcements and replays before any
+speaker transport runs. Suppressed announcements are not added to the repeat queue.
+The user's absence silences announcements even if other residents remain home.
+
+Both acknowledgment HTTP routes clear the queue directly, without acquiring the
+briefing lock or invoking speaker delivery. The CLI acknowledgment also bypasses
+the briefing lock and relay. A default shared Home action, **Clear Announcements**,
+lets residents clear reminders without a personal shortcut: “Siri, turn on Clear
+Announcements.” This clears pending repeats and the one-shot snooze; it does not
+delete the historical event log or prevent new source events when the owner returns.
+
+Actionable announcements remain pending with progressively longer repeat gaps:
+5, 10, 20, 40, then 60 minutes until explicitly acknowledged. The one-hour cap
+applies to subsequent repeats, including uncertain delivery attempts. Pauses,
+away presence and Calendar privacy do not consume a repeat. Each source has its own pending item, persisted across
 service restarts; a newer message replaces that source's prior message. This
-covers laundry, appointment reminders, energy attention notices, household
-reminders, doorbell/help requests, laundry connectivity and freezer warnings.
+covers laundry, appointment reminders, energy attention notices,
+doorbell/help requests, laundry connectivity and freezer warnings.
 Energy-clear and health-recovery announcements clear the matching pending warning;
 status replies and announcement-control confirmations do not repeat.
+
+Combined household notices are excluded from automatic repeats and snoozes: their
+saved prose cannot establish that the original door or sensor condition still
+exists. The source monitor announces sustained garage openings once per episode
+and re-arms only after observing closure. Legacy household queue entries are
+discarded without speaking. This prevents a closed garage door from producing
+five-minute "unacknowledged" warnings.
+
+The November 4 reliability repair keeps acknowledgment locks short: repeat and
+snooze delivery and Calendar/UniFi checks run outside them. Delivery claims are
+checked again after privacy checks, and attempts that began before acknowledgment
+cannot add themselves back to the repeat queue. A relay already accepted by the
+phone cannot be recalled. Expired/cancelled Calendar events are pruned separately
+from temporarily unavailable/private events. The detergent-low source uses the
+canonical `detergent_tank_low` identifier and obeys routine pauses.
+It now joins the progressive repeat queue, cleared by acknowledgment or a fresh
+full-tank reading. Laundry capture explicitly reads the case-sensitive SmartHQ
+REST address `0x203C` once per worker pass; failed or unknown responses remain
+unknown rather than reusing an old full-tank value. Only a fresh explicit low
+reading may generate the warning.
+
+Laundry capture/notifiers now run in their own 60-second LaunchAgent when
+`laundry_worker.enabled` is true. Energy collection skips those steps in this
+mode. Notifiers commit cycle state and delivery jobs atomically before external
+work; a separate 15-second delivery job claims each action. Failed and uncertain
+attempts remain visible to announcement-health diagnostics rather than being
+blindly replayed. A new cycle or door acknowledgment cancels stale pending audio.
+
+Garage camera motion/clearance writes durable edge timestamps through the native
+Dummy switch command hooks. A separate reconciliation job checks every 15 seconds;
+an intervening motion pulse can therefore extend the timer even after the Boolean
+has cleared. This still supplies motion evidence, not stationary-person detection.
+Do not describe the latter as verified occupancy.
+
+Installation uses backed-up atomic file replacement without deleting runtime-only
+files or replacing existing home configuration. It preserves the compiled Calendar
+reader, installs Calendar/followup/laundry/delivery/garage agents, and resolves the
+running action-plugin Node installation before updating it. Drift checks include
+the actual installed plugin and all those agents. Calendar reader permission and
+on-device Siri/speaker outcomes remain separate operational checks.
 
 Run **Acknowledge announcements** by tapping the shortcut or asking Siri to run
 it. Its existing SSH key/host calls the restricted `acknowledge` command on M4.
@@ -106,7 +193,7 @@ Ordinary quiet hours and pauses defer repeats. Calendar repeats retain the fresh
 occurrence and owner-at-home privacy gate, so expired, cancelled or unavailable
 appointments are never disclosed. Repeats say “Unacknowledged announcement” to
 identify recorded text rather than claim a fresh observation. Failed/uncertain
-replays wait another five minutes; they cannot recursively enqueue themselves.
+replays use the same capped progressive backoff; they cannot recursively enqueue themselves.
 No historical log entries are backfilled when deploying this feature.
 
 October 20 live validation: the marked synthetic household test was accepted at

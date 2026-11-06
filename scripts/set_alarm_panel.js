@@ -56,8 +56,8 @@ function parseArgs(argv) {
       throw new Error(`unknown argument: ${item}`);
     }
   }
-  if (!["home", "stay", "off"].includes(args.mode)) {
-    throw new Error("--mode must be one of: home, stay, off");
+  if (!["home", "stay", "away", "off"].includes(args.mode)) {
+    throw new Error("--mode must be one of: home, stay, away, off");
   }
   return args;
 }
@@ -110,6 +110,8 @@ async function main() {
   let response;
   if (args.mode === "off") {
     response = await alarm.disarm(partition.id, auth);
+  } else if (args.mode === "away") {
+    response = await alarm.armAway(partition.id, auth, armingOptions(config, args.mode));
   } else {
     response = await alarm.armStay(partition.id, auth, armingOptions(config, args.mode));
   }

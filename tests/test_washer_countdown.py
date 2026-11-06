@@ -9,6 +9,43 @@ import washer_notifier as w
 
 
 class CountdownTest(unittest.TestCase):
+    def test_open_and_close_between_polls_clears_unload_wait(self):
+        now = datetime(2026, 11, 3, 12, 20, tzinfo=ZoneInfo('America/Los_Angeles'))
+        state = {'awaitingUnload': True, 'washFinishedAt': (now-timedelta(minutes=5)).isoformat(),
+                 'lastCycleActive': False, 'lastInUse': False}
+        current = {'fresh': True, 'inUse': False, 'cycleActive': False, 'doorOpen': False,
+                   'capturedAt': now.isoformat(), 'doorLastOpenedAt': (now-timedelta(minutes=2)).isoformat()}
+        result, actions = w.evolve_washer_state(state, current, now, self.cfg)
+        self.assertFalse(result['awaitingUnload'])
+        self.assertIn('reminder_off', actions)
+        current['doorLastOpenedAt'] = (now-timedelta(hours=2)).isoformat()
+        result, actions = w.evolve_washer_state(state, current, now, self.cfg)
+        self.assertTrue(result['awaitingUnload'])
+        current['doorLastOpenedAt'] = (now+timedelta(minutes=1)).isoformat()
+        result, actions = w.evolve_washer_state(state, current, now, self.cfg)
+        self.assertTrue(result['awaitingUnload'])
+    def test_manual_venting_does_not_arm_an_eight_hour_wash(self):
+        state = {'lastCycleActive': False, 'lastInUse': False, 'primaryArmed': False,
+                 'completedCycles': 37, 'washFinishedAt': '2026-09-28T09:50:00-07:00'}
+        for minute, seconds in ((0, 28830), (2, 28710), (4, 28590)):
+            state, actions = self.step(state, seconds, minute, ventingActive=True)
+            self.assertTrue(state['ventingArmed'])
+            self.assertFalse(state['primaryArmed'])
+            self.assertFalse(state['lastCycleActive'])
+            self.assertEqual(state['completedCycles'], 37)
+            self.assertNotIn('announce_finish', actions)
+        state, actions = self.step(state, 0, 6, ventingActive=False, inUse=False)
+        self.assertIn('announce_venting', actions)
+        self.assertNotIn('announce_finish', actions)
+
+    def test_explicit_venting_false_does_not_infer_venting_from_in_use(self):
+        state, _ = self.step({}, 120, 0, ventingActive=False)
+        state, _ = self.step(state, 60, 2, ventingActive=False)
+        state, _ = self.step(state, 0, 4, ventingActive=False)
+        state, actions = self.step(state, 0, 6, ventingActive=False)
+        self.assertIn('announce_finish', actions)
+        self.assertFalse(state['ventingArmed'])
+
     def setUp(self):
         self.now = datetime(2026, 9, 28, 10, tzinfo=ZoneInfo('America/Los_Angeles'))
         self.cfg = {'finish_signal': 'countdown_confirmed', 'minimum_running_samples': 2}

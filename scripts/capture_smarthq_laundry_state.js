@@ -48,6 +48,22 @@ function booleanValue(value) {
   return Boolean(value);
 }
 
+// Decode only documented, actually observed ERDs; unknown is never closed/full.
+function laundrySignals(heartbeat) {
+  const door = heartbeat.erds?.["0x2012"];
+  const tank = heartbeat.erds?.["0x203c"];
+  const decode = (value) => typeof value === "string" && /^[0-9a-f]{2}$/i.test(value) ? parseInt(value, 16) : null;
+  const doorValue = decode(door?.value);
+  const tankValue = decode(tank?.value);
+  return {
+    cycleCode: decode(heartbeat.erds?.["0x200a"]?.value),
+    doorOpen: doorValue === 0 ? true : doorValue === 1 ? false : null,
+    doorLastOpenedAt: door?.lastOpenedAt ?? (doorValue === 0 ? door.lastChangedAt : null),
+    detergentTankLow: tankValue === 1 ? true : tankValue === 2 ? false : null,
+    detergentTankObservedAt: tank?.lastSuccessAt ?? null,
+  };
+}
+
 function heartbeatForAccessory(accessoryName) {
   try {
     const payload = JSON.parse(fs.readFileSync(HEARTBEAT_PATH, "utf8"));
@@ -56,6 +72,32 @@ function heartbeatForAccessory(accessoryName) {
       .sort((a, b) => String(b.lastSuccessAt).localeCompare(String(a.lastSuccessAt)))[0] || {};
   } catch {
     return {};
+  }
+}
+
+async function readDetergentTank({ fetcher = fetch, now = () => new Date().toISOString(),
+  tokenPath = path.join(os.homedir(), '.homebridge', 'smarthq-token.json'),
+  heartbeatPath = HEARTBEAT_PATH } = {}) {
+  try {
+    const heartbeat = JSON.parse(fs.readFileSync(heartbeatPath, 'utf8'));
+    const ids = Object.entries(heartbeat.devices || {}).filter(([, d]) => d.nickname === 'Washer');
+    if (ids.length !== 1) throw new Error('washer_identity_unavailable');
+    const token = JSON.parse(fs.readFileSync(tokenPath, 'utf8')).tokenSet?.access_token;
+    if (!token) throw new Error('tank_auth_unavailable');
+    // GE's REST routes are case-sensitive: lowercase 0x203c returns HTTP 400.
+    // No refresh, redirects, writes, or retries; credentials stay on the GE origin.
+    const response = await fetcher(`https://api.brillion.geappliances.com/v1/appliance/${encodeURIComponent(ids[0][0])}/erd/0x203C`, {
+      headers: { Authorization: `Bearer ${token}` }, redirect: 'error', signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) throw new Error(`tank_http_${response.status}`);
+    const body = await response.json();
+    if (!['01','02'].includes(body.value)) throw new Error('tank_value_unknown');
+    return { detergentTankLow: body.value === '01', detergentTankObservedAt: now(),
+      detergentTankSource: 'smarthq-rest', detergentTankSourceUpdatedAt: body.time ?? null };
+  } catch (error) {
+    // Do not substitute an old full-tank reading when the current read fails.
+    return { detergentTankLow: null, detergentTankObservedAt: null,
+      detergentTankReadError: /^tank_|^washer_/.test(error.message) ? error.message : 'tank_read_failed' };
   }
 }
 
@@ -97,15 +139,18 @@ async function main() {
       const mainService = applianceServices.find((service) => service.serviceName === device.mainServiceName);
       const cycleService = applianceServices.find((service) => service.serviceName === "Cycle Status");
       if (!mainService || !cycleService) continue;
+      const doorService = applianceServices.find((service) => service.serviceName === `${device.accessoryName} Door`);
       await Promise.all(
-        [mainService, cycleService].map((service) => service.refreshCharacteristics().catch(() => undefined)),
+        [mainService, cycleService, doorService].filter(Boolean).map((service) => service.refreshCharacteristics().catch(() => undefined)),
       );
+      const signals = laundrySignals(heartbeatForAccessory(device.accessoryName));
+      if (appliance === 'washer') Object.assign(signals, await readDetergentTank());
+      const venting = appliance === "washer" && signals.cycleCode === 35 && booleanValue(characteristic(mainService, "InUse")) === true;
       devices[appliance] = {
         inUse: booleanValue(characteristic(mainService, "InUse")),
-        cycleActive: booleanValue(characteristic(cycleService, "MotionDetected")),
-        // SmartHQ returns no usable door ERD for these models. Treating the cached
-        // closed value as real would create false unload reminders.
-        doorOpen: null,
+        cycleActive: venting ? false : booleanValue(characteristic(cycleService, "MotionDetected")),
+        ventingActive: venting,
+        ...signals,
         remainingSeconds: characteristic(mainService, "RemainingDuration"),
         model: mainService.accessoryInformation?.Model ?? null,
         apiLastSuccessAt: heartbeatForAccessory(device.accessoryName).lastSuccessAt ?? null,
@@ -129,4 +174,5 @@ async function main() {
   }
 }
 
-main();
+if (require.main === module) main();
+module.exports = { laundrySignals, readDetergentTank };

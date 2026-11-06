@@ -2,25 +2,30 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
-  <key>Label</key>
-  <string>com.arkadiy.smart-home-display-awake</string>
-  <key>ProgramArguments</key>
-  <array>
-    <string>/bin/zsh</string>
-    <string>-lc</string>
-    <string>cd '/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor' &amp;&amp; "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3" ./scripts/display_awake_manager.py</string>
-  </array>
-  <key>WorkingDirectory</key>
-  <string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor</string>
-  <key>RunAtLoad</key>
-  <true/>
-  <key>KeepAlive</key>
-  <true/>
-  <key>ThrottleInterval</key>
-  <integer>10</integer>
-  <key>StandardOutPath</key>
-  <string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/logs/display-awake.out.log</string>
-  <key>StandardErrorPath</key>
-  <string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/logs/display-awake.err.log</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/arkadiysudarikov/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<key>KeepAlive</key>
+	<true/>
+	<key>Label</key>
+	<string>com.arkadiy.smart-home-display-awake</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/bin/zsh</string>
+		<string>-lc</string>
+		<string>cd '/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor' &amp;&amp; "$HOME/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3" ./scripts/display_awake_manager.py</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StandardErrorPath</key>
+	<string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/logs/display-awake.err.log</string>
+	<key>StandardOutPath</key>
+	<string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor/logs/display-awake.out.log</string>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>WorkingDirectory</key>
+	<string>/Users/arkadiysudarikov/Library/Application Support/SmartHomeMonitor</string>
 </dict>
 </plist>

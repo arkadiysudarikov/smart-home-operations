@@ -2221,7 +2221,7 @@ def gate_test_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/gate_test_mode.py --timeout 600 --interval 30',
+        'export PATH="$HOME/.local/node-v24.22.2-darwin-arm64/bin:$PATH"; ./scripts/gate_test_mode.py --timeout 600 --interval 30',
     ]
 
 
@@ -2229,7 +2229,7 @@ def alarm_cache_refresh_command() -> list[str]:
     return [
         "/bin/zsh",
         "-lc",
-        'export PATH="$HOME/.local/node-v24.16.0-darwin-arm64/bin:$PATH"; ./scripts/capture_alarm_com.js && ./scripts/smart_home_snapshot.py && ./scripts/generate_alerts.py',
+        'export PATH="$HOME/.local/node-v24.22.2-darwin-arm64/bin:$PATH"; ./scripts/capture_alarm_com.js && ./scripts/smart_home_snapshot.py && ./scripts/generate_alerts.py',
     ]
 
 
@@ -2881,6 +2881,10 @@ def garage_light_hold_seconds() -> int:
 
 
 def garage_occupancy_status() -> dict[str, Any]:
+    from garage_camera_occupancy import read
+    camera = read(garage_light_config())
+    if camera is not None:
+        return camera
     occupancy_config = garage_light_config().get("occupancy")
     if not isinstance(occupancy_config, dict) or occupancy_config.get("enabled") is not True:
         return {"occupied": False, "enabled": False}
@@ -3044,6 +3048,10 @@ def expire_garage_light_hold() -> None:
             return
 
         now = local_now()
+        from garage_camera_occupancy import guard
+        from types import SimpleNamespace
+        if guard(SimpleNamespace(**globals()), state, now):
+            return
         last_activity = parse_dt(state.get("lastActivityAt"))
         if last_activity is None:
             state.update({"active": False, "status": "invalid-last-activity", "finishedAt": now.isoformat(timespec="seconds")})
@@ -3327,6 +3335,9 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         query = parse_qs(parsed.query)
+        if path == "/status/services":
+            import service_health
+            return 200, service_health.build(DATA_DIR, datetime.now(timezone.utc).timestamp())
         if path == "/health":
             return 200, {"ok": True}
         if path == "/status":
@@ -3343,7 +3354,14 @@ class Handler(BaseHTTPRequestHandler):
             return 405, {"ok": False, "error": "action endpoints require POST"}
         if path.startswith("/action/") and not self.request_origin_allowed():
             return 403, {"ok": False, "error": "request origin is not allowed"}
-        if path == "/action/acknowledge-announcements":
+        if path == "/action/laundry-unloaded":
+            appliance = (query.get("appliance") or [""])[0]
+            if appliance not in {"washer", "dryer", "combo"}:
+                return 400, {"ok": False, "error": "appliance must be washer, dryer, or combo"}
+            from laundry_unload import acknowledge_unloaded
+            payload = acknowledge_unloaded(ROOT, appliance)
+            return (200 if payload["ok"] else 503), payload
+        if path in {"/action/acknowledge-announcements", "/action/dr-house-acknowledge"}:
             from announcement_ack import acknowledge
             count = acknowledge(ROOT / "data")
             return 200, {"ok": True, "acknowledged": count}
@@ -3369,6 +3387,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/action/refresh-alarm-cache":
             payload = refresh_alarm_cache()
             return (202 if payload["ok"] else 500), payload
+        if path == "/action/garage-reconcile":
+            if garage_light_config().get("camera_motion", {}).get("enabled"):
+                expire_garage_light_hold()
+            from garage_light_reconcile import adopt
+            from types import SimpleNamespace
+            payload = adopt(SimpleNamespace(**globals()))
+            return (200 if payload.get("ok") else 503), payload
         if path == "/action/garage-activity":
             payload = trigger_garage_light_activity(
                 trigger=(query.get("trigger") or [None])[0],
@@ -3382,6 +3407,10 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/action/screens-auto":
             payload = set_screens_override(False)
             return 200, payload
+        if path == "/action/dog-aware-departure":
+            from dog_aware_departure import depart
+            payload = depart(set_alarm_panel)
+            return (202 if payload["ok"] else 500), payload
         if path == "/action/panel-home":
             payload = set_alarm_panel("home")
             return (202 if payload["ok"] else 500), payload

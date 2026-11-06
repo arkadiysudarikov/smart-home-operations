@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import json
+import math
 import re
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from analyze_meter_reconciliation import site_load_kw
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -64,16 +66,33 @@ def nearest_envoy_samples(target: datetime) -> dict[str, dict[str, Any]]:
     return nearest
 
 
-def main() -> int:
-    if not SENSE_NOW_PATH.exists():
-        raise SystemExit("No Sense Now capture found. Run scripts/capture_sense_now.js first.")
-    sense = json.loads(SENSE_NOW_PATH.read_text())
-    captured_at = parse_dt(str(sense["capturedAt"]))
-    sense_kw = float(sense["watts"]) / 1000
-    envoy = nearest_envoy_samples(captured_at)
-
+def build_pair(sense: dict[str, Any], envoy: dict[str, dict[str, Any]], now: datetime) -> dict[str, Any]:
+    generated = now.isoformat(timespec='seconds')
+    try:
+        measured_at = parse_dt(str(sense.get('sampleAt') if 'sampleAt' in sense else sense.get('capturedAt')))
+        watts = sense.get('watts')
+        valid = (sense.get('ok') is True and sense.get('online') is True
+                 and type(watts) in (int, float) and math.isfinite(watts) and watts >= 0
+                 and 0 <= (now - measured_at).total_seconds() <= 180)
+    except (ValueError, TypeError):
+        valid = False
+    if not valid:
+        return {'generatedAt': generated, 'status': 'stale_or_missing_sense', 'envoy': {}}
+    sense_kw = watts / 1000
+    aligned = {}
+    for meter, reading in envoy.items():
+        try:
+            at = parse_dt(str(reading.get('capturedAt')))
+            kw = reading.get('kw')
+            gap = abs((at - measured_at).total_seconds())
+            if (type(kw) in (int, float) and math.isfinite(kw) and gap <= 90
+                    and 0 <= (now - at).total_seconds() <= 180):
+                aligned[meter] = {**reading, 'gapSeconds': gap}
+        except (ValueError, TypeError):
+            continue
+    envoy = aligned
     result: dict[str, Any] = {
-        "senseCapturedAtLocal": captured_at.isoformat(timespec="seconds"),
+        "senseCapturedAtLocal": measured_at.isoformat(timespec="seconds"),
         "senseKw": sense_kw,
         "senseWatts": sense.get("watts"),
         "senseCurrent": sense.get("current"),
@@ -86,28 +105,56 @@ def main() -> int:
     if total:
         result["envoyMinusSenseKw"] = total["kw"] - sense_kw
     if total and storage:
-        result["envoyNonBatteryLoadKw"] = total["kw"] - abs(storage["kw"])
+        result["envoyNonBatteryLoadKw"] = site_load_kw(total["kw"], storage["kw"])
         result["envoyNonBatteryLoadMinusSenseKw"] = result["envoyNonBatteryLoadKw"] - sense_kw
-        result["envoyTotalMinusStorageAbsMinusSenseKw"] = result["envoyNonBatteryLoadMinusSenseKw"]
+        result["envoySiteLoadMinusSenseKw"] = result["envoyNonBatteryLoadMinusSenseKw"]
     production = envoy.get("Production")
     if production and storage:
         result["envoySolarAfterStorageKw"] = production["kw"] + storage["kw"]
 
+    result['generatedAt'] = generated
+    result['status'] = 'matched' if all(m in envoy for m in METERS) else 'partial_or_unmatched'
+    return result
+
+
+def main() -> int:
+    now = datetime.now(timezone.utc)
+    try:
+        sense = json.loads(SENSE_NOW_PATH.read_text())
+    except (OSError, ValueError):
+        sense = {}
+    if not isinstance(sense, dict):
+        sense = {}
+    target_raw = sense.get('sampleAt') if 'sampleAt' in sense else sense.get('capturedAt')
+    try:
+        target = parse_dt(str(target_raw))
+        envoy = nearest_envoy_samples(target) if DB_PATH.exists() else {}
+    except (ValueError, TypeError):
+        envoy = {}
+    result = build_pair(sense, envoy, now)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     REPORT_DIR.mkdir(parents=True, exist_ok=True)
     PAIRING_JSON_PATH.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
 
+    if 'senseKw' not in result:
+        PAIRING_REPORT_PATH.write_text('# Sense Now / Envoy Pairing\n\nNo fresh verified Sense measurement is available.\n')
+        print(PAIRING_REPORT_PATH)
+        return 0
+    sense_kw = result['senseKw']
+    envoy = result['envoy']
     lines = [
         "# Sense Now / Envoy Pairing",
         "",
         f"- Sense captured: `{result['senseCapturedAtLocal']}`",
         f"- Sense total: `{sense_kw:.3f} kW`",
+        f"- Pairing status: `{result['status']}`",
+        "- Log alignment does not verify physical CT coverage or sensor calibration.",
         "",
     ]
     for device in result["senseDevices"]:
         watts = float(device.get("watts") or 0)
         lines.append(f"- Sense device `{device.get('name')}`: `{watts / 1000:.3f} kW`")
-    lines.extend(["", "## Nearest Envoy Meters", ""])
+    lines.extend(["", "## Nearest aligned Envoy log samples", ""])
     for meter in METERS:
         sample = envoy.get(meter)
         if sample:
@@ -118,15 +165,15 @@ def main() -> int:
     if "envoyMinusSenseKw" in result:
         lines.extend(["", f"- Raw Envoy total minus Sense: `{result['envoyMinusSenseKw']:.3f} kW`"])
     if "envoyNonBatteryLoadKw" in result:
-        lines.append(f"- Envoy non-battery load estimate (`total - abs(storage)`): `{result['envoyNonBatteryLoadKw']:.3f} kW`")
+        lines.append(f"- Envoy non-battery load estimate (`total + signed storage`): `{result['envoyNonBatteryLoadKw']:.3f} kW`")
     if "envoyNonBatteryLoadMinusSenseKw" in result:
         lines.append(f"- Envoy non-battery load estimate minus Sense: `{result['envoyNonBatteryLoadMinusSenseKw']:.3f} kW`")
     if "envoySolarAfterStorageKw" in result:
         lines.append(f"- Envoy solar after battery charge/discharge: `{result['envoySolarAfterStorageKw']:.3f} kW`")
-    if "envoyTotalMinusStorageAbsMinusSenseKw" in result:
+    if "envoySiteLoadMinusSenseKw" in result:
         lines.append(
-            "- Envoy total minus battery charge/discharge magnitude minus Sense: "
-            f"`{result['envoyTotalMinusStorageAbsMinusSenseKw']:.3f} kW`"
+            "- Storage-adjusted Envoy site load minus Sense: "
+            f"`{result['envoySiteLoadMinusSenseKw']:.3f} kW`"
         )
     PAIRING_REPORT_PATH.write_text("\n".join(lines) + "\n")
     print(PAIRING_REPORT_PATH)

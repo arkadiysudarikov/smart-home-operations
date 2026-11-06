@@ -75,7 +75,8 @@ class AdditionalTests(unittest.TestCase):
         import smart_home_snapshot as snapshot
         config = json.loads((Path(__file__).resolve().parents[1] / "config/additional_announcements.json").read_text())
         door = config["doorbell"]
-        self.assertEqual(door["verification"], "installed_plugin_contract_and_accessory_mapping")
+        self.assertEqual(door["verification"], "generic_camera_trigger_cannot_verify_button_press")
+        self.assertFalse(door['sourceVerified'])
         self.assertFalse(door["physicalDeliveryVerified"])
         lines = [
             f"[9/28/2026, 12:00:00 PM] [{door['component']}] Camera ring detected for {door['name']} ({door['cameraId']})",
@@ -87,7 +88,7 @@ class AdditionalTests(unittest.TestCase):
         # Fix quiet-hour policy independently of the runner's host timezone.
         with patch.object(a, "daytime", return_value=True):
             state, notices = a.evaluate(config, {"doorbell": {}}, {}, rings, {}, now)
-            self.assertEqual(notices, [("doorbell_press", "Someone rang the doorbell.")])
+            self.assertEqual(notices, [])  # A log label cannot prove a physical press.
             self.assertEqual(a.evaluate(config, state, {}, rings, {}, now+1)[1], [])
 
     def test_freezer_verified_persistent_hysteresis(self):

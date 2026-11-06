@@ -296,6 +296,7 @@ def probe_host(host: str, bearer: str | None) -> dict[str, Any]:
     info_code, info, info_error = request_json(f"{base}/info")
     production_code, production, production_error = request_json(f"{base}/production.json", bearer)
     meters_code, meters, meters_error = request_json(f"{base}/ivp/meters/readings", bearer)
+    meter_info_code, meter_info, meter_info_error = request_json(f"{base}/ivp/meters", bearer)
     auth_required = production_code in {401, 403} or meters_code in {401, 403}
     return {
         "host": host,
@@ -303,6 +304,8 @@ def probe_host(host: str, bearer: str | None) -> dict[str, Any]:
         "infoStatus": info_code,
         "productionStatus": production_code,
         "metersStatus": meters_code,
+        "meterInfoStatus": meter_info_code,
+        "meterInfo": meter_info if isinstance(meter_info, list) else None,
         "authRequired": auth_required,
         "info": info if isinstance(info, dict) else None,
         "production": production if isinstance(production, dict) else None,
@@ -311,6 +314,8 @@ def probe_host(host: str, bearer: str | None) -> dict[str, Any]:
             "info": info_error,
             "production": production_error,
             "meters": meters_error,
+            "meterInfo": meter_info_error,
+            "meterInfo": meter_info_error,
         },
     }
 

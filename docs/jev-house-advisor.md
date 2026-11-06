@@ -78,6 +78,10 @@ Each scheduled pass also writes `data/latest_jev_house_diagnostics.json`, so
 fresh laundry conflicts remain visible during the API cooldown. This record
 cannot alter the completion detector or send an announcement.
 
+The household review also receives a fresh detergent-low boolean (unknown when
+stale), with a locally gated detergent attention choice and a fixed refill
+template. Model priority never suppresses the deterministic tank-low alert.
+
 Focused verification: `python3 -m unittest discover -s tests -p 'test_jev*py'`.
 Tests cover fresh source adapters, model schemas, evidence gates, bounded requests,
 privacy, cooldown persistence, no-mail follow-ups, and no implicit controls.
@@ -114,3 +118,25 @@ Quiet until morning; When should I leave; Anything unusual). They have no SSH
 host to migrate and were not represented as working commands by this change.
 Phone sync, acoustic delivery, and Siri voice recognition remain separate checks,
 not established by relay acceptance.
+
+## November 5 service review
+
+Household questions now include evidence-gated service triage and security or
+detergent maintenance. `/status/services` and runtime `reports/service_health.md`
+separate configured bridges, reachable bridges, fresh source results, disabled
+integrations, and manual functional verification. Model inputs contain only
+fixed fault categories and counts; labels, device IDs, raw logs, and calendar
+contents remain local.
+
+Scheduled energy advice uses the same strict Choice validation as household
+advice, with a local classification gate. Solar timing measures meter timestamp
+span rather than scheduler duration. Automatic evening recaps skip unchanged
+accepted issue sets; on-request recaps remain available. Interactive and scheduled
+reviews share their publication lock and five-minute attempt cooldown.
+
+Tariff timing can now use a private `data/verified_tariff_profile.json` containing
+bill evidence and a current public schedule check. The model sees only hint
+availability and whether the historical winter low-rate window is now open.
+The local reply states that the bill-verified plan may have changed and does not
+claim current account prices or guaranteed cheapest total cost. Missing or
+expired evidence disables the hint; solar timing retains its distinct meter gate.

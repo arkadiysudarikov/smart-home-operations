@@ -32,6 +32,16 @@ class FollowupTests(unittest.TestCase):
     def test_repeat_is_recorded_text_not_a_fresh_claim(self):
         self.assertEqual(follow.request("repeat", self.now), "Earlier announcement: Washer finished.")
 
+    def test_generic_household_notice_cannot_be_replayed_or_snoozed(self):
+        event = dict(self.event, announcementId='household_reminder')
+        self.assertFalse(follow.approved(event, self.now))
+        path = self.root/'announcement_followup.json'
+        path.write_text(json.dumps({'event': event, 'requestedAt': self.now, 'dueAt': self.now+600}))
+        with patch.object(follow.alerts, 'run_indoor_homepod_announcement') as send:
+            follow.tick(self.now+600)
+            send.assert_not_called()
+        self.assertEqual(json.loads(path.read_text()), {})
+
     def test_unknown_failed_skipped_stale_future_and_unsafe_fail_closed(self):
         for changes in ({"announcementId": "email"}, {"announcementId": "dr_house_status"},
                         {"ok": False}, {"skipped": True}, {"at": "bad"},

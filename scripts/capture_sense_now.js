@@ -87,6 +87,19 @@ function readKeychainPassword(service, account) {
   }
 }
 
+function realtimeMeasurements(realtime, isRealtime) {
+  const finite = value => typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const epoch = finite(realtime.epoch);
+  return {
+    sampleAt: isRealtime && epoch !== null && epoch > 0 && epoch < 8640000000000
+      ? new Date(epoch * 1000).toISOString() : null,
+    solarWatts: isRealtime ? finite(realtime.solar_w) : null,
+    gridWatts: isRealtime ? finite(realtime.grid_w) : null,
+    solarChannelWatts: isRealtime && Array.isArray(realtime.aux?.solar)
+      ? realtime.aux.solar.map(finite) : null,
+  };
+}
+
 async function main() {
   const sense = require(findSenseModule());
   const accessory = loadSenseConfig();
@@ -119,6 +132,7 @@ async function main() {
       type: payload?.type,
       online: isRealtime ? true : realtime.online,
       connectionState: realtime.connection_state || null,
+      ...realtimeMeasurements(realtime, isRealtime),
       watts: realtime.w,
       current: realtime.c,
       voltage:
@@ -166,7 +180,9 @@ async function main() {
   }, 20000);
 }
 
-main().catch((error) => {
+module.exports = { realtimeMeasurements };
+
+if (require.main === module) main().catch((error) => {
   console.error(error.stack || String(error));
   process.exit(1);
 });

@@ -27,7 +27,8 @@ OPTIONS = {
     'contributor': {'hvac':'Measured HVAC contributor', 'ev':'Measured EV contributor',
         'laundry':'Measured laundry contributor', 'multiple':'Multiple measured contributors', 'unknown':'No supported explanation'},
     'attention': {'temperature':'Abnormal temperature', 'laundry':'Conflicting laundry readings',
-        'openings':'Open or unlocked entry', 'energy':'High consumption', 'none':'No verified issue'},
+        'detergent':'Freshly observed low detergent tank',
+        'openings':'Open or unlocked entry', 'energy':'High consumption', 'services':'Verified service faults', 'none':'No verified issue'},
     'laundry': {'conflict':'Positive countdown conflicts with idle cycle flag', 'unknown':'No verified conflict'},
     'routine': {'announce':'A routine issue merits attention', 'combine':'Combine multiple routine issues',
         'quiet':'No additional routine summary needed'},
@@ -36,6 +37,10 @@ OPTIONS = {
     'savings': {'cooling_open':'Cooling with an opening', 'away_high':'Owner carried device away and unusually high matching load',
         'unknown':'No verified opportunity'},
 }
+from service_health import FAULT_LABELS, CHECKS
+OPTIONS['service'] = {**{k:CHECKS[k] for k in CHECKS}, 'unknown':'No verified service fault'}
+OPTIONS['maintenance'] = {'security':'Review reported security device trouble',
+                          'detergent':'Refill freshly observed low detergent', 'unknown':'No verified maintenance need'}
 from jev_house_features import OPTIONS as FEATURE_OPTIONS
 OPTIONS.update(FEATURE_OPTIONS)
 
@@ -83,15 +88,24 @@ def facts(data, now, sample=None):
     cold = any(k.startswith('temperature:cold:') and v['state']=='open' for k,v in observed.items())
     cooling_open = any(k.startswith('cooling:') and v['state']=='open' for k,v in observed.items())
     laundry = load(data/'latest_smarthq_laundry_state.json')
-    conflicts, remaining = 0, []
+    conflicts, remaining, tank_low = 0, [], None
     if laundry.get('ok') is True and fresh(laundry.get('capturedAt'),now):
         for name, device in laundry.get('devices',{}).items():
             if name not in ('washer','dryer','combo') or not fresh(device.get('apiLastSuccessAt'),now):
                 continue
+            if (name == 'washer' and fresh(device.get('detergentTankObservedAt'), now)
+                    and type(device.get('detergentTankLow')) is bool):
+                tank_low = device['detergentTankLow']
+                from home_operations import condition
+                if tank_low is True and condition(data,'detergent_tank_low',now) is False:
+                    tank_low = None  # User resolved an older cloud episode; do not claim a new full reading.
+            # A venting timer is not a wash countdown or an idle contradiction.
+            if device.get('ventingActive') is True:
+                continue
             seconds = device.get('remainingSeconds')
             if number(seconds) and 0 < seconds <= 86400:
                 remaining.append(round(seconds/60,1))
-                if device.get('cycleActive') is False:
+                if device.get('inUse') is False:
                     conflicts += 1
     history = load(data/'jev_energy_state.json').get('history', [])
     usual = energy_low.baseline(sample, history, datetime.fromtimestamp(now,timezone.utc)) if sample['verified'] and energy_low.context(sample) is not None else None
@@ -102,15 +116,25 @@ def facts(data, now, sample=None):
         'cooling_open':cooling_open, 'laundry_conflicts':conflicts, 'remaining_minutes':remaining[:3],
         'owner_home':sample['home'], 'usual_kw':usual,
         'away_high':sample['home'] is False and usual is not None and sample['load_kw'] > 2*usual,
-        'daytime':daytime(now)}
+        'daytime':daytime(now), 'detergent_low':tank_low}
+    from service_health import build, evidence as service_evidence
+    evidence.update(service_evidence(build(data,now)))
     from jev_house_features import enrich
     return enrich(data,evidence,now)
+
+
+QUESTION_INSTRUCTIONS = {
+    'attention':'Rank the most urgent verified issue. Prioritize temperature and conflicting laundry, then entries/security, then optimization. Never omit other issues.',
+    'service':'Choose the next verified service check: Homebridge outage, laundry telemetry, reported security trouble, meter reliability, utility coverage, then permissions. Unknown if none.',
+    'maintenance':'Choose a verified maintenance need: review reported security trouble before detergent refill. Never infer a device fault or treat missing readings as healthy.',
+    'timing':'Prefer measured sustained solar surplus. Otherwise only conditional historical-plan tariff guidance is allowed when tariff_hint_available is true. Never claim current prices or cheapest total cost.',
+}
 
 
 def request(evidence):
     return {'model':MODEL, 'state':evidence, 'questions':{
         key:{'type':'choice', 'criteria':choices,
-             'instructions':'Select only supported facts. Null means unknown. Do not infer faults or completion. Routine is advisory only; never suppress safety or laundry. Use unknown/none/quiet when unsupported.'}
+             'instructions':QUESTION_INSTRUCTIONS.get(key,'Use verified evidence only; null is unknown. Never infer completion, faults, or permission to mute alerts.')}
         for key,choices in OPTIONS.items()}}
 
 
@@ -125,8 +149,14 @@ def supported(e):
     attention = set()
     if e['hot'] or e['cold']: attention.add('temperature')
     if e['laundry_conflicts']: attention.add('laundry')
+    if e.get('detergent_low') is True: attention.add('detergent')
     if e['openings']: attention.add('openings')
     if e['high'] is True: attention.add('energy')
+    service_faults = {k for k,v in e.get('service_faults',{}).items() if k in CHECKS and v is True}
+    if service_faults: attention.add('services')
+    maintenance = {'unknown'}
+    if e.get('detergent_low') is True: maintenance.add('detergent')
+    if e.get('security_trouble_count') is not None and e['security_trouble_count'] > 0: maintenance.add('security')
     details = ({'energy'} if e['load_kw'] is not None else set())
     if e['remaining_minutes']: details.add('laundry')
     if e['reporting_openings']: details.add('openings')
@@ -139,28 +169,40 @@ def supported(e):
     from jev_house_features import supported as feature_supported
     return {**feature_supported(e), 'contributor':contributors|{'unknown'}, 'attention':attention|{'none'},
         'laundry':{'unknown','conflict'} if e['laundry_conflicts'] else {'unknown'},
-        'routine':routine, 'detail':details|{'unknown'}, 'savings':savings}
+        'routine':routine, 'detail':details|{'unknown'}, 'savings':savings,
+        'service':service_faults|{'unknown'}, 'maintenance':maintenance}
+
+
+def validated_choice(response, key, options, allowed):
+    """Validate the complete Choice contract and independent local evidence."""
+    try:
+        if response.get('model') != MODEL:
+            return None
+        answer = response['answers'][key]
+        probabilities = answer['probabilities']
+        choice = answer['choice']
+        confidence = answer['confidence']
+        if (answer['type'] == 'choice' and choice in allowed
+                and isinstance(probabilities, dict) and set(probabilities) == set(options)
+                and all(number(v) and v <= 1 for v in probabilities.values())
+                and abs(sum(probabilities.values()) - 1) < .001
+                and number(confidence) and .9 <= confidence <= 1
+                and probabilities[choice] >= .9
+                and probabilities[choice] == max(probabilities.values())):
+            return choice
+    except (KeyError, TypeError, AttributeError):
+        pass
+    return None
 
 
 def validated(response, evidence):
     """Each answer fails independently. Probabilities do not override evidence."""
-    results = {}
-    if not isinstance(response,dict) or response.get('model') != MODEL:
-        return results
     allowed = supported(evidence)
+    results = {}
     for key, options in OPTIONS.items():
-        try:
-            a = response['answers'][key]
-            p = a['probabilities']
-            confidence = a['confidence']
-            choice = a['choice']
-            if (a['type']=='choice' and choice in allowed[key] and set(p)==set(options)
-                and all(number(v) and v<=1 for v in p.values()) and abs(sum(p.values())-1)<.001
-                and number(confidence) and .9<=confidence<=1
-                and p[choice]>=.9 and p[choice]==max(p.values())):
-                results[key]=choice
-        except (KeyError,TypeError,AttributeError):
-            pass
+        choice = validated_choice(response, key, options, allowed[key])
+        if choice is not None:
+            results[key] = choice
     return results
 
 
@@ -219,10 +261,13 @@ def attention_text(e, choices):
     issues = {}
     if e['hot'] or e['cold']: issues['temperature']='Indoor temperature is unusually '+('hot' if e['hot'] else 'cold')+'.'
     if e['laundry_conflicts']: issues['laundry']='Laundry reports time remaining despite an idle flag. Completion is not confirmed.'
+    if e.get('detergent_low') is True: issues['detergent']='The washer detergent tank is low. Refill the SmartDispense tank.'
     if e['openings']: issues['openings']=f"{e['openings']} reporting doors, windows, garages, or locks are open or unlocked."
     if e['high']: issues['energy']='Energy use is high.'
+    fault_keys = [k for k,v in e.get('service_faults',{}).items() if k in FAULT_LABELS and v is True]
+    if fault_keys: issues['services'] = ' '.join(FAULT_LABELS[k] for k in fault_keys)
     # Temperature is never demoted; Jev reorders other verified facts, never drops them.
-    order = ['temperature',choices.get('attention'),'laundry','openings','energy']
+    order = ['temperature',choices.get('attention'),'laundry','detergent','openings','services','energy']
     result = []
     for key in order:
         if key in issues and issues[key] not in result: result.append(issues[key])
@@ -238,7 +283,11 @@ def savings_text(e, choices):
         return 'Cooling is running with a reporting door or window open. Closing it may reduce energy use.'
     if choice=='away_high' and e['away_high']:
         return 'Your carried device is not reporting home and consumption is unusually high for matching conditions. Others may still be home; check what is running. Nothing was switched off.'
-    return 'No energy-saving opportunity is verified in the current readings.'
+    fault = e.get('service_faults',{})
+    limitations = []
+    if fault.get('sce') is True: limitations.append('Utility intervals are stale; cost estimates and cheapest-time advice need current coverage and verified rates.')
+    if fault.get('meters') is True: limitations.append(FAULT_LABELS['meters'])
+    return 'No energy-saving opportunity is verified in the current readings.' + (' ' + ' '.join(limitations) if limitations else '')
 
 
 def render(mode, data, now):
@@ -251,9 +300,11 @@ def render(mode, data, now):
     if mode in ('attention','complications'): return attention_text(e,c)
     if mode=='savings': return savings_text(e,c)
     if mode=='diagnostics':
-        return ('Laundry telemetry conflicts: time remains despite an idle flag. The completion detector still requires its own verified finish evidence.'
+        fault = c.get('service')
+        next_check = (' '+CHECKS[fault]) if fault in CHECKS and e.get('service_faults',{}).get(fault) is True else ''
+        return (('Laundry telemetry conflicts: time remains despite an idle flag. The completion detector still requires its own verified finish evidence.'
                 + (' The model review also flags this conflict.' if c.get('laundry')=='conflict' else '')
-                if e['laundry_conflicts'] else 'No fresh laundry telemetry conflict is identified. This does not confirm completion or announcement delivery.')
+                if e['laundry_conflicts'] else 'No fresh laundry telemetry conflict is identified. This does not confirm completion or announcement delivery.') + next_check)
     if mode=='routine':
         return {'announce':'A verified routine issue merits attention.',
             'combine':'Several routine issues could be combined into one report.',
@@ -262,6 +313,13 @@ def render(mode, data, now):
         if e['load_kw'] is None: return 'Current energy details are unavailable.'
         return f"House load is {e['load_kw']:.1f} kilowatts; the threshold is {e['threshold_kw']:.1f}. "+energy_text(e,c)
     if mode=='detail':
+        service = c.get('service')
+        if service in CHECKS and e.get('service_faults',{}).get(service) is True:
+            return FAULT_LABELS[service]+' '+CHECKS[service]
+        if c.get('maintenance')=='detergent' and e.get('detergent_low') is True:
+            return 'The washer detergent tank is low. Refill the SmartDispense tank.'
+        if c.get('maintenance')=='security' and e.get('security_trouble_count',0):
+            return f"Alarm.com reports {e['security_trouble_count']} trouble conditions. Check its current device trouble report."
         choice=c.get('detail')
         if choice=='energy': return render('energy_detail',data,now)
         if choice=='laundry': return 'Reporting laundry countdowns: '+', '.join(f'{v:g} minutes' for v in e['remaining_minutes'])+'. Time remaining is not a finish signal.'

@@ -19,6 +19,26 @@ SPEC.loader.exec_module(fetch_chargepoint_sessions)
 
 
 class FetchChargePointSessionsTest(unittest.TestCase):
+    def test_reimport_of_same_csv_does_not_renew_source_age(self):
+        m = fetch_chargepoint_sessions
+        previous = {'capturedAt':'2026-09-16T12:00:00-07:00', 'sourceSha256':'same'}
+        result = {'mode':'browser_csv','sessions':[], 'sourceSha256':'same',
+                  'sourceCapturedAt':'2026-11-06T12:00:00-08:00'}
+        with mock.patch.object(m, 'load_previous', return_value=previous):
+            payload = m.merge_payload(result, {})
+        self.assertEqual(payload['capturedAt'], previous['capturedAt'])
+        self.assertIn('importedAt', payload)
+
+    def test_blocked_login_backoff_survives_successful_csv_fallback(self):
+        m = fetch_chargepoint_sessions
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)/'status.json'
+            p.write_text(json.dumps({'status':'downloaded','fallbackReason':'driver_login_blocked','finishedAt':m.now()}))
+            with mock.patch.object(m,'STATUS_PATH',p):
+                age = m.last_status_age_minutes('driver_login_blocked')
+            self.assertIsNotNone(age)
+            self.assertLess(age,1)
+
     def test_fresh_enough_skip_is_successful_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

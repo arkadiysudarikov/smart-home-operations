@@ -154,19 +154,22 @@ def build_alarm_context(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         for item in alarm.get("periodKwh", [])
         if item.get("meter") == "Energy Clamp"
     }
-    recent_cp = sum(
-        float(session["energyKwh"])
-        for session in sessions
-        if parse_dt(session["startAt"]).date().isoformat() >= "2026-06-03"
-    )
+    # A history export is not the numerator of a rolling seven-day meter total.
+    # Neither source currently supplies verified matching interval boundaries and
+    # completeness. Preserve missing comparability instead of inventing a share.
     return {
         "capturedAtLocal": alarm.get("capturedAtLocal"),
         "daily": daily,
-        "recentChargepointKwhSince2026_06_03": recent_cp,
+        "visibleChargepointKwh": sum(float(x["energyKwh"]) for x in sessions),
+        "sessionHistoryStart": min((x["startAt"] for x in sessions), default=None),
+        "sessionHistoryEnd": max((x["endAt"] for x in sessions), default=None),
         "alarm7dEnergyClampKwh": period.get("7d"),
-        "recentChargepointShareOfAlarm7d": recent_cp / period["7d"] if period.get("7d") else None,
+        "alarm7dComparisonVerified": False,
+        "recentChargepointShareOfAlarm7d": None,
+        "comparisonReason": "ChargePoint history and Alarm.com seven-day boundaries/completeness are not verified as the same window.",
         "dashboard": alarm.get("dashboard", {}),
     }
+
 
 
 def build_sce_context(sessions: list[dict[str, Any]]) -> dict[str, Any]:
@@ -184,7 +187,7 @@ def build_sce_context(sessions: list[dict[str, Any]]) -> dict[str, Any]:
         "message": (
             "SCE Green Button interval data overlaps the ChargePoint window."
             if overlaps
-            else "SCE Green Button interval data does not overlap the May-June 2026 ChargePoint window; fresh SCE export is required."
+            else "SCE Green Button interval data does not overlap the available ChargePoint session window; fresh overlapping data is required."
         ),
     }
 
@@ -500,9 +503,10 @@ def write_report(
             "## Alarm.com Daily Context",
             "",
             f"- Alarm.com source captured: `{alarm_context.get('capturedAtLocal')}`",
-            f"- ChargePoint kWh from `2026-06-03` onward: `{fmt(alarm_context.get('recentChargepointKwhSince2026_06_03'))}`",
+            f"- Visible ChargePoint history: `{fmt(alarm_context.get('visibleChargepointKwh'))}` kWh from `{alarm_context.get('sessionHistoryStart')}` to `{alarm_context.get('sessionHistoryEnd')}`",
             f"- Alarm.com Energy Clamp 7d: `{fmt(alarm_context.get('alarm7dEnergyClampKwh'))}` kWh",
             f"- ChargePoint share of Alarm.com 7d Energy Clamp: `{pct(alarm_context.get('recentChargepointShareOfAlarm7d'))}`",
+            f"- Comparison limitation: {alarm_context.get('comparisonReason')}",
             "",
             "| Date | ChargePoint kWh | Alarm.com Energy Clamp kWh | ChargePoint share |",
             "|---|---:|---:|---:|",

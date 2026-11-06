@@ -53,13 +53,13 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
                 "smart_home_sce_data_stale_v2": "⚠️ SCE STALE",
                 "smart_home_alarm_media_missing_v2": "⚠️ CLIPS MISSING",
                 "smart_home_ev_charging_v2": "🔋 Car Charging",
-                "smart_home_washer_finished_v1": "🧺 Wash Done",
-                "smart_home_washer_unload_v1": "🧺 Unload Washer",
+                "smart_home_washer_finished_v1": "🧺 Washer Cycle Finished",
+                "smart_home_washer_unload_v1": "🧺 Washer Unload Reminder",
                 "smart_home_washer_venting_v1": "🌀 Venting Done",
-                "smart_home_dryer_finished_v1": "🧺 Dryer Done",
-                "smart_home_dryer_unload_v1": "🧺 Unload Dryer",
-                "smart_home_combo_finished_v1": "🧺 Combo Done",
-                "smart_home_combo_unload_v1": "🧺 Unload Combo",
+                "smart_home_dryer_finished_v1": "🧺 Dryer Cycle Finished",
+                "smart_home_dryer_unload_v1": "🧺 Dryer Unload Reminder",
+                "smart_home_combo_finished_v1": "🧺 Combo Cycle Finished",
+                "smart_home_combo_unload_v1": "🧺 Combo Unload Reminder",
             },
         )
 
@@ -112,7 +112,9 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
 
         for name in tile_names + action_names:
             visible_length = len(name.replace("\ufe0f", ""))
-            self.assertLessEqual(visible_length, 16, f"visible name is too long for a Home tile: {name}")
+            # Preserve the established Siri phrase across existing residents.
+            limit = 24 if ('Cycle Finished' in name or 'Unload Reminder' in name) else 20 if name == 'Clear Announcements' else 16
+            self.assertLessEqual(visible_length, limit, f"visible name is too long for a Home tile: {name}")
             words = set(name.lower().split())
             self.assertTrue(
                 words.isdisjoint({"auth", "issue", "reconcile", "surplus"}),
@@ -146,7 +148,7 @@ class InstallHomeKitVirtualSensorsTest(unittest.TestCase):
             f"{install_homekit_virtual_sensors.CALENDAR_PREFIX}Automation",
         ]
         self.assertEqual(
-            {name.split(" ", 1)[0] for name in grouped_names},
+            {name.split(" ", 1)[0] for name in grouped_names if name != 'Clear Announcements'},
             approved_prefixes,
         )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta
@@ -13,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'scripts'))
 SPEC = importlib.util.spec_from_file_location("washer_notifier", ROOT / "scripts" / "washer_notifier.py")
 assert SPEC and SPEC.loader
 washer_notifier = importlib.util.module_from_spec(SPEC)
@@ -34,6 +36,37 @@ def config() -> dict:
 
 
 class WasherNotifierTest(unittest.TestCase):
+    def setUp(self):
+        # Transport tests represent a confirmed at-home owner. Away gating has
+        # separate tests which assert no transport or repeat queue is touched.
+        home = mock.patch('announcement_presence.allowed', return_value=True)
+        home.start()
+        self.addCleanup(home.stop)
+
+    def test_unload_reminder_stays_on_and_migrates_old_pulse(self):
+        now = datetime(2026, 7, 15, 12, 21, tzinfo=TZ)
+        for washer in [False, True]:
+            settings = config()
+            if washer:
+                settings['finish_signal'] = 'cycleActive'
+            prior = {'lastInUse': False, 'lastCycleActive': False,
+                     'awaitingUnload': True, 'reminderSent': True,
+                     'finishedAt': (now - timedelta(minutes=21)).isoformat(),
+                     'washFinishedAt': (now - timedelta(minutes=21)).isoformat(),
+                     'reminderPulseUntil': (now - timedelta(minutes=1)).isoformat()}
+            current = {'fresh': True, 'inUse': False, 'cycleActive': False, 'doorOpen': False}
+            state, actions = washer_notifier.evolve_state(prior, current, now, settings)
+            self.assertIn('reminder_on', actions)
+            self.assertNotIn('reminder_off', actions)
+            state, actions = washer_notifier.evolve_state(state, current, now + timedelta(hours=2), settings)
+            self.assertTrue(state['awaitingUnload'])
+            self.assertNotIn('reminder_off', actions)
+            self.assertNotIn('notify_reminder', actions)
+            current['doorOpen'] = True
+            state, actions = washer_notifier.evolve_state(state, current, now + timedelta(hours=3), settings)
+            self.assertFalse(state['awaitingUnload'])
+            self.assertIn('reminder_off', actions)
+
     def test_initial_idle_sample_does_not_notify(self) -> None:
         now = datetime(2026, 7, 15, 12, 0, tzinfo=TZ)
         state, actions = washer_notifier.evolve_state(

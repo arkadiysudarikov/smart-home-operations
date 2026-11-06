@@ -2079,7 +2079,7 @@ def recommended_action(alert: dict[str, str]) -> str | None:
         return "Open Alarm.com device status, resolve the listed device trouble, then recapture Alarm.com."
     if title == "Alarm.com trouble conditions active":
         if "Video Device - Not Responding" in detail:
-            return "Power-cycle the named Alarm.com camera(s), verify Wi-Fi/network connectivity, then recapture Alarm.com after the portal clears the camera trouble."
+            return "Reconcile the named cameras against the devices still in service; retired devices need inventory cleanup, not recovery. Check connectivity of active cameras, then recapture Alarm.com."
         return "Open Alarm.com Issues, resolve the listed trouble condition, then recapture Alarm.com."
     if title == "SCE interval data is stale":
         if "utilityapi_payment_required" in detail:
@@ -3646,6 +3646,11 @@ def deliver_household_reminders(config: dict[str, Any], alarm: dict[str, Any],
                                 runner: Any = None, updated_at: str | None = None,
                                 envoy: dict[str, Any] | None = None) -> dict[str, Any]:
     now = updated_at or datetime.now(LOCAL_TZ).isoformat(timespec="seconds")
+    from home_operations import enabled, household_order
+    smart = running_from_runtime_root() and enabled(DATA_DIR)
+    if smart:
+        config = {**config,'household_announcements':{
+            **(config.get('household_announcements') or {}),'solar_surplus_enabled':False}}
     previous = load_json_file(HOUSEHOLD_ANNOUNCEMENT_PATH) or {}
     state, pending = evaluate_household_reminders(config, alarm, previous, now)
     daily_state, daily_messages = daily_household_messages(config, alarm, envoy or {}, previous, now)
@@ -3663,6 +3668,8 @@ def deliver_household_reminders(config: dict[str, Any], alarm: dict[str, Any],
         if restored and within_local_hours(now, policy.get("start_hour", 8), policy.get("end_hour", 21)):
             daily_messages["internet_restored"] = "Internet access is back after a confirmed connectivity outage."
     if pending or daily_messages:
+        if smart:
+            pending = household_order(DATA_DIR,pending,datetime.fromisoformat(now.replace('Z','+00:00')).timestamp())
         rules = {rule["key"]: rule for rule in household_rules(config, household_observations(alarm, now))}
         # Combine simultaneous openings into one Intercom, and never retry uncertain delivery.
         message = " ".join(dict.fromkeys([rules[key]["message"] for key in pending] + list(daily_messages.values())))

@@ -24,7 +24,8 @@ LOCK_PATH = DATA_DIR / "refresh_energy.lock"
 BUNDLED_PYTHON = Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3"
 FAST_SCE_MIN_AGE_SECONDS = 3600
 FAST_SCE_MAX_COVERAGE_AGE_SECONDS = 36 * 3600
-FAST_ALARM_MIN_AGE_SECONDS = 900
+# Keep scheduled Alarm.com context inside the 180-second Jev evidence window.
+FAST_ALARM_MIN_AGE_SECONDS = 120
 FAST_SENSE_NOW_MIN_AGE_SECONDS = 90
 FAST_CHARGEPOINT_MIN_AGE_SECONDS = 3600
 ALARM_CACHE_AUTO_REFRESH_MIN_AGE_SECONDS = 900
@@ -44,7 +45,7 @@ def node_path() -> str | None:
         os.environ.get("NODE"),
         shutil.which("node"),
         str(Path.home() / ".cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin/node"),
-        str(Path.home() / ".local/node-v24.16.0-darwin-arm64/bin/node"),
+        str(Path.home() / ".local/node-v24.22.2-darwin-arm64/bin/node"),
         "/opt/homebrew/bin/node",
         "/usr/local/bin/node",
     ]
@@ -161,9 +162,11 @@ def run_node_step(name: str, script: str, timeout: int = 300, optional: bool = F
     return run_step(name, [node, script], timeout=timeout, optional=optional)
 
 
-def analyzer_cmd(py: str) -> list[str]:
+def analyzer_cmd(py: str, *, scan_external: bool = False) -> list[str]:
     script = ROOT / "scripts/analyze_all_energy_readings.py"
     cmd = [py, str(script)]
+    if not scan_external:
+        return cmd
     try:
         proc = subprocess.run(
             [py, str(script), "--help"],
@@ -296,6 +299,7 @@ def finalize_status(
             "stepSummary": summarize_steps(steps),
             "requiredFailures": [step["name"] for step in required_failed],
             "optionalFailures": [step["name"] for step in optional_failed],
+            "operationalStatus": "unknown" if status == "interrupted" else "degraded" if required_failed or optional_failed else "checks_passed",
             "sceCoverageEnd": sce_summary.get("coverageEnd"),
             "sceIntervalRows": sce_summary.get("intervalCount") or sce_api.get("intervalRows"),
             "combinedEnergyGeneratedAt": combined.get("generatedAt"),
@@ -311,12 +315,14 @@ def finalize_status(
 
 def acquire_refresh_lock() -> Any | None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    lock_file = LOCK_PATH.open("w")
+    lock_file = LOCK_PATH.open("a+")
     try:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         lock_file.close()
         return None
+    lock_file.seek(0)
+    lock_file.truncate()
     lock_file.write(f"{os.getpid()} {now()}\n")
     lock_file.flush()
     return lock_file
@@ -326,13 +332,14 @@ def release_refresh_lock(lock_file: Any | None) -> None:
     if lock_file is None:
         return
     try:
+        lock_file.seek(0)
+        lock_file.truncate()
+        lock_file.flush()
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
     finally:
         lock_file.close()
-    try:
-        LOCK_PATH.unlink()
-    except FileNotFoundError:
-        pass
+    # Keep the inode: unlinking after unlock lets a third process create a
+    # different lock file while a second process holds the original inode.
 
 
 def summarize_steps(steps: list[dict[str, Any]]) -> dict[str, Any]:
@@ -454,6 +461,7 @@ def main() -> int:
     try:
         if args.fast:
             plan: list[tuple[str, list[str] | str | None, int, bool, bool, str | None]] = [
+                ("garage_light_reconcile", [py, "scripts/garage_light_reconcile.py"], 95, True, False, None),
                 ("snapshot", [py, "scripts/smart_home_snapshot.py"], 45, True, False, None),
                 ("capture_smarthq_laundry", laundry_capture_command(), 170, True, False, None),
                 ("recover_smarthq_laundry", [py, "scripts/recover_smarthq_laundry.py"], 90, True, False, None),
@@ -472,7 +480,7 @@ def main() -> int:
                 ),
                 (
                     "analyze_all_energy",
-                    [py, "scripts/analyze_all_energy_readings.py"],
+                    analyzer_cmd(py),
                     120,
                     True,
                     False,
@@ -510,6 +518,11 @@ def main() -> int:
                     "recent ChargePoint capture is still fresh",
                 ),
                 ("snapshot_post_capture", [py, "scripts/smart_home_snapshot.py"], 45, True, False, None),
+                ("pair_sense_now", [py, "scripts/pair_sense_now.py"], 60, True, False, None),
+                ("analyze_chargepoint", [py, "scripts/analyze_chargepoint_pairing.py"], 300, True, False, None),
+                ("analyze_meter_reconciliation", [py, "scripts/analyze_meter_reconciliation.py"], 300, True, False, None),
+                ("analyze_bill_home_pairing", [py, "scripts/analyze_bill_home_pairing.py"], 300, True, False, None),
+                ("analyze_energy_costs", [py, "scripts/analyze_energy_costs.py"], 300, True, False, None),
                 ("analyze_combined_energy", [py, "scripts/analyze_combined_energy_monitor.py"], 300, True, False, None),
                 ("analyze_energy_observability", [py, "scripts/analyze_energy_observability.py"], 120, True, False, None),
                 ("generate_alerts", [py, "scripts/generate_alerts.py"], 300, True, False, None),
@@ -518,6 +531,7 @@ def main() -> int:
             ]
         else:
             plan = [
+                ("garage_light_reconcile", [py, "scripts/garage_light_reconcile.py"], 95, True, False, None),
                 ("snapshot", [py, "scripts/smart_home_snapshot.py"], 120, True, False, None),
                 ("capture_smarthq_laundry", laundry_capture_command(), 170, True, False, None),
                 ("recover_smarthq_laundry", [py, "scripts/recover_smarthq_laundry.py"], 90, True, False, None),
@@ -532,7 +546,7 @@ def main() -> int:
                 [
                     (
                         "analyze_all_energy",
-                        analyzer_cmd(py),
+                        analyzer_cmd(py, scan_external=True),
                         300,
                         False,
                         False,
@@ -544,7 +558,8 @@ def main() -> int:
                     ("capture_sense_now", "scripts/capture_sense_now.js", 120, True, True, None),
                     ("fetch_chargepoint", [py, "scripts/fetch_chargepoint_sessions.py"], 300, True, False, None),
                     ("snapshot_post_capture", [py, "scripts/smart_home_snapshot.py"], 120, True, False, None),
-                    ("analyze_chargepoint", [py, "scripts/analyze_chargepoint_pairing.py"], 300, True, False, None),
+                    ("pair_sense_now", [py, "scripts/pair_sense_now.py"], 60, True, False, None),
+                ("analyze_chargepoint", [py, "scripts/analyze_chargepoint_pairing.py"], 300, True, False, None),
                     ("analyze_meter_reconciliation", [py, "scripts/analyze_meter_reconciliation.py"], 300, True, False, None),
                     ("analyze_bill_home_pairing", [py, "scripts/analyze_bill_home_pairing.py"], 300, True, False, None),
                     ("analyze_energy_costs", [py, "scripts/analyze_energy_costs.py"], 300, False, False, None),
@@ -561,7 +576,11 @@ def main() -> int:
         index = next(i for i, step in enumerate(plan) if step[0] == "combo_notifier") + 1
         plan.insert(index, ("announcement_health", [py, "scripts/announcement_health.py"], 30, True, False, None))
         plan.insert(index + 1, ("additional_announcements", [py, "scripts/additional_announcements.py", "--deliver"], 150, True, False, None))
+        if json.loads((ROOT/'config/sources.json').read_text()).get('laundry_worker', {}).get('enabled'):
+            independent = {'capture_smarthq_laundry', 'recover_smarthq_laundry', 'washer_notifier', 'dryer_notifier', 'combo_notifier'}
+            plan = [step for step in plan if step[0] not in independent]
         # Independent optional model step; never blocks laundry or changes its rules.
+        plan.append(("service_health", [py, "scripts/service_health.py", "--write"], 15, True, False, None))
         plan.append(("jev_energy", [py, "scripts/jev_energy_monitor.py", "--deliver"], 60, True, False, None))
         for name, command, timeout, optional, is_node, skip_reason in plan:
             if command is None:

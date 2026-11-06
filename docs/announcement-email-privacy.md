@@ -63,3 +63,19 @@ announced payload acoustically and playback state via the controller, not
 individual acoustic verification of every speaker or podcast position recovery.
 The recording remains local in /tmp, not in the repository.
 Never use private inbox contents for audible testing.
+
+November 5 verification: the saved iPhone receiver was enabled with Confirm
+Before Run off, the own-sender filter intact, Shortcut Input Content typed as
+Email, and the strict envelope match routed to Intercom Indoors. No receiver
+settings needed changing. A generated isolated message was acoustically
+recognized around 11:50:58 Pacific by Apple on-device recognition and local
+faster-whisper small.en, including the exact synthetic sentence. A second test
+closed iPhone Mirroring entirely before sending; speech around 11:54:38 included
+"The background HomePod announcement works without iPhone Mirroring." Both
+recognizers detected the test, without a manual receiver run or opening Mail.
+The latter arrived about 54 seconds after relay acceptance. Hash-backed local
+recordings and dated proof are retained by announcement-health diagnostics.
+This verifies automatic speech recorded in the office, not each individual
+HomePod, every future delivery, or playback of the earlier missed combo finish.
+A single-model tank-warning transcript was not independently reproduced and is
+not counted as verified tank-warning playback. Recordings stay local.

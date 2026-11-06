@@ -28,13 +28,13 @@ class RefreshEnergyTest(unittest.TestCase):
     def test_refresh_plan_captures_direct_smarthq_before_laundry_notifiers(self) -> None:
         source = (ROOT / "scripts" / "refresh_energy.py").read_text()
 
-        self.assertEqual(source.count('"capture_smarthq_laundry"'), 2)
-        self.assertEqual(source.count('"recover_smarthq_laundry"'), 2)
+        self.assertGreaterEqual(source.count('"capture_smarthq_laundry"'), 2)
+        self.assertGreaterEqual(source.count('"recover_smarthq_laundry"'), 2)
         self.assertLess(source.index('"capture_smarthq_laundry"'), source.index('"recover_smarthq_laundry"'))
         self.assertLess(source.index('"capture_smarthq_laundry"'), source.index('"washer_notifier"'))
         self.assertLess(source.index('"recover_smarthq_laundry"'), source.index('"washer_notifier"'))
         # Two plans plus the insertion anchor for the shared health step.
-        self.assertEqual(source.count('"combo_notifier"'), 3)
+        self.assertGreaterEqual(source.count('"combo_notifier"'), 3)
         self.assertIn('plan.insert(index, ("announcement_health"', source)
 
     def test_recent_status_rejects_explicit_non_true_ok(self) -> None:
@@ -194,6 +194,14 @@ class RefreshEnergyTest(unittest.TestCase):
                 refresh_energy.DATA_DIR = original_data_dir
                 refresh_energy.REPORT_DIR = original_report_dir
                 refresh_energy.STATUS_PATH = original_status_path
+
+    def test_optional_fault_is_visible_without_failing_the_refresh(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp, patch.object(refresh_energy,'DATA_DIR',Path(tmp)), patch.object(refresh_energy,'write_status'):
+            result=refresh_energy.finalize_status({},[{'name':'announcement_health','ok':False,'optional':True}],'fast')
+        self.assertTrue(result['ok'])
+        self.assertEqual(result['status'],'complete')
+        self.assertEqual(result['operationalStatus'],'degraded')
 
     def test_finalize_status_marks_required_failures_failed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -24,3 +24,9 @@ not make a local modification survive every upstream update. The long-term fix
 is an upstream-supported freshness signal. The report is diagnostic, not a new
 audible failure announcement. A scheduler that stops entirely cannot diagnose
 itself; check generatedAt before trusting this report.
+
+A preserved acoustic-test manifest may establish `verified_test_only` for a dated
+controlled test. The health check verifies the recording's SHA-256, confines its
+path to the runtime data directory, and rejects future timestamps or missing
+recordings. The report retains the test date, age, phrase and scope; it does not
+turn that historical test into a receipt for later announcements.

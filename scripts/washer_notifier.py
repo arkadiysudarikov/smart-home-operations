@@ -6,6 +6,7 @@ import json
 import math
 import subprocess
 import tempfile
+from contextvars import ContextVar
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta, timezone
@@ -23,6 +24,7 @@ DIRECT_SMARTHQ_PATH = DATA_DIR / "latest_smarthq_laundry_state.json"
 SENSE_NOW_PATH = DATA_DIR / "sense_now_latest.json"
 ENVOY_PATH = DATA_DIR / "latest_envoy_direct.json"
 LOCAL_TZ = ZoneInfo("America/Los_Angeles")
+ANNOUNCEMENT_STARTED = ContextVar('announcement_started', default=None)
 
 
 def load_json(path: Path, default: Any) -> Any:
@@ -96,8 +98,12 @@ def direct_appliance_state(
         "fresh": capture_fresh and (heartbeat_fresh or not heartbeat_required),
         "inUse": bool(device["inUse"]),
         "cycleActive": bool(device["cycleActive"]),
+        "ventingActive": device.get("ventingActive"),
         "remainingSeconds": device.get("remainingSeconds"),
         "doorOpen": device.get("doorOpen"),
+        "doorLastOpenedAt": device.get("doorLastOpenedAt"),
+        "detergentTankLow": device.get("detergentTankLow"),
+        "detergentTankObservedAt": device.get("detergentTankObservedAt"),
         "apiLastSuccessAt": heartbeat_at.isoformat(timespec="seconds") if heartbeat_at else None,
         "apiLastChangedAt": device.get("apiLastChangedAt"),
         "heartbeatFresh": heartbeat_fresh,
@@ -161,6 +167,8 @@ def confirm_washer_venting(
             "primaryArmed": False,
             "ventingArmed": True,
             "ventingStartedAt": now.isoformat(timespec="seconds"),
+            "ventingFinishedAt": None,
+            "lastWasherMode": "venting",
             "ventingStaleAlertSent": False,
             "ventingStaleAlertedAt": None,
             "lastInUse": True,
@@ -169,6 +177,15 @@ def confirm_washer_venting(
         }
     )
     return state
+
+
+def door_opened_after(current, finished_at):
+    if current.get('doorOpen') is True:
+        return True
+    opened = parse_time(current.get('doorLastOpenedAt'))
+    captured = parse_time(current.get('capturedAt'))
+    return bool(opened and captured and finished_at
+                and finished_at <= opened <= captured)
 
 
 def evolve_washer_state(
@@ -181,13 +198,18 @@ def evolve_washer_state(
 
     for field, action in (
         ("finishPulseUntil", "finish_off"),
-        ("reminderPulseUntil", "reminder_off"),
         ("ventingPulseUntil", "venting_off"),
     ):
         deadline = parse_time(state.get(field))
         if deadline and now >= deadline:
             state[field] = None
             actions.append(action)
+
+    # Upgrade old two-minute reminders to durable, acknowledged state.
+    state["reminderPulseUntil"] = None
+    if state.get("awaitingUnload") and state.get("reminderSent") and not state.get("reminderLatched"):
+        state["reminderLatched"] = True
+        actions.append("reminder_on")
 
     if not current.get("fresh") or current.get("inUse") is None or current.get("cycleActive") is None:
         state["lastCheckedAt"] = now_text
@@ -204,6 +226,8 @@ def evolve_washer_state(
 
     in_use = bool(current["inUse"])
     cycle_active = bool(current["cycleActive"])
+    venting_active = (current['ventingActive'] if isinstance(current.get('ventingActive'), bool)
+                      else in_use and not cycle_active)
     door_open = current.get("doorOpen")
     previous_in_use = state.get("lastInUse")
     previous_cycle_active = state.get("lastCycleActive")
@@ -235,6 +259,7 @@ def evolve_washer_state(
                 "washStartedAt": now_text,
                 "runningSamples": 1,
                 "awaitingUnload": False,
+                "reminderLatched": False,
                 "washFinishedAt": None,
                 "reminderSent": False,
             })
@@ -249,8 +274,8 @@ def evolve_washer_state(
         if state.get("primaryArmed") and (duration_ok or samples_ok):
             state.update({
                 "primaryArmed": False,
-                "ventingArmed": in_use,
-                "ventingStartedAt": now_text if in_use else None,
+                "ventingArmed": venting_active,
+                "ventingStartedAt": now_text if venting_active else None,
                 "ventingStaleAlertSent": False,
                 "ventingStaleAlertedAt": None,
                 "awaitingUnload": door_open is False,
@@ -291,8 +316,9 @@ def evolve_washer_state(
                 actions.append("announce_venting_stale")
 
     finished_at = parse_time(state.get("washFinishedAt"))
-    if state.get("awaitingUnload") and door_open:
-        state.update({"awaitingUnload": False, "unloadedAt": now_text})
+    if state.get("awaitingUnload") and door_opened_after(current, finished_at):
+        state.update({"awaitingUnload": False,
+                "reminderLatched": False, "unloadedAt": now_text})
         actions.extend(["finish_off", "reminder_off"])
     elif (
         state.get("awaitingUnload")
@@ -302,7 +328,7 @@ def evolve_washer_state(
         and now >= finished_at + timedelta(minutes=int(config.get("reminder_minutes", 20)))
     ):
         state["reminderSent"] = True
-        state["reminderPulseUntil"] = (now + timedelta(seconds=pulse_seconds)).isoformat(timespec="seconds")
+        state["reminderLatched"] = True
         actions.extend(["reminder_on", "notify_reminder"])
 
     state.update({
@@ -383,6 +409,18 @@ def evolve_state(
     prior: dict[str, Any], current: dict[str, Any], now: datetime, config: dict[str, Any]
 ) -> tuple[dict[str, Any], list[str]]:
     if config.get("finish_signal") == "countdown_confirmed":
+        # The venting countdown is hours long and is not another wash cycle.
+        # Prefer the explicit SmartHQ mode; preserve countdown evidence for washes.
+        if current.get("fresh") and current.get("ventingActive") is True:
+            if not prior.get("lastCycleActive"):
+                prior = confirm_washer_venting(prior, current, now)
+            state, actions = evolve_washer_state(prior, {**current, "cycleActive": False}, now, config)
+            state['countdownEvidence'] = {}
+            state['countdownStatus'] = 'venting'
+            state['lastWasherMode'] = 'venting'
+            return state, actions
+        if prior.get('ventingArmed') and current.get('inUse') is False:
+            return evolve_washer_state(prior, {**current, "cycleActive": False}, now, config)
         return evolve_countdown_state(prior, current, now, config)
     if config.get("finish_signal") == "cycleActive":
         return evolve_washer_state(prior, current, now, config)
@@ -392,11 +430,17 @@ def evolve_state(
     now_text = now.isoformat(timespec="seconds")
     pulse_seconds = int(config.get("pulse_seconds", 120))
 
-    for field, action in (("finishPulseUntil", "finish_off"), ("reminderPulseUntil", "reminder_off")):
+    for field, action in (("finishPulseUntil", "finish_off"),):
         deadline = parse_time(state.get(field))
         if deadline and now >= deadline:
             state[field] = None
             actions.append(action)
+
+    # Upgrade old two-minute reminders to durable, acknowledged state.
+    state["reminderPulseUntil"] = None
+    if state.get("awaitingUnload") and state.get("reminderSent") and not state.get("reminderLatched"):
+        state["reminderLatched"] = True
+        actions.append("reminder_on")
 
     if not current.get("fresh") or current.get("inUse") is None:
         state["lastCheckedAt"] = now_text
@@ -432,6 +476,7 @@ def evolve_state(
                 "cycleStartedAt": now_text,
                 "runningSamples": 1,
                 "awaitingUnload": False,
+                "reminderLatched": False,
                 "finishedAt": None,
                 "reminderSent": False,
             })
@@ -457,8 +502,9 @@ def evolve_state(
                 actions.append("announce_finish")
 
     finished_at = parse_time(state.get("finishedAt"))
-    if state.get("awaitingUnload") and door_open:
-        state.update({"awaitingUnload": False, "unloadedAt": now_text})
+    if state.get("awaitingUnload") and door_opened_after(current, finished_at):
+        state.update({"awaitingUnload": False,
+                "reminderLatched": False, "unloadedAt": now_text})
         actions.extend(["finish_off", "reminder_off"])
     elif (
         state.get("awaitingUnload")
@@ -468,11 +514,27 @@ def evolve_state(
         and now >= finished_at + timedelta(minutes=int(config.get("reminder_minutes", 20)))
     ):
         state["reminderSent"] = True
-        state["reminderPulseUntil"] = (now + timedelta(seconds=pulse_seconds)).isoformat(timespec="seconds")
+        state["reminderLatched"] = True
         actions.extend(["reminder_on", "notify_reminder"])
 
     state.update({"lastInUse": in_use, "lastDoorOpen": door_open, "lastCheckedAt": now_text})
     return state, list(dict.fromkeys(actions))
+
+
+def tank_alert_actions(state, current, now):
+    observed = parse_time(current.get('detergentTankObservedAt'))
+    if (current.get('fresh') is not True or observed is None
+            or not timedelta(0) <= now-observed <= timedelta(minutes=5)):
+        return []
+    low = current.get('detergentTankLow')
+    if low is False:
+        state.update(detergentTankLowActive=False, detergentTankLowAnnounced=False)
+    elif low is True:
+        state['detergentTankLowActive'] = True
+        if not state.get('detergentTankLowAnnounced') and 8 <= now.hour < 21:
+            state['detergentTankLowAnnounced'] = True
+            return ['notify_tank_low', 'announce_tank_low']
+    return []
 
 
 def webhook_set(webhook_url: str, accessory_id: str, active: bool) -> dict[str, Any]:
@@ -501,6 +563,7 @@ def record_homepod_announcement(result: dict[str, Any], message: str, appliance_
     event = {
         "at": datetime.now(timezone.utc).astimezone(LOCAL_TZ).isoformat(timespec="seconds"),
         "announcementId": appliance_id,
+        "attemptStartedAt": ANNOUNCEMENT_STARTED.get(),
         "message": message,
         **result,
     }
@@ -519,6 +582,20 @@ def record_homepod_announcement(result: dict[str, Any], message: str, appliance_
 
 
 def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]:
+    started = config.get('_announcement_created_at') or datetime.now(timezone.utc).isoformat()
+    token = ANNOUNCEMENT_STARTED.set(started)
+    try:
+        return _homepod_announcement(message, config)
+    finally:
+        ANNOUNCEMENT_STARTED.reset(token)
+
+
+def _homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]:
+    from announcement_presence import allowed
+    if not allowed(DATA_DIR):
+        return record_homepod_announcement(
+            {"ok": True, "skipped": True, "reason": "owner away or presence unavailable"},
+            message, str(config.get("id", "washer")))
     from announcement_pause import active
     if active(str(config.get("id", "washer"))):
         return record_homepod_announcement({"ok": True, "skipped": True, "reason": "one-hour routine announcement pause"}, message, str(config.get("id", "washer")))
@@ -793,6 +870,13 @@ def execute_actions(actions: list[str], config: dict[str, Any], dry_run: bool) -
                 sensor_id = venting_id
             result = webhook_set(webhook_url, sensor_id, action.endswith("_on"))
             results.append({"action": action, **result})
+        elif action == 'notify_tank_low':
+            results.append({'action': action, **mac_notification(
+                'The washer detergent tank is low. Refill the SmartDispense tank.', 'Washer Detergent Low')})
+        elif action == 'announce_tank_low' and config.get('homepod_enabled', False):
+            results.append({'action': action, **homepod_announcement(
+                'The washer detergent tank is low. Refill the SmartDispense tank.',
+                {**config, 'id': 'detergent_tank_low'})})
         elif action == "notify_finish":
             results.append({
                 "action": action,
@@ -895,6 +979,17 @@ def write_report(payload: dict[str, Any], report_path: Path, appliance_name: str
     report_path.write_text("\n".join(lines) + "\n")
 
 
+def laundry_ack_needed(prior, state, current):
+    """A newly started load supersedes an old unload reminder, even if the door
+    was opened and closed between captures. Venting is not a new wash load.
+    """
+    return current.get('fresh') is True and (
+        current.get('doorOpen') is True
+        or state.get('unloadedAt') != prior.get('unloadedAt')
+        or any(state.get(key) and state.get(key) != prior.get(key)
+               for key in ('washStartedAt', 'cycleStartedAt')))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Send laundry-finished and unload-reminder notifications.")
     parser.add_argument("--appliance", choices=("washer", "dryer", "combo"), default="washer")
@@ -904,6 +999,7 @@ def main() -> int:
         help="arm washer venting completion after a physically confirmed manual venting start",
     )
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--queue-only", action="store_true", help="persist transitions and delivery jobs without waiting for transports")
     parser.add_argument("--now", help="override the current local time for testing")
     parser.add_argument("--announce-message", help="announce an arbitrary message using the configured indoor HomePods")
     parser.add_argument("--announcement-id", help="audio filename identifier for an arbitrary announcement")
@@ -947,8 +1043,34 @@ def main() -> int:
             prior = confirm_washer_venting(prior, current, now)
         except ValueError as exc:
             parser.error(str(exc))
-    state, actions = evolve_state(prior, current, now, config)
-    results = execute_actions(actions, config, args.dry_run)
+    from laundry_delivery import transaction, enqueue, process
+    if args.dry_run:
+        state, actions = evolve_state(prior, current, now, config)
+        if appliance_id == 'washer':
+            actions.extend(tank_alert_actions(state, current, now))
+        results = execute_actions(actions, config, True)
+    else:
+        with transaction(DATA_DIR, appliance_id) as durable:
+            # Delivery completion may have updated the outbox since capture.
+            if not args.confirm_venting_start:
+                prior = dict(durable)
+            else:
+                prior['deliveryOutbox'] = durable.get('deliveryOutbox', [])
+            state, actions = evolve_state(prior, current, now, config)
+            if appliance_id == 'washer':
+                actions.extend(tank_alert_actions(state, current, now))
+            enqueue(state, actions, now.isoformat())
+            durable.clear()
+            durable.update(state)
+        results = [] if args.queue_only else process(DATA_DIR, appliance_id, config, execute_actions)
+    if not args.dry_run and laundry_ack_needed(prior, state, current):
+        from announcement_ack import acknowledge_appliance
+        acknowledge_appliance(DATA_DIR, appliance_id)
+    if (not args.dry_run and appliance_id == 'washer'
+            and prior.get('detergentTankLowActive') is True
+            and state.get('detergentTankLowActive') is False):
+        from announcement_ack import clear_source
+        clear_source(DATA_DIR, 'detergent_tank_low')
     observation = power_observation(current, now, appliance_id)
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     with power_log_path.open("a") as handle:
@@ -964,7 +1086,9 @@ def main() -> int:
         "powerFallback": {"mode": "shadow", "observation": observation},
     }
     if not args.dry_run:
-        write_json(state_path, state)
+        # State/outbox was committed atomically before any delivery attempt.
+        state = load_json(state_path, state)
+        payload['state'] = state
         write_json(status_path, payload)
         write_report(payload, report_path, appliance_name)
     print(json.dumps(payload, indent=2, sort_keys=True))
