@@ -23,7 +23,8 @@ def managed_files(source):
                     continue
                 if directory == 'config' and path.name not in {
                     'sources.json','additional_announcements.json','jev_energy.json','calendar-reader-Info.plist',
-                    'sense.example.json','sce_green_button_connect.example.json','chargepoint.example.json'}:
+                    'sense.example.json','sce_green_button_connect.example.json','chargepoint.example.json',
+                    'smart_operations.json'}:
                     continue
                 yield path.relative_to(source)
 

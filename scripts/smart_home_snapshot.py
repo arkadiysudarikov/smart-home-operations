@@ -26,6 +26,8 @@ SOURCE_ROOT = Path.home() / "Documents" / "Smart Home"
 RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor"
 DRIFT_CHECK_FILES = [
     "scripts/service_health.py",
+    "scripts/home_operations.py",
+    "scripts/siri_codex.py",
     "scripts/deploy_runtime.py",
     "scripts/deploy_actions_plugin.py",
     "scripts/configure_garage_camera_hooks.py",
