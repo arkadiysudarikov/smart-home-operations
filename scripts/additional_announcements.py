@@ -165,6 +165,8 @@ def main():
         raise RuntimeError("Delivery requires deployed runtime")
     data = ROOT / "data"
     config = load(ROOT / "config/additional_announcements.json")
+    if load(ROOT/'config/smart_operations.json').get('enabled') is True:
+        config = {**config,'laundryHealth':False}  # The independent incident monitor owns this notice.
     with (data / "additional_announcements.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         path = data / "additional_announcements_state.json"

@@ -24,9 +24,10 @@ def sample_from(data, now):
     presence = load(data/'display_awake_presence_state.json')
     snapshot = load(data/'latest.json')
     virtual = load(data/'latest_homekit_virtual_sensors.json')
+    measured_at = sense.get('sampleAt') if 'sampleAt' in sense else sense.get('capturedAt')
     watts = sense.get('watts')
     valid_power = (sense.get('ok') is True and sense.get('online') is True
-                   and fresh(sense.get('capturedAt'), now) and low.number(watts))
+                   and fresh(measured_at, now) and low.number(watts))
     home = presence.get('homePresent')
     seen = presence.get('lastConfirmedAt')
     if type(home) is not bool or not low.number(seen) or not 0 <= now-seen <= 90:
@@ -62,7 +63,7 @@ def sample_from(data, now):
     car = [v.get('watts') for v in sense.get('devices', []) if v.get('id') == 'category-ev']
     if valid_power and len(car) == 1 and low.number(car[0]):
         ev = car[0] >= 500
-    return {'at': sense.get('capturedAt'), 'source': 'sense_whole_house',
+    return {'at': measured_at, 'source': 'sense_whole_house',
             'load_kw': watts/1000 if valid_power else None,
             'verified': valid_power, 'home': home, 'hvac': hvac, 'ev': ev}
 

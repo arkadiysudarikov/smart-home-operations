@@ -1,0 +1,9 @@
+{
+  "enabled": true,
+  "health_hold_seconds": 600,
+  "rules_refresh_seconds": 900,
+  "solar_advice_enabled": true,
+  "minimum_solar_export_watts": 1000,
+  "solar_window_seconds": 600,
+  "model_review_seconds": 1800
+}
