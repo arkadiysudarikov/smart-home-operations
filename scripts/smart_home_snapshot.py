@@ -22,7 +22,19 @@ DATA_DIR = ROOT / "data"
 SNAPSHOT_DIR = DATA_DIR / "snapshots"
 REPORT_DIR = ROOT / "reports"
 DB_PATH = DATA_DIR / "smart_home.sqlite"
-SOURCE_ROOT = Path.home() / "Documents" / "Smart Home"
+def source_root(home: Path, configured: str | None = None) -> Path:
+    """Use the canonical checkout, with an explicit override for other installs.
+
+    Do not discover a different checkout when the intended source is missing:
+    doing so could hide a broken deployment behind an older working copy.
+    """
+    path = Path(configured).expanduser() if configured else home / "SmartHomeSource"
+    if not path.is_absolute():
+        raise ValueError("SMART_HOME_SOURCE_ROOT must be an absolute path")
+    return path
+
+
+SOURCE_ROOT = source_root(Path.home(), os.environ.get("SMART_HOME_SOURCE_ROOT"))
 RUNTIME_ROOT = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor"
 DRIFT_CHECK_FILES = [
     "scripts/service_health.py",

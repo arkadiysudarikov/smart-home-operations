@@ -84,3 +84,12 @@ The storage guard may close the optional UniFi desktop application under severe
 WAL/disk pressure. This trades desktop availability for bounded storage failure
 (Meadows: protecting a resource constraint); it does not stop the controller.
 Thresholds and explicit SQLite checkpoint failure preserve diagnostic feedback.
+
+## Monitor source selection
+
+The M4 drift monitor still compared runtime files against the retired Documents
+checkout after migration. It now defaults to `~/SmartHomeSource`; an explicitly
+absolute `SMART_HOME_SOURCE_ROOT` supports other installations. Missing canonical
+source remains a visible failure, rather than discovering an older checkout.
+This trades automatic legacy-path compatibility for reliable deployment feedback
+(Continuous Delivery); an explicit override mitigates nonstandard installations.
