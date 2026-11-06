@@ -29,6 +29,15 @@ class MonitorTests(unittest.TestCase):
         self.sample = {'at': NOW.isoformat(), 'source': 'sense_whole_house', 'load_kw': .3,
                        'verified': True, 'home': True, 'hvac': False, 'ev': False}
 
+    def test_fresh_download_cannot_hide_old_sensor_measurement(self):
+        j.save(self.data/'sense_now_latest.json', {'ok':True,'online':True,
+            'capturedAt':NOW.isoformat(), 'sampleAt':(NOW-timedelta(minutes=10)).isoformat(),
+            'watts':300,'devices':[{'id':'category-ev','watts':0}]})
+        sample = j.sample_from(self.data, NOW.timestamp())
+        self.assertFalse(sample['verified'])
+        self.assertIsNone(sample['load_kw'])
+        self.assertIsNone(sample['ev'])
+
     def test_advisory_rejects_missing_low_or_invalid_confidence_and_distribution(self):
         responses = [review_response('insufficient_data', confidence=0),
                      review_response('insufficient_data', confidence=True),

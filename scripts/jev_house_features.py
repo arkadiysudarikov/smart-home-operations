@@ -40,6 +40,15 @@ def enrich(data, e, now):
         and 0 <= now-stamp(solar_state.get('last')) <= 180
         and solar[0] == solar_state.get('last_sample')
         and 600 <= stamp(solar_state.get('last_sample'))-stamp(solar_state.get('since')) <= 86400)
+    from home_operations import enabled
+    if enabled(data):
+        operations = load(data/'latest_home_operations.json')
+        advice = operations.get('laundryAdvice',{})
+        sample = advice.get('sample',{})
+        sustained = (0 <= now-stamp(operations.get('generatedAt')) <= 180
+                     and advice.get('status')=='solar_opportunity'
+                     and type(sample.get('at')) in (int,float) and 0 <= now-sample['at'] <= 180
+                     and advice.get('windowSeconds',0) >= 600)
     tariff = load(data/'verified_tariff_profile.json')
     local = datetime.fromtimestamp(now,LOCAL)
     hint = (tariff.get('plan') == 'TOU-D-PRIME' and tariff.get('billing') == 'solar_billing_plan'
@@ -89,7 +98,7 @@ def render(mode,e,c):
             return 'Energy optimization can wait. This does not defer safety alerts or appliance problems.'
         return 'Nothing is verified safe to defer. Check current alerts; missing readings are not an all-clear.'
     if mode=='laundrytime':
-        if c.get('timing')=='solar' and e.get('solar_window'):
+        if e.get('solar_window'):
             return 'Surplus solar has lasted ten minutes. Now is a solar opportunity for laundry, not a guaranteed cheapest time. A verified time-of-use rate schedule is unavailable.'
         if e.get('tariff_hint_available'):
             return ('Your last verified bill lists TOU-D-PRIME with solar billing. If that plan is unchanged, the winter super-off-peak delivery window is 8 a.m. to 4 p.m.; 4 p.m. to 9 p.m. is the higher-rate window. '
