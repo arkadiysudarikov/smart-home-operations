@@ -5,6 +5,7 @@ import sys
 import subprocess
 from pathlib import Path
 import urllib.request
+import urllib.error
 
 MODES = frozenset(("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "acknowledge", "attention", "savings", "diagnostics", "routine"))
 
@@ -16,7 +17,8 @@ def spoken_response(raw):
     """Return the briefing text to Siri instead of transport metadata."""
     payload = json.loads(raw)
     if payload.get("ok") is not True:
-        raise ValueError("The house check failed")
+        message = payload.get("message")
+        raise ValueError(message.strip() if isinstance(message, str) and message.strip() else "The house check failed")
     if "acknowledged" in payload:
         return "Announcements acknowledged."
     if isinstance(payload.get("message"), str) and payload["message"].strip():
@@ -50,8 +52,15 @@ def dispatch(command):
     endpoint = ("laundry-unloaded?appliance=" + command.removesuffix("-unloaded")
                 if command.endswith("-unloaded") else "dr-house-" + command)
     request = urllib.request.Request("http://127.0.0.1:18765/action/" + endpoint, data=b"", method="POST")
-    with urllib.request.urlopen(request, timeout=125) as response:
-        return spoken_response(response.read(16384).decode())
+    try:
+        with urllib.request.urlopen(request, timeout=125) as response:
+            return spoken_response(response.read(16384).decode())
+    except urllib.error.HTTPError as error:
+        if command.endswith('-unloaded'):
+            # The state may be saved even when the Home update failed. Preserve
+            # that distinction in Siri's error instead of losing it to HTTP 503.
+            return spoken_response(error.read(16384).decode())
+        raise
 
 
 if __name__ == "__main__":
