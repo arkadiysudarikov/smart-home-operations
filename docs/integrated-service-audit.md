@@ -2,7 +2,7 @@
 
 Combined the adaptive-operations branch with current SCE imports, signed battery
 accounting, persistent laundry reminders, and Siri acknowledgement repairs.
-619 tests pass together. No merge conflict required discarding either behavior.
+634 tests pass together. No merge conflict required discarding either behavior.
 
 ## Current evidence
 
@@ -14,8 +14,10 @@ accounting, persistent laundry reminders, and Siri acknowledgement repairs.
   PV/Sense gap. The earlier signed-storage comparison is a hypothesis to verify.
 - Alarm.com reports three trouble conditions. Retirement identities are not yet
   confirmed, so no device or alarm coverage was removed.
-- Mopar is disabled. ChargePoint's fetcher reports its last refresh inside its
-  three-hour portal interval; that does not establish current charging state.
+- Mopar is disabled. ChargePoint's portal is login-blocked; its historical CSV
+  source is September 17, with sessions ending September 16. Historical fallback
+  no longer claims a current capture. Credentials were readable in the M4 GUI
+  context; a missing credential was not the portal failure.
 - JEV's low-use detector has fresh power but unknown EV context. The conservative
   rejection is correct. Do not turn missing EV evidence into false/not charging.
 - Fixed a separate JEV bug: prefer Sense sampleAt over capturedAt when present,
@@ -67,3 +69,18 @@ explicit partial/unavailable result rather than a plausible-looking old delta.
 Scheduled regeneration adds bounded local work to the refresh cycle, justified
 by keeping the shared report usable and mitigated by its existing runtime lock
 and a 60-second job timeout (Continuous Delivery feedback).
+
+## Combined M4 verification
+
+Included the existing UniFi storage guard and direct Siri laundry status branches.
+634 tests pass locally and GitHub CI passes at the combined head. The deployed
+UniFi guard reports WAL zero and about 7.9 GiB free disk; its runtime/source bytes
+match the reviewed branch. Read-only Sony power queries returned standby for all
+three configured TVs. This proves API responses, not screen or AirPlay operation.
+The regenerated meter pairing was matched on November 6; physical CT scope still
+needs independent confirmation.
+
+The storage guard may close the optional UniFi desktop application under severe
+WAL/disk pressure. This trades desktop availability for bounded storage failure
+(Meadows: protecting a resource constraint); it does not stop the controller.
+Thresholds and explicit SQLite checkpoint failure preserve diagnostic feedback.
