@@ -20,8 +20,8 @@ accounting, persistent laundry reminders, and Siri acknowledgement repairs.
   rejection is correct. Do not turn missing EV evidence into false/not charging.
 - Fixed a separate JEV bug: prefer Sense sampleAt over capturedAt when present,
   so freshly downloaded old measurements cannot authorize energy advice.
-- Siri consent was repaired on the Mac. iPhone Mirroring still requires the
-  user's existing authentication before its separate Siri surface can be tested.
+- Siri consent was repaired on the Mac. The iPhone typed Siri invocation and
+  reply were verified on November 6; microphone recognition remains separate.
 
 ## Principle tradeoff
 
@@ -34,3 +34,19 @@ measurement time instead of retrieval time. Legacy captures without sampleAt
 retain their older timestamp fallback for compatibility; explicit old or invalid
 sampleAt values cannot use that fallback. Retiring that fallback requires a
 separate producer-coverage check.
+
+## ChargePoint and source freshness follow-up
+
+Found that a failed driver login could fall back to the same historical CSV and
+stamp it as captured now, postponing the next real portal fetch. CSV import now
+retains source file time and content hash, while importedAt records processing.
+Reimporting identical content cannot renew its capture time. Login-blocked
+backoff is preserved even after a successful historical fallback. Service health
+checks the underlying ChargePoint capture and Sense measurement timestamps rather
+than the latest wrapper/import times. 622 tests pass, including these regressions.
+
+This trades potentially conservative CSV freshness for avoiding false live
+readiness (Kleppmann's event-time/data-provenance distinction). A newly exported
+identical CSV may still look old without authoritative export metadata; use a
+verified portal fetch to establish a new observation. Backoff prevents the stricter
+freshness check from turning a blocked provider into repeated login traffic.

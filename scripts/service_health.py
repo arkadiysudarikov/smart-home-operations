@@ -81,6 +81,13 @@ def build(data, now):
         ('displays','Mac display / presence','latest_display_awake.json','generatedAt',90),
     ]:
         record=load(data/file)
+        if key == 'sense' and 'sampleAt' in record:
+            time_key = 'sampleAt'
+        if key == 'chargepoint':
+            source = load(data/'chargepoint_sessions.json')
+            if source:
+                record = {**record, 'sourceCapturedAt': source.get('capturedAt')}
+                time_key = 'sourceCapturedAt'
         status='stale_or_missing' if not fresh(record,time_key,now,age) else 'source_ok' if record.get('ok') is True else 'needs_attention'
         services.append({'key':key,'name':name,'status':status,'verification':'Source status only; device behavior is separate.'})
     accessories={a.get('accessory') for a in config.get('accessories', [])}

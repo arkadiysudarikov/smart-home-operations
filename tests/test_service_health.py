@@ -24,6 +24,15 @@ class ServiceHealthTests(unittest.TestCase):
     def write(self,name,value):
         h.save(self.data/name,value)
 
+    def test_download_and_import_times_do_not_hide_old_source_readings(self):
+        old = (NOW-timedelta(days=10)).isoformat()
+        self.write('sense_now_latest.json',{'ok':True,'capturedAt':AT,'sampleAt':old})
+        self.write('latest_chargepoint_refresh.json',{'ok':True,'finishedAt':AT})
+        self.write('chargepoint_sessions.json',{'capturedAt':old,'importedAt':AT})
+        services={s['key']:s for s in h.build(self.data,NOW.timestamp())['services']}
+        for key in ['sense','chargepoint']:
+            self.assertEqual(services[key]['status'],'stale_or_missing')
+
     def test_missing_and_stale_sources_are_unknown_not_healthy(self):
         report=h.build(self.data,NOW.timestamp())
         self.assertTrue(all(v is None for v in report['faults'].values()))
