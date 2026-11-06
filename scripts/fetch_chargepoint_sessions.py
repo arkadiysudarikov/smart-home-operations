@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import subprocess
@@ -195,6 +196,8 @@ def fetch_csv_export(config: dict[str, Any]) -> dict[str, Any]:
         "sessions": sessions,
         "responseRows": len(rows),
         "sourcePath": str(path),
+        "sourceCapturedAt": datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc).isoformat(),
+        "sourceSha256": hashlib.sha256(path.read_bytes()).hexdigest(),
     }
 
 
@@ -254,7 +257,7 @@ def last_status_age_minutes(status: str) -> float | None:
         payload = json.loads(STATUS_PATH.read_text())
     except json.JSONDecodeError:
         return None
-    if payload.get("status") != status:
+    if payload.get("status") != status and payload.get("fallbackReason") != status:
         return None
     finished_at = parse_dt(payload.get("finishedAt"))
     if not finished_at:
@@ -701,8 +704,15 @@ def merge_payload(fetch_result: dict[str, Any], config: dict[str, Any]) -> dict[
         source = "ChargePoint browser charging-activity CSV"
     else:
         source = f"ChargePoint {fetch_result['mode']} API"
+    captured_at = now()
+    if fetch_result['mode'] == 'browser_csv':
+        captured_at = fetch_result.get('sourceCapturedAt')
+        if (fetch_result.get('sourceSha256') and
+                previous.get('sourceSha256') == fetch_result['sourceSha256']):
+            captured_at = previous.get('capturedAt') or captured_at
     payload = {
-        "capturedAt": now(),
+        "capturedAt": captured_at,
+        "importedAt": now(),
         "source": source,
         "sessions": sessions,
         "senseEvEvents": previous.get("senseEvEvents", []),
@@ -712,6 +722,9 @@ def merge_payload(fetch_result: dict[str, Any], config: dict[str, Any]) -> dict[
             "costUsd": round(sum(costs), 2) if costs else None,
         },
     }
+    for key in ('sourceSha256', 'sourceCapturedAt'):
+        if key in fetch_result:
+            payload[key] = fetch_result[key]
     if config.get("source_note"):
         payload["sourceNote"] = config["source_note"]
     return payload
@@ -726,6 +739,7 @@ def write_success(started_at: str, result: dict[str, Any], config: dict[str, Any
         "startedAt": started_at,
         "finishedAt": now(),
         "mode": result["mode"],
+        "sourceCapturedAt": payload["capturedAt"],
         "sessions": len(payload["sessions"]),
         "energyKwh": payload["visibleTotals"]["energyKwh"],
         "sourceFile": str(SOURCE_PATH),

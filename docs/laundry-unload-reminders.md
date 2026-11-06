@@ -66,11 +66,12 @@ builder in `scripts/build_laundry_shortcuts.py` makes the action definitions
 reproducible. Close editors and replace in place when importing; keeping both or
 saving an old open editor can recreate duplicate shortcuts.
 
-The iPhone Mirroring app is behind its existing Mac Touch ID lock. iPhone Siri
-voice execution has not been observed; the user must unlock that existing
-session before that separate proof surface can be checked. No authentication
-protection was bypassed. Mac execution, the Home tile acceptance test, and the
-synced M4 workflow definitions were verified independently.
+On November 6 at about 2:43 PM Pacific, iPhone Mirroring was available. Entered
+“I unloaded the washer” through the phone's Search or Ask/Siri entry point and
+observed the reply “Washer has no pending unload reminder.” This is direct phone
+invocation/reply proof, in addition to the earlier Mac/Home tile test. It does not
+claim spoken microphone recognition. Dryer and combo pending reminders were not
+dismissed during this test.
 
 ## Additional principle tradeoff
 
