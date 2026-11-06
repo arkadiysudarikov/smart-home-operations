@@ -13,8 +13,11 @@ class LaundryUnloadTest(unittest.TestCase):
     def test_no_pending_unload_does_not_invent_an_unload_event(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
-            result = laundry_unload.acknowledge_unloaded(root, 'washer')
+            with mock.patch.object(washer_notifier, 'execute_actions', side_effect=lambda actions, config, dry: [{'ok': True, 'action': a} for a in actions]) as execute:
+                result = laundry_unload.acknowledge_unloaded(root, 'washer')
             self.assertTrue(result['alreadyClear'])
+            self.assertIsNone(result['unloadedAt'])
+            self.assertEqual([call.args[0][0] for call in execute.call_args_list], ['finish_off', 'reminder_off'])
             saved = json.loads((root/'data/washer_notifier_state.json').read_text())
             self.assertNotIn('unloadedAt', saved)
 
@@ -36,3 +39,11 @@ class LaundryUnloadTest(unittest.TestCase):
             self.assertEqual(json.loads((data / 'dryer_notifier_state.json').read_text()), prior)
             with self.assertRaises(ValueError):
                 laundry_unload.acknowledge_unloaded(root, 'all')
+
+    def test_tile_delivery_failure_is_not_reported_as_success(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            with mock.patch.object(washer_notifier, 'execute_actions', side_effect=lambda actions, config, dry: [{'ok': False, 'action': a} for a in actions]):
+                result = laundry_unload.acknowledge_unloaded(root, 'dryer')
+            self.assertFalse(result['ok'])
+            self.assertIn('needs attention', result['message'])
