@@ -56,7 +56,8 @@ is framing, not encryption; SSH provides transport encryption.
 The original SSH stdin approach blocked because the native action kept its
 stream open. A single validated payload avoids waiting for EOF. Unsupported
 commands, invalid encodings, oversized requests and changed sandbox flags are
-rejected. The Mac's older acknowledgment-only wrapper now permits only its
+rejected. The Mac's older acknowledgment entry path now links to the managed runtime
+compatibility wrapper, which permits only its
 original acknowledgment and these Codex requests; unrelated household commands
 remain rejected. Existing keys, SSH settings and server exposure are retained.
 The phone's existing restricted Dr. House dispatcher accepts the same commands.
