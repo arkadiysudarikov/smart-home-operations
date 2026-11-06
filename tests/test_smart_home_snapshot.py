@@ -92,6 +92,14 @@ class SmartHomeSnapshotTest(unittest.TestCase):
         self.assertEqual(result["status"], "unresolved")
         self.assertEqual(result["mismatchCount"], 0)
 
+    def test_source_root_uses_canonical_checkout_without_old_checkout_discovery(self):
+        self.assertEqual(smart_home_snapshot.source_root(Path('/tmp/house')), Path('/tmp/house/SmartHomeSource'))
+
+    def test_source_root_supports_explicit_absolute_override(self):
+        self.assertEqual(smart_home_snapshot.source_root(Path('/tmp/house'), '/tmp/isolated-source'), Path('/tmp/isolated-source'))
+        with self.assertRaises(ValueError):
+            smart_home_snapshot.source_root(Path('/tmp/house'), 'relative-source')
+
     def test_runtime_drift_checks_cover_synced_runtime_scripts(self) -> None:
         runtime_scripts = Path.home() / "Library" / "Application Support" / "SmartHomeMonitor" / "scripts"
         if not runtime_scripts.exists():
