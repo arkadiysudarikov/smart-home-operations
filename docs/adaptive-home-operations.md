@@ -44,22 +44,43 @@ input and starts a Codex CLI request in `Documents/Codex Voice Tasks`. It keeps
 ordinary on-request approval and workspace-write sandboxing, saves private job
 records, and offers a separate status command. Dictation is never interpolated
 into a shell command. There is no listening server or new remote credential.
-Two Mac shortcuts are installed: **In Codex** asks for the request, submits it,
-and confirms acceptance; **Codex Request Status** reads the latest result.
-Both were exercised through the actual Shortcuts UI on November 5, 2026:
-the submitted harmless request finished and the status shortcut displayed
-"Codex finished. Siri shortcut handoff verified." This does not prove Siri
-recognition. The Mac's Siri settings currently say support is being added and
-Siri is unavailable until its update completes. These shell-script shortcuts
-are Mac interfaces; iCloud name synchronization does not make them executable
-on iPhone. A single utterance containing arbitrary trailing arguments is not
-established; the supported interaction asks for text after invocation.
+**In Codex** asks for the request, encodes it as one unwrapped base64 payload,
+and submits `codex-request <payload>` through the existing restricted SSH key to
+M4. **Codex Request Status** sends the fixed `codex-status` command. Their
+Mac-only shell actions were replaced with native SSH actions so the saved
+workflows can also execute on iPhone. The request is decoded and validated as
+data (UTF-8, nonempty, no NUL, at most 8,000 characters), then passed to the
+existing backend through stdin. No client shell program is evaluated. Encoding
+is framing, not encryption; SSH provides transport encryption.
 
-Muse 11.0 (`com.meta.endo`) has a native call action and a connected WhatsApp
-channel. No Muse-specific Mac Shortcuts action was found. iPhone-only action
-inspection remains blocked by iPhone Mirroring reconnecting to its Mac-password
-screen. No guessed URL route, recipient, new account or background keystroke
-script has been installed.
+The original SSH stdin approach blocked because the native action kept its
+stream open. A single validated payload avoids waiting for EOF. Unsupported
+commands, invalid encodings, oversized requests and changed sandbox flags are
+rejected. The Mac's older acknowledgment entry path now links to the managed runtime
+compatibility wrapper, which permits only its
+original acknowledgment and these Codex requests; unrelated household commands
+remain rejected. Existing keys, SSH settings and server exposure are retained.
+The phone's existing restricted Dr. House dispatcher accepts the same commands.
+This deliberately adds Codex submission to these existing voice identities;
+it does not grant a raw remote shell or auto-approve Codex actions.
+
+On November 6, the actual Mac Shortcuts submission finished a harmless request,
+and the repaired status workflow displayed "Codex finished. Cross-device Codex
+handoff verified." The private job record has exit code zero. iPhone execution,
+Siri recognition and a spoken result remain separate verification gates. The
+Mac's Siri settings still report that support is being added and Siri is
+unavailable until its update completes. A single utterance containing arbitrary
+trailing arguments is not established; invocation asks for text afterward.
+
+Muse 11.0 (`com.meta.endo`) exposes native iPhone actions. **Talk to Muse** uses
+Start a call; **In Muse** uses Dictate and send. The action's own description
+requires unlocking the phone and holding the Action Button again to send.
+Start a call returned an internal error during Mirroring; its cause was not
+isolated. Apple documents that iPhone microphone access and calls are unavailable
+in Mirroring (https://support.apple.com/en-gb/120421). These saved native actions
+must be tested on the physical phone with Mirroring disconnected before voice
+support is declared working. No guessed URL, recipient, account or keystroke
+script was installed.
 
 ## Engineering tradeoffs requested by the owner
 
@@ -103,3 +124,72 @@ Local bridge TCP and household-action HTTP probes establish reachability only.
 The monitor does not confuse them with actual appliance control, Home pairing,
 or HomePod playback receipts. Sustained natural solar advice and new real fault
 notifications remain unobserved until their conditions occur.
+
+## November 6 follow-up and concrete tradeoffs
+
+Two initial generated email tests reached the inbox but were not acoustically
+verified. The phone's receiver was enabled, Confirm Before Run was off, and the
+email body, own-sender filter, strict envelope and Indoors destination were
+correct. Its email trigger was disabled and re-enabled, then saved. A subsequent
+generated message sent at 15:04:13 Pacific was recorded in the office around
+15:05:07. Independent local small.en and base.en recognizers confirmed the test
+phrase, including the refreshed receiver sentence and delivery-test sentence.
+The full recording is SHA-256-bound in runtime proof; incidental ambient
+transcripts are not included in the repository. This is one successful automatic
+path after re-registration, not proof of every speaker or a new natural cycle.
+
+- Kleppmann's emphasis on explicit data boundaries trades against adding a
+  framing step to a simple voice shortcut. It is justified because EOF was not
+  reliable here; bounded decoding and injection tests keep user text out of
+  shell evaluation, while result confirmation remains separate from acceptance.
+- Skelton and Pais's cognitive-load and boundary lens trades against giving an
+  existing household voice identity a second capability. The user explicitly
+  requested Codex access; exact commands, the dedicated workspace, normal Codex
+  approvals and tests that preserve the legacy wrapper's exclusions limit that
+  scope. Separate keys are a follow-up if household voice identities need
+  distinct Codex privileges.
+- Humble and Farley's repeatable-delivery principle trades against the manual
+  iPhone trigger re-registration needed to recover this incident. Configuration
+  observations and dated acoustic evidence are retained, targeted files are
+  backed up before replacement, and the remaining phone-only checks are stated
+  explicitly rather than treated as automated proof.
+
+A second post-repair automatic test ran with iPhone Mirroring fully quit. The
+relay accepted it at 15:27:15 Pacific; the Office recording contains the generated
+background-test sentence around 15:27:54 (about 39 seconds later). Both local
+recognizers matched the complete sentence without a supplied prompt. The dated
+runtime proof now points to this recording and preserves the previous proof.
+Apple Home's Garage room settings also show membership in Indoors, the receiver's
+destination. That verifies routing coverage, not individual Garage acoustic
+playback. No room-zone or speaker settings were changed by that inspection.
+
+## Garage stationary-presence audit, November 6
+
+A read-only inventory of the Mac's HomeKit accessory/service metadata found
+the Garage camera to be an Eve Cam 20ECJ9901 exposing a motion service. Garage's
+occupancy service belongs to the Homebridge Dummy Car Charging indicator; it
+does not measure people. The other registered Home occupancy services are
+virtual energy/health indicators. No connected stationary-presence sensor was
+identified in this inventory. This does not inventory unpaired equipment.
+
+The deployed controller still reads `home-camera-motion`: true keeps the light
+on, and false permits a five-minute countdown. Natural activity on November 6
+was adopted at 15:21:10 Pacific, the last motion-clear edge was 15:21:18.979, and
+the controller recorded successful off execution at 15:26:19 (completion event
+15:26:25). A subsequent independent live Alarm.com read reported the light off.
+These observations verify execution after motion clears; they do not establish
+that everyone had left or that a stationary person would keep the light on.
+
+The remaining implementation gate is an actual stationary-presence signal
+covering the occupied garage, followed by observed occupied/clear behavior.
+Phone association with a garage access point and a longer motion timeout do not
+establish that signal. No light, door, lock, security rule or timer configuration
+was changed during this audit; no synthetic activation was counted as evidence.
+
+Review lens: Meadows's feedback-system principle exposes the mismatch between
+the intended controlled condition (people present) and the measured condition
+(recent motion). The existing bounded timeout conserves energy at the cost of
+possible false shutoffs while someone is still. That tradeoff does not satisfy
+the stated requirement. Keeping it explicitly unverified avoids hiding the gap;
+a measured presence source and end-to-end validation remain necessary. This
+documentation-only change introduces no material new software tradeoff.

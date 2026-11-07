@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 import urllib.request
 import urllib.error
+import base64
 
 MODES = frozenset(("status", "energy", "complications", "discharge", "night", "changes", "explain", "hold", "leave", "unusual", "departure", "quiet", "morning", "running", "openings", "resume", "washerfree", "more", "repeat", "snooze", "why", "acknowledge", "attention", "savings", "diagnostics", "routine"))
 
@@ -36,6 +37,28 @@ def spoken_response(raw):
 
 
 def dispatch(command):
+    if command == 'codex-status' or command.startswith('codex-request '):
+        # Shortcuts keeps its SSH stdin stream open. Use one bounded encoded
+        # payload, decode it as data, and never evaluate a client shell program.
+        text = ''
+        if command != 'codex-status':
+            encoded = command.removeprefix('codex-request ')
+            if not encoded or len(encoded) > 43000:
+                raise ValueError('Invalid Codex request encoding')
+            try:
+                text = base64.b64decode(encoded, validate=True).decode('utf-8')
+            except (ValueError, UnicodeError):
+                raise ValueError('Invalid Codex request encoding') from None
+            if not text.strip() or len(text.strip()) > 8000 or '\x00' in text:
+                raise ValueError('Please dictate a request between 1 and 8000 characters.')
+        args = [sys.executable, '-I', str(Path(__file__).with_name('siri_codex.py'))]
+        if command == 'codex-status':
+            args.append('--status')
+        result = subprocess.run(args, input=text,
+                                capture_output=True, text=True, timeout=15, check=False)
+        if result.returncode or not result.stdout.strip():
+            raise ValueError('The Codex request could not complete its local handoff. Check the Mac.')
+        return result.stdout.strip()[:2500]
     if command not in MODES:
         raise ValueError("Only a Dr. House command name is permitted")
     if command == "diagnostics":
