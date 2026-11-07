@@ -162,3 +162,34 @@ runtime proof now points to this recording and preserves the previous proof.
 Apple Home's Garage room settings also show membership in Indoors, the receiver's
 destination. That verifies routing coverage, not individual Garage acoustic
 playback. No room-zone or speaker settings were changed by that inspection.
+
+## Garage stationary-presence audit, November 6
+
+A read-only inventory of the Mac's HomeKit accessory/service metadata found
+the Garage camera to be an Eve Cam 20ECJ9901 exposing a motion service. Garage's
+occupancy service belongs to the Homebridge Dummy Car Charging indicator; it
+does not measure people. The other registered Home occupancy services are
+virtual energy/health indicators. No connected stationary-presence sensor was
+identified in this inventory. This does not inventory unpaired equipment.
+
+The deployed controller still reads `home-camera-motion`: true keeps the light
+on, and false permits a five-minute countdown. Natural activity on November 6
+was adopted at 15:21:10 Pacific, the last motion-clear edge was 15:21:18.979, and
+the controller recorded successful off execution at 15:26:19 (completion event
+15:26:25). A subsequent independent live Alarm.com read reported the light off.
+These observations verify execution after motion clears; they do not establish
+that everyone had left or that a stationary person would keep the light on.
+
+The remaining implementation gate is an actual stationary-presence signal
+covering the occupied garage, followed by observed occupied/clear behavior.
+Phone association with a garage access point and a longer motion timeout do not
+establish that signal. No light, door, lock, security rule or timer configuration
+was changed during this audit; no synthetic activation was counted as evidence.
+
+Review lens: Meadows's feedback-system principle exposes the mismatch between
+the intended controlled condition (people present) and the measured condition
+(recent motion). The existing bounded timeout conserves energy at the cost of
+possible false shutoffs while someone is still. That tradeoff does not satisfy
+the stated requirement. Keeping it explicitly unverified avoids hiding the gap;
+a measured presence source and end-to-end validation remain necessary. This
+documentation-only change introduces no material new software tradeoff.
