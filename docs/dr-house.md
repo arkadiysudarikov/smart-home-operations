@@ -1,4 +1,4 @@
-# Dr. House on-demand briefings
+# On-demand home briefings
 
 ## Tell me more
 
@@ -71,9 +71,9 @@ is never described as newly finished. Calendar failure suppresses personal conte
 
 Energy replies are one short sentence, naming only the largest fresh Sense estimate
 and its approximate power. Solar is excluded. Missing evidence yields cause unknown;
-a cleared alert yields energy use is normal. Spoken Dr. House prefixes are removed.
+a cleared alert yields energy use is normal.
 
-Tone: short clinical house rounds, not medical advice or fictional emergency claims.
+Tone: short, plain descriptions of household conditions.
 On-demand requests are not restricted by automatic-announcement quiet hours.
 No microphone-based or individual-speaker acoustic verification is implied by relay acceptance.
 
@@ -81,11 +81,11 @@ No microphone-based or individual-speaker acoustic verification is implied by re
 
 The backend accepts these modes, with matching `/action/dr-house-<mode>` POST routes:
 
-- `complications`: Any complications? Only reported openings/unlocked locks, high
+- `complications`: Check Home Alerts. Only reported openings/unlocked locks, high
   energy, or unavailable critical readings. No speech when those readings are normal.
-- `discharge`: Discharge summary. Read-only departure check, running laundry, and
+- `discharge`: Departure Summary. Read-only departure check, running laundry, and
   the existing presence-gated appointment/departure summary. Does not lock or arm.
-- `night`: Night rounds. Reporting openings/locks and running laundry; no scene changes.
+- `night`: Bedtime Check. Reporting openings/locks and running laundry; no scene changes.
 - `changes`: What changed? Compare equipment states against the last successful
   rounds, at most 24 hours old. Missing readings are never treated as normal. No
   calendar titles or locations are persisted in the comparison baseline.
@@ -93,12 +93,12 @@ The backend accepts these modes, with matching `/action/dr-house-<mode>` POST ro
   announcement within two hours. Energy gets a current evidence-based assessment;
   personal appointments are re-gated by current presence; other supported events
   distinguish the recorded message from fresh evidence and state missing provenance.
-- `hold`: Hold my calls. One-hour pause of known routine Intercom identifiers only;
-  on-demand Dr. House, help requests, and unknown safety identifiers bypass the pause.
+- `hold`: Pause Routine Announcements. One-hour pause of known routine Intercom identifiers only;
+  on-demand briefings, help requests, and unknown safety identifiers bypass the pause.
   No detector settings or alarms are changed. Suppressed events are not queued for replay.
 
 The iPhone screenshot confirms Run Shell Script cannot execute there.
-`Dr. House connection setup` remains a setup-only SSH shortcut.
+`Home Connection Setup` remains a setup-only SSH shortcut.
 `dr_house_ssh.py` is a forced-command dispatcher allowing only the eight mode names,
 with no command evaluation. The Shortcuts public key must be explicitly authorized
 using forced-command and no-forwarding restrictions before these can work on iPhone.

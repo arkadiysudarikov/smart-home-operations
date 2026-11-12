@@ -1,4 +1,4 @@
-"""On-demand Dr. House briefings. No device changes or scheduled announcements."""
+"""On-demand home briefings. No device changes or scheduled announcements."""
 import argparse
 import json
 import math
@@ -345,7 +345,9 @@ def build(mode):
             problems.append("energy readings are unavailable")
         return "Needs attention: " + "; ".join(problems[:6]) + "." if problems else ""
     if mode in ("discharge", "night"):
-        text = alerts.bedtime_message(alerts.load_alarm_com(), now).replace("Bedtime check.", "Discharge summary." if mode == "discharge" else "Night rounds.")
+        text = alerts.bedtime_message(alerts.load_alarm_com(), now)
+        if mode == "discharge":
+            text = text.replace("Bedtime check.", "Departure summary.")
         running = [v["name"] for k, v in observations(now).items() if k.startswith("laundry:") and v["state"] == "running"]
         if running:
             text += " Laundry still running: " + ", ".join(running) + "."
