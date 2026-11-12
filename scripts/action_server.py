@@ -2539,14 +2539,24 @@ def repair_resolved_stale(parsed_repair: dict[str, Any], stale_count: int | None
 
 
 def wait_for_alarm_child_bridge(port: int, previous_pid: int | None, timeout: int = 60) -> dict[str, Any]:
+    from guard_unifi_storage import hap_responds
+
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         pid = listening_pid(port)
-        if pid is not None and pid != previous_pid:
+        if pid is not None and pid != previous_pid and hap_responds(port):
             return {"ok": True, "pid": pid}
         time.sleep(2)
     pid = listening_pid(port)
-    return {"ok": pid is not None, "pid": pid, "timedOut": True}
+    return {"ok": False, "pid": pid, "timedOut": True}
+
+
+def restart_alarm_child(pid: int) -> dict[str, Any]:
+    from guard_unifi_storage import alarm_restart_has_headroom
+
+    if not alarm_restart_has_headroom(Path.home()):
+        return {"ok": False, "error": "Alarm bridge restart deferred: less than 12 GiB free"}
+    return terminate(pid)
 
 
 def run_alarm_cache_refresh_background(started_at: str) -> None:
@@ -2562,8 +2572,9 @@ def run_alarm_cache_refresh_background(started_at: str) -> None:
             restart_result = {"ok": False, "error": f"no Alarm child bridge is listening on port {port}"}
             wait_result = {"ok": False, "pid": None}
         else:
-            restart_result = terminate(before_pid)
-            wait_result = wait_for_alarm_child_bridge(port, before_pid)
+            restart_result = restart_alarm_child(before_pid)
+            wait_result = (wait_for_alarm_child_bridge(port, before_pid)
+                           if restart_result.get("ok") else {"ok": False, "pid": before_pid})
         second_capture = run(alarm_cache_refresh_command(), timeout=180) if wait_result.get("ok") else {"ok": False, "returncode": None, "stdout": "", "stderr": "Alarm child bridge did not restart"}
         after_stale = alarm_cache_stale_count()
         repair_result: dict[str, Any] = {"ok": True, "returncode": None, "stdout": "", "stderr": "", "skipped": True}
@@ -2582,8 +2593,9 @@ def run_alarm_cache_refresh_background(started_at: str) -> None:
                     repair_restart_result = {"ok": False, "error": f"no Alarm child bridge is listening on port {port}"}
                     repair_wait_result = {"ok": False, "pid": None}
                 else:
-                    repair_restart_result = terminate(repair_pid)
-                    repair_wait_result = wait_for_alarm_child_bridge(port, repair_pid)
+                    repair_restart_result = restart_alarm_child(repair_pid)
+                    repair_wait_result = (wait_for_alarm_child_bridge(port, repair_pid)
+                                          if repair_restart_result.get("ok") else {"ok": False, "pid": repair_pid})
                 third_capture = run(alarm_cache_refresh_command(), timeout=180) if repair_wait_result.get("ok") else {"ok": False, "returncode": None, "stdout": "", "stderr": "Alarm child bridge did not restart after cache repair"}
                 refreshed_stale = alarm_cache_stale_count()
                 after_stale = refreshed_stale
@@ -2764,6 +2776,10 @@ def start_gate_test() -> dict[str, Any]:
 
 
 def refresh_alarm_cache() -> dict[str, Any]:
+    from guard_unifi_storage import alarm_restart_has_headroom
+
+    if not alarm_restart_has_headroom(Path.home()):
+        return {"ok": False, "scheduled": False, "error": "Alarm cache refresh deferred: less than 12 GiB free"}
     if persisted_job_running(ALARM_CACHE_REFRESH_STATUS_PATH):
         return {"ok": True, "scheduled": False, "alreadyRunning": True, "status": str(ALARM_CACHE_REFRESH_STATUS_PATH), "report": str(REPORT_DIR / "alarm_homebridge_state.md")}
     if not ALARM_CACHE_REFRESH_LOCK.acquire(blocking=False):
