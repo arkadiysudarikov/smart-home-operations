@@ -745,6 +745,22 @@ class WasherNotifierTest(unittest.TestCase):
         self.assertEqual(captured["message"], "HOMESAFE-7D3B9A21:The washer has finished.:END-7D3B9A21\n")
         self.assertEqual(event["transport"], "iphone_intercom")
 
+    def test_intercom_timeout_leaves_delivery_uncertain(self) -> None:
+        timeout = washer_notifier.subprocess.TimeoutExpired(["shortcuts", "run"], 30)
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(washer_notifier, "DATA_DIR", Path(tmp)), mock.patch.object(
+                washer_notifier.subprocess, "run", side_effect=timeout
+            ) as run:
+                result = washer_notifier.homepod_announcement(
+                    "The washer has finished.",
+                    {"homepod_announcement_transport": "iphone_intercom", "homepod_targets": ["Office HomePod"]},
+                )
+            self.assertFalse(result["ok"])
+            self.assertTrue(result["uncertain"])
+            run.assert_called_once()
+            event = json.loads((Path(tmp) / "homepod_announcement_events.jsonl").read_text())
+            self.assertTrue(event["uncertain"])
+
     def test_homepod_announcement_rejects_missing_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(washer_notifier, "DATA_DIR", Path(tmp)):
