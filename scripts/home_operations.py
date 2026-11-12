@@ -9,12 +9,14 @@ import json
 import math
 import subprocess
 import shlex
+import shutil
 import socket
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
 
 from additional_announcements import load, save, stamp, daytime
+from guard_unifi_storage import MIN_FREE_BYTES
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = Path.home()/'Library/Application Support/SmartHomeMonitor'
@@ -247,8 +249,11 @@ def health_issues(data, now, review):
     if not fresh(rules,'generatedAt',now,3600) or rules.get('ok') is False:
         issues['rules_source'] = 'The automatic Alarm.com rule check cannot obtain current rules. Check the saved Alarm.com session.'
     runtime = load(data/'latest_home_local_runtime.json')
-    if fresh(runtime,'generatedAt',now) and runtime.get('ok') is False:
-        issues['local_runtime'] = 'A critical local Homebridge bridge or the household action service is unreachable. Check the local home services.'
+    if fresh(runtime,'generatedAt',now):
+        if runtime.get('ok') is False:
+            issues['local_runtime'] = 'A critical local Homebridge bridge or the household action service is unreachable. Check the local home services.'
+        if runtime.get('diskFreeBytes', MIN_FREE_BYTES) < MIN_FREE_BYTES:
+            issues['local_disk_space'] = 'The Homebridge Mac has less than 12 GiB free. Free disk space so the bridges can reliably start.'
     return issues
 
 
@@ -267,7 +272,8 @@ def local_runtime(homebridge, now):
         with urllib.request.urlopen('http://127.0.0.1:18765/health',timeout=2) as response:
             checks['householdActions'] = response.status==200
     except OSError:checks['householdActions']=False
-    return {'generatedAt':datetime.fromtimestamp(now,timezone.utc).isoformat(),'ok':all(checks.values()),'checks':checks}
+    return {'generatedAt':datetime.fromtimestamp(now,timezone.utc).isoformat(),'ok':all(checks.values()),
+            'checks':checks,'diskFreeBytes':shutil.disk_usage(Path.home()).free}
 
 
 def incidents(previous, issues, now, hold=600):

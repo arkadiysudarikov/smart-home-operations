@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable
+from guard_unifi_storage import MIN_FREE_BYTES
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -118,6 +120,15 @@ def compact_db(config: dict) -> dict:
         }
     retention = config["retention"]
     db_bytes_before = DB_PATH.stat().st_size
+    if shutil.disk_usage(DB_PATH).free < MIN_FREE_BYTES + db_bytes_before:
+        return {
+            "snapshotsDeleted": 0,
+            "eventsDeleted": 0,
+            "snapshotRawRowsCompacted": 0,
+            "dbBytesBefore": db_bytes_before,
+            "dbBytesAfter": db_bytes_before,
+            "databaseMaintenance": "deferred for disk headroom",
+        }
     snapshot_cutoff = cutoff_iso(int(retention["snapshot_db_days"]))
     event_cutoff = cutoff_iso(int(retention["home_event_days"]))
     keep_raw_rows = int(retention["keep_recent_snapshot_raw_json_rows"])
@@ -146,14 +157,25 @@ def compact_db(config: dict) -> dict:
 
         db.execute("pragma optimize")
         db.commit()
-        if retention.get("vacuum_after_cleanup", False) and (snapshots_deleted or events_deleted or compacted):
-            db.execute("vacuum")
+        vacuum_status = "not needed"
+        if retention.get("vacuum_after_cleanup", False):
+            free_pages = db.execute("pragma freelist_count").fetchone()[0]
+            total_pages = db.execute("pragma page_count").fetchone()[0]
+            # Retention already freed these pages for SQLite to reuse. Rebuild
+            # only to reclaim substantial space, with room for SQLite's copy.
+            if free_pages * 5 >= total_pages and free_pages:
+                if shutil.disk_usage(DB_PATH).free >= MIN_FREE_BYTES + 2 * DB_PATH.stat().st_size:
+                    db.execute("vacuum")
+                    vacuum_status = "vacuumed"
+                else:
+                    vacuum_status = "vacuum deferred for disk headroom"
     return {
         "snapshotsDeleted": snapshots_deleted,
         "eventsDeleted": events_deleted,
         "snapshotRawRowsCompacted": compacted,
         "dbBytesBefore": db_bytes_before,
         "dbBytesAfter": DB_PATH.stat().st_size,
+        "databaseMaintenance": vacuum_status,
     }
 
 
@@ -183,6 +205,7 @@ def write_report(
         f"- Snapshot raw payload rows compacted: `{db_result['snapshotRawRowsCompacted']}`",
         f"- DB size before: `{db_result['dbBytesBefore']}` bytes",
         f"- DB size after: `{db_result['dbBytesAfter']}` bytes",
+        f"- Database maintenance: `{db_result.get('databaseMaintenance', 'not applicable')}`",
     ]
     (REPORT_DIR / "maintenance.md").write_text("\n".join(lines) + "\n")
 

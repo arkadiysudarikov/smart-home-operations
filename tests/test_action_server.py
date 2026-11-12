@@ -730,7 +730,7 @@ class ActionServerTest(unittest.TestCase):
             load_config=lambda: {"actions": {"alarm_child_bridge_port": 52230}},
             alarm_cache_stale_count=lambda: next(stale_counts),
             listening_pid=lambda _port: next(pids),
-            terminate=lambda _pid: {"ok": True},
+            restart_alarm_child=lambda _pid: {"ok": True},
             wait_for_alarm_child_bridge=lambda _port, _pid: {"ok": True, "pid": 200},
             alarm_cache_refresh_command=lambda: ["capture"],
             alarm_cache_repair_command=lambda: ["repair"],
