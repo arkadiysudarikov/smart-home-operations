@@ -105,6 +105,7 @@ def build(data, plugin, now):
         active = bool(device.get("inUse") or device.get("cycleActive"))
         sources[name] = {"status": "fresh" if fresh else "stale_or_missing", "active": active, "heartbeatAgeSeconds": seconds}
     latest = None
+    skipped = None
     malformed = False
     path = data / "homepod_announcement_events.jsonl"
     try:
@@ -120,6 +121,10 @@ def build(data, plugin, now):
             try:
                 value = json.loads(line)
                 if not isinstance(value, dict): raise ValueError()
+                if value.get("skipped"):
+                    if skipped is None:
+                        skipped = value
+                    continue
                 latest = value
                 break
             except ValueError:
@@ -128,8 +133,17 @@ def build(data, plugin, now):
     except (OSError, UnicodeError):
         pass
     relay = {"status": "invalid_log" if malformed else "no_attempt_recorded"}
+    if latest is None and not malformed:
+        latest = skipped
     if latest:
-        relay = {"status": "skipped" if latest.get("skipped") else "accepted_not_delivered" if latest.get("ok") is True else "failed",
+        status = "failed"
+        if latest.get("skipped"):
+            status = "skipped"
+        elif latest.get("ok") is True:
+            status = "accepted_not_delivered"
+        elif latest.get("uncertain") is True:
+            status = "uncertain"
+        relay = {"status": status,
                  "at": latest.get("at"), "announcementId": latest.get("announcementId"),
                  "ageSeconds": age(latest.get("at"), now)}
     faults = []
@@ -137,7 +151,7 @@ def build(data, plugin, now):
         faults.append("Laundry capture stale or missing")
     if plugin.get("ok") is not True: faults.append("SmartHQ instrumentation needs review")
     if any(s["active"] and s["status"] != "fresh" for s in sources.values()): faults.append("Active laundry source stale")
-    if relay["status"] in ("failed", "invalid_log"): faults.append("Announcement relay failed or log invalid")
+    if relay["status"] in ("failed", "uncertain", "invalid_log"): faults.append("Announcement relay failed or log invalid")
     delivery = {}
     for name in ('washer','dryer','combo'):
         jobs = load(data/f'{name}_notifier_state.json').get('deliveryOutbox', [])

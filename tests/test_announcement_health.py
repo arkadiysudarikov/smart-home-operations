@@ -60,6 +60,15 @@ class HealthTests(unittest.TestCase):
         self.write("homepod_announcement_events.jsonl", {"ok": True, "skipped": True})
         self.assertEqual(self.report()["relay"]["status"], "skipped")
 
+    def test_skipped_announcement_does_not_clear_uncertain_delivery(self):
+        path = self.data / "homepod_announcement_events.jsonl"
+        attempt = {"ok": False, "uncertain": True, "at": self.now.isoformat()}
+        skip = {"ok": True, "skipped": True}
+        path.write_text("\n".join(map(json.dumps, [attempt, skip])) + "\n")
+        report = self.report()
+        self.assertEqual(report["relay"]["status"], "uncertain")
+        self.assertIn("Announcement relay failed or log invalid", report["faults"])
+
     def test_malformed_latest_does_not_hide_behind_success(self):
         (self.data/"homepod_announcement_events.jsonl").write_text('{"ok":true}\n{broken\n')
         self.assertEqual(self.report()["relay"]["status"], "invalid_log")

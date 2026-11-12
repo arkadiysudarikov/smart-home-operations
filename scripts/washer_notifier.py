@@ -629,6 +629,19 @@ def _homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any
                     timeout=30,
                     check=False,
                 )
+        except subprocess.TimeoutExpired:
+            return record_homepod_announcement(
+                {
+                    "ok": False,
+                    "uncertain": True,
+                    "transport": transport,
+                    "targets": targets,
+                    "relayShortcut": shortcut_name,
+                    "error": "Mail relay timed out after 30 seconds. The message may still be queued in Mail.",
+                },
+                message,
+                appliance_id,
+            )
         except Exception as exc:
             return record_homepod_announcement(
                 {
