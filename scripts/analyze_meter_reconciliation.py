@@ -287,11 +287,33 @@ def solar_scope_diagnostic(pair, now=None):
         'netGenerationErrorKw':net_error,'physicalTopologyVerified':False}
 
 
+def direct_meter_rows(probe):
+    """Join successful readings to enabled, healthy meter metadata by EID."""
+    if probe.get('meterInfoStatus') != 200 or probe.get('metersStatus') != 200:
+        return {}
+    metadata = probe.get('meterInfo') or []
+    readings = probe.get('meters') or []
+    rows = {}
+    for kind in ('production', 'net-consumption', 'storage'):
+        meters = [meter for meter in metadata
+                  if meter.get('measurementType') == kind and meter.get('state') == 'enabled']
+        if len(meters) != 1 or meters[0].get('meteringStatus') != 'normal':
+            continue
+        eid = meters[0].get('eid')
+        if eid is None or sum(meter.get('eid') == eid for meter in metadata) != 1:
+            continue
+        matched = [row for row in readings if row.get('eid') == eid]
+        if (len(matched) == 1 and valid_number(matched[0].get('activePower'))
+                and reading_at(matched[0].get('timestamp')) is not None):
+            rows[kind] = matched[0]
+    return rows
+
+
 def live_envoy_sense_pairing() -> dict[str, Any]:
     envoy = load_json_file(ENVOY_DIRECT_PATH)
     sense = load_json_file(SENSE_NOW_PATH)
-    reachable = next((item for item in envoy.get('probes') or []
-                      if item.get('productionStatus') == 200), {})
+    probes = envoy.get('probes') or []
+    reachable = next((item for item in probes if item.get('productionStatus') == 200), {})
     production_payload = reachable.get('production') or {}
     production_rows = production_payload.get('production') or []
     rows = production_rows + (production_payload.get('consumption') or [])
@@ -304,11 +326,23 @@ def live_envoy_sense_pairing() -> dict[str, Any]:
     storage_ids={m.get('eid') for m in reachable.get('meterInfo') or []
                  if m.get('measurementType')=='storage' and m.get('state')=='enabled'}
     storage=next((m for m in reachable.get('meters') or [] if m.get('eid') in storage_ids),{})
+    measurement_source = 'production_json' if reachable else None
+    if kw(pv) is None or reading_at(pv.get('readingTime')) is None:
+        for probe in probes:
+            direct = direct_meter_rows(probe)
+            if 'production' in direct and 'storage' in direct:
+                pv = {'wNow': direct['production']['activePower'],
+                      'readingTime': direct['production']['timestamp']}
+                grid = {'wNow': direct.get('net-consumption', {}).get('activePower')}
+                storage = direct['storage']
+                total = {}
+                measurement_source = 'direct_meters'
+                break
     sense_solar = sense.get('solarWatts')
     if 'solarWatts' not in sense: # Legacy captures remain readable, never coerce missing to zero.
         sense_solar=next((d.get('watts') for d in sense.get('devices') or [] if d.get('id')=='solar'),None)
     pairing = {
-        'envoyStatus':envoy.get('status'),'envoyCapturedAt':envoy.get('finishedAt'),
+        'envoyStatus':envoy.get('status'),'envoyMeasurementSource':measurement_source,'envoyCapturedAt':envoy.get('finishedAt'),
         'envoyTokenSource':envoy.get('tokenSource'),'envoyHost':envoy.get('host'),
         'envoyMeasurementAt':reading_at(pv.get('readingTime')),
         'envoyStorageAt':reading_at(storage.get('timestamp')),

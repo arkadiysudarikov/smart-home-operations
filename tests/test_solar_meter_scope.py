@@ -68,6 +68,31 @@ class SolarScopeTests(unittest.TestCase):
         self.assertIsNone(result['senseLoadKw'])
         self.assertEqual(result['envoySiteLoadKw'],2)
 
+    def test_direct_meter_fallback_explains_solar_when_production_json_is_unavailable(self):
+        probe = {'productionStatus': None, 'meterInfoStatus': 200, 'metersStatus': 200,
+                 'meterInfo': [
+                     {'eid': eid, 'measurementType': kind, 'state': 'enabled', 'meteringStatus': 'normal'}
+                     for eid, kind in [(1, 'production'), (2, 'storage'), (3, 'net-consumption')]
+                 ],
+                 'meters': [
+                     {'eid': eid, 'activePower': watts, 'timestamp': NOW.timestamp()}
+                     for eid, watts in [(3, 1000), (2, -1900), (1, 2000)]
+                 ]}
+        sense = {'sampleAt': AT, 'watts': 800, 'solarWatts': 120}
+        with patch.object(m, 'load_json_file', side_effect=[{'probes': [probe]}, sense]):
+            result = m.live_envoy_sense_pairing()
+        self.assertEqual(result['envoyMeasurementSource'], 'direct_meters')
+        self.assertEqual(result['envoyNetConsumptionKw'], 1)
+        self.assertIsNone(result['envoyTotalConsumptionKw'])
+        self.assertNotIn('envoySiteLoadKw', result)
+        self.assertEqual(m.solar_scope_diagnostic(result, NOW)['status'], 'consistent_with_combined_feed')
+
+        probe['meters'].append(probe['meters'][1])
+        with patch.object(m, 'load_json_file', side_effect=[{'probes': [probe]}, sense]):
+            result = m.live_envoy_sense_pairing()
+        self.assertIsNone(result['envoyStorageKw'])
+        self.assertEqual(m.solar_scope_diagnostic(result, NOW)['status'], 'unavailable')
+
     def test_capture_preserves_root_solar_grid_epoch_and_signed_aux(self):
         code="""
 const {realtimeMeasurements:f}=require(process.argv[1]);
