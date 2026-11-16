@@ -38,16 +38,16 @@ def spoken_response(raw):
 def dispatch(command):
     if command not in MODES:
         raise ValueError("Only a Dr. House command name is permitted")
-    if command == "diagnostics":
-        # Siri owns this reply. A separate HomePod relay outage must not turn
-        # a successful read of laundry status into an HTTP 500 on the phone.
+    if command in {"diagnostics", "attention"}:
+        # Siri owns these replies. Their reads do not depend on the Intercom relay.
         result = subprocess.run(
             [sys.executable, str(Path(__file__).with_name("house_briefing.py")),
-             "--mode", "diagnostics"],
+             "--mode", command],
             capture_output=True, text=True, timeout=30, check=False,
         )
         if result.returncode or not result.stdout.strip():
-            raise ValueError("The laundry status check could not produce a reply")
+            label = "laundry status" if command == "diagnostics" else "home priority"
+            raise ValueError(f"The {label} check could not produce a reply")
         return result.stdout.strip()
     endpoint = ("laundry-unloaded?appliance=" + command.removesuffix("-unloaded")
                 if command.endswith("-unloaded") else "dr-house-" + command)

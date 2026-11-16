@@ -59,9 +59,24 @@ class AdvisorTests(unittest.TestCase):
     def test_no_model_choice_can_hide_temperature_or_laundry(self):
         e=evidence(hot=True)
         text=j.attention_text(e,{'attention':'none'})
-        self.assertTrue(text.startswith('Indoor temperature'))
+        self.assertTrue(text.startswith('First priority: Indoor temperature'))
         self.assertIn('Completion is not confirmed',text)
         self.assertIn('Energy use is high',text)
+
+    def test_attention_prioritizes_service_and_gives_next_step_without_jev(self):
+        current = evidence(laundry_conflicts=0, openings=0,
+                           service_faults={'sce': True, 'alarm': True, 'homebridge': False})
+        reply = j.attention_text(current, {})
+        self.assertTrue(reply.startswith('First priority: Alarm.com reports device trouble.'))
+        self.assertIn(j.CHECKS['alarm'], reply)
+        self.assertIn('Also: Utility interval coverage', reply)
+
+    def test_accepted_service_choice_does_not_override_opening(self):
+        current = evidence(openings=1, laundry_conflicts=0,
+                           service_faults={'sce': True, 'alarm': True})
+        reply = j.attention_text(current, {'attention': 'services', 'service': 'sce'})
+        self.assertTrue(reply.startswith('First priority: 1 reporting'))
+        self.assertLess(reply.index(j.FAULT_LABELS['sce']), reply.index(j.FAULT_LABELS['alarm']))
 
     def test_model_text_is_never_spoken(self):
         j.remember(self.data,evidence(),response(contributor='multiple'),NOW)
