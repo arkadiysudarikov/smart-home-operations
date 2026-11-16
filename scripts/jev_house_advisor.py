@@ -264,14 +264,32 @@ def attention_text(e, choices):
     if e.get('detergent_low') is True: issues['detergent']='The washer detergent tank is low. Refill the SmartDispense tank.'
     if e['openings']: issues['openings']=f"{e['openings']} reporting doors, windows, garages, or locks are open or unlocked."
     if e['high']: issues['energy']='Energy use is high.'
-    fault_keys = [k for k,v in e.get('service_faults',{}).items() if k in FAULT_LABELS and v is True]
-    if fault_keys: issues['services'] = ' '.join(FAULT_LABELS[k] for k in fault_keys)
-    # Temperature is never demoted; Jev reorders other verified facts, never drops them.
-    order = ['temperature',choices.get('attention'),'laundry','detergent','openings','services','energy']
-    result = []
-    for key in order:
-        if key in issues and issues[key] not in result: result.append(issues[key])
-    if not result: result=['No issues identified in the available readings.']
+    fault_keys = [key for key in FAULT_LABELS if e.get('service_faults', {}).get(key) is True]
+    service_order = ('homebridge', 'alarm', 'laundry', 'relay', 'garage', 'meters', 'sce', 'permissions')
+    ordered_faults = [key for key in service_order if key in fault_keys]
+    ordered_faults.extend(key for key in fault_keys if key not in ordered_faults)
+    service_choice = choices.get('service')
+    if service_choice in ordered_faults:
+        ordered_faults.remove(service_choice)
+        ordered_faults.insert(0, service_choice)
+
+    order = ('temperature', 'openings', 'laundry', choices.get('attention'), 'services', 'detergent', 'energy')
+    ordered = []
+    for key in dict.fromkeys(order):
+        if key == 'services':
+            ordered.extend((FAULT_LABELS[fault], CHECKS.get(fault)) for fault in ordered_faults)
+        elif key in issues:
+            ordered.append((issues[key], None))
+
+    if ordered:
+        first, next_check = ordered[0]
+        result = ['First priority: ' + first]
+        if next_check:
+            result.append(next_check)
+        if len(ordered) > 1:
+            result.append('Also: ' + ' '.join(issue for issue, _ in ordered[1:]))
+    else:
+        result = ['No issues identified in the available readings.']
     if not e['reporting_openings'] or e['load_kw'] is None:
         result.append('Some sensor readings are unavailable; this is not an all-clear.')
     return ' '.join(result)

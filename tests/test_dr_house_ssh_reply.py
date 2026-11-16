@@ -27,6 +27,15 @@ class SiriReplyTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 dr_house_ssh.dispatch("diagnostics")
 
+    def test_attention_returns_the_priority_to_siri_without_intercom(self):
+        reply = "First priority: Check the reported opening."
+        with mock.patch.object(dr_house_ssh.subprocess, "run", return_value=
+                subprocess.CompletedProcess([], 0, reply + "\n", "")) as run, \
+                mock.patch.object(dr_house_ssh.urllib.request, "urlopen") as http:
+            self.assertEqual(dispatch("attention"), reply)
+            self.assertEqual(run.call_args.args[0][-2:], ["--mode", "attention"])
+            http.assert_not_called()
+
     def test_extracts_spoken_message_from_nested_cli_output(self):
         raw = json.dumps({"ok": True, "stdout": json.dumps({
             "status": "accepted", "message": "The dryer has finished.",
