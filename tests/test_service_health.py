@@ -88,6 +88,23 @@ class ServiceHealthTests(unittest.TestCase):
         payload['state'].update(extra['state']);payload['questions'].update(extra['questions'])
         self.assertLessEqual(len(json.dumps(payload,allow_nan=False).encode()),8192)
 
+    def test_relay_and_garage_faults_are_separate_from_laundry_and_motion(self):
+        self.write('latest_announcement_health.json', {'generatedAt':AT, 'ok':False,
+            'faults':['Announcement relay failed or log invalid']})
+        self.write('garage_light_hold.json', {'active':True, 'status':'camera-unavailable',
+            'retryAt':(NOW+timedelta(seconds=60)).isoformat(), 'lastError':'PRIVATE ERROR'})
+        signals=h.evidence(h.build(self.data,NOW.timestamp()))
+        self.assertIs(signals['service_faults']['announcement_relay'],True)
+        self.assertIs(signals['service_faults']['garage_light'],True)
+        self.assertIs(signals['service_faults']['laundry'],False)
+        self.assertNotIn('PRIVATE ERROR',json.dumps(signals))
+        text=j.attention_text(evidence(**signals),{})
+        self.assertIn('HomePod announcement relay',text)
+        self.assertIn('garage light controller',text)
+        self.write('garage_light_hold.json', {'active':True, 'status':'camera-clear-countdown'})
+        self.assertIsNone(h.build(self.data,NOW.timestamp())['faults']['garage_light'])
+        self.assertIsNone(h.build(self.data,NOW.timestamp()+181)['faults']['announcement_relay'])
+
     def test_service_fault_changes_require_comparable_known_values(self):
         e=evidence(service_faults={'alarm':True})
         f.checkpoint(self.data,e,NOW.timestamp())

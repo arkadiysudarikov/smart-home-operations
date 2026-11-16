@@ -26,6 +26,8 @@ FAULT_LABELS = {
     'meters': 'Solar meters disagree; check measurement coverage before trusting savings estimates.',
     'permissions': 'Homebridge backup or configuration permissions need review.',
     'homebridge': 'The Homebridge runtime needs attention.',
+    'garage_light': 'The garage light controller is retrying a failed check or shutoff.',
+    'announcement_relay': 'The HomePod announcement relay needs attention.',
 }
 CHECKS = {
     'laundry': 'Check per-appliance heartbeats and the recovery report before relying on completion alerts.',
@@ -34,6 +36,8 @@ CHECKS = {
     'meters': 'Compare simultaneous Envoy and Sense solar readings and verify CT coverage and orientation.',
     'permissions': 'Review and restrict exposed Homebridge storage paths while preserving service access.',
     'homebridge': 'Check the Homebridge process and bridge listeners before troubleshooting individual accessories.',
+    'garage_light': 'Check the camera mirror and Alarm.com light status. Camera motion alone cannot establish vacancy.',
+    'announcement_relay': 'Check Mail and the iPhone Intercom automation, then verify a fresh announcement at a HomePod.',
 }
 
 
@@ -105,7 +109,20 @@ def build(data, now):
         # Restrict the signal to laundry faults, not an unrelated relay event.
         known = {'Active laundry source stale','Laundry capture stale or missing',
                  'SmartHQ instrumentation needs review','Laundry delivery failed or uncertain'}
-        faults['laundry'] = any(f in known for f in health.get('faults', []))
+        reported_faults = health.get('faults', [])
+        faults['laundry'] = any(f in known for f in reported_faults)
+        faults['announcement_relay'] = 'Announcement relay failed or log invalid' in reported_faults
+    garage = load(data/'garage_light_hold.json')
+    retry_statuses = {'camera-unavailable', 'occupancy-unavailable', 'expiry-status-failed', 'restore-failed'}
+    retry_age = now-stamp(garage.get('retryAt'))
+    if garage.get('active') is True and garage.get('status') in retry_statuses and -120 <= retry_age <= 180:
+        faults['garage_light'] = True
+    elif garage.get('status') == 'restored' and fresh(garage,'finishedAt',now,300):
+        faults['garage_light'] = False
+    camera_enabled = load(data.parent/'config/sources.json').get('garage_light',{}).get('camera_motion',{}).get('enabled') is True
+    services.append({'key':'garage_light','name':'Garage lighting',
+        'status':'needs_attention' if faults['garage_light'] is True else 'camera_motion_only' if camera_enabled else 'unknown',
+        'verification':'Camera motion is activity evidence. Stationary presence requires a separate occupancy signal.'})
     alarm=load(data/'latest_alarm_com.json')
     trouble=alarm.get('troubleConditions', {})
     trouble_count=None
