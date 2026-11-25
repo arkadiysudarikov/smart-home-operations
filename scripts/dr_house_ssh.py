@@ -39,12 +39,17 @@ def dispatch(command):
     if command not in MODES:
         raise ValueError("Only a Dr. House command name is permitted")
     if command in {"diagnostics", "attention"}:
-        # Siri owns these replies. Their reads do not depend on the Intercom relay.
-        result = subprocess.run(
-            [sys.executable, str(Path(__file__).with_name("house_briefing.py")),
-             "--mode", command],
-            capture_output=True, text=True, timeout=30, check=False,
-        )
+        # Siri owns these replies independently of the Intercom relay.
+        args = [sys.executable, str(Path(__file__).with_name("house_briefing.py")),
+                "--mode", command]
+        options = dict(capture_output=True, text=True, check=False)
+        if command == "attention":
+            try:
+                result = subprocess.run([*args, "--review"], timeout=12, **options)
+            except subprocess.TimeoutExpired:
+                result = subprocess.run(args, timeout=5, **options)
+        else:
+            result = subprocess.run(args, timeout=30, **options)
         if result.returncode or not result.stdout.strip():
             label = "laundry status" if command == "diagnostics" else "home priority"
             raise ValueError(f"The {label} check could not produce a reply")

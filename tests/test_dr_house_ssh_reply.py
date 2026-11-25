@@ -33,8 +33,17 @@ class SiriReplyTests(unittest.TestCase):
                 subprocess.CompletedProcess([], 0, reply + "\n", "")) as run, \
                 mock.patch.object(dr_house_ssh.urllib.request, "urlopen") as http:
             self.assertEqual(dispatch("attention"), reply)
-            self.assertEqual(run.call_args.args[0][-2:], ["--mode", "attention"])
+            self.assertEqual(run.call_args.args[0][-3:], ["--mode", "attention", "--review"])
             http.assert_not_called()
+
+    def test_attention_uses_local_reply_if_review_times_out(self):
+        with mock.patch.object(dr_house_ssh.subprocess, "run", side_effect=[
+            subprocess.TimeoutExpired("house_briefing.py", 12),
+            subprocess.CompletedProcess([], 0, "First priority: Check the reported opening.", ""),
+        ]) as run:
+            self.assertTrue(dispatch("attention").startswith("First priority"))
+            self.assertEqual(run.call_args.args[0][-2:], ["--mode", "attention"])
+            self.assertEqual(run.call_count, 2)
 
     def test_extracts_spoken_message_from_nested_cli_output(self):
         raw = json.dumps({"ok": True, "stdout": json.dumps({

@@ -5,7 +5,7 @@ import unittest
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch, Mock
+from unittest.mock import patch, Mock, MagicMock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'scripts'))
 import jev_energy_monitor as j
@@ -204,6 +204,27 @@ class BudgetTests(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,'allocation'):
                     transport.call_jev(transport.REQUEST)
                 network.assert_not_called()
+
+    def test_scheduled_reviews_leave_final_twenty_five_attempts_for_on_demand(self):
+        with tempfile.TemporaryDirectory() as directory:
+            data = Path(directory)
+            month = datetime.now(timezone.utc).strftime('%Y-%m')
+            ledger = data / 'jev_budget.json'
+            ledger.write_text(json.dumps({month: 740000, '2025-01': 1000000}))
+            opener = MagicMock()
+            opener.open.return_value.__enter__.return_value.read.return_value = json.dumps(
+                {'model': transport.REQUEST['model']}).encode()
+            with patch.object(transport, 'DATA', data), \
+                 patch.object(transport.subprocess, 'run', return_value=SimpleNamespace(stdout=b'synthetic')) as key, \
+                 patch.object(transport.urllib.request, 'build_opener', return_value=opener):
+                transport.call_jev(transport.REQUEST, scheduled=True)
+                with self.assertRaisesRegex(transport.JevBudgetUnavailable, 'on_demand_reserve'):
+                    transport.call_jev(transport.REQUEST, scheduled=True)
+                self.assertEqual(key.call_count, 1)
+                self.assertEqual(opener.open.call_count, 1)
+                transport.call_jev(transport.REQUEST)
+                self.assertEqual(opener.open.call_count, 2)
+            self.assertEqual(json.loads(ledger.read_text()), {month: 760000, '2025-01': 1000000})
 
     def test_oversized_request_never_reads_key_or_sends(self):
         with patch.object(transport.subprocess,'run') as key:
