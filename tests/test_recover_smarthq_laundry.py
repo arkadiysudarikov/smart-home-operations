@@ -103,5 +103,51 @@ class RecoverSmartHQLaundryTests(unittest.TestCase):
         self.assertFalse(recovery.cooldown_active(previous, now + timedelta(minutes=11), 20))
 
 
+    def test_failed_restart_is_a_failure_and_records_attempt_cooldown(self):
+        import contextlib
+        import io
+        import sys
+        sys.path.insert(0, str(ROOT / "scripts"))
+        import announcement_health
+        now = datetime(2026, 11, 25, 20, tzinfo=timezone.utc)
+        config = {"smarthq_laundry_recovery": {"enabled": True}}
+        previous = {"stale": True, "checkedAt": now.isoformat(), "consecutiveStaleChecks": 2}
+        latest = {"ok": True, "devices": {"washer": {"inUse": True}}}
+
+        def load(path):
+            if path == recovery.CONFIG_PATH:
+                return config
+            if path == recovery.STATUS_PATH:
+                return previous
+            if path == recovery.LATEST_PATH:
+                return latest
+            return {}
+
+        with (
+            mock.patch.object(sys, "argv", ["recovery", "--force-outside-runtime"]),
+            mock.patch.object(recovery, "now_local", return_value=now),
+            mock.patch.object(recovery, "load_json", side_effect=load),
+            mock.patch.object(announcement_health, "active_plugin", return_value=ROOT),
+            mock.patch.object(announcement_health, "inspect_plugin", return_value={"ok": True}),
+            mock.patch.object(recovery, "restart_smarthq_child", return_value={"ok": False, "error": "no listener"}),
+            mock.patch.object(recovery, "mac_notification", return_value={"ok": True}),
+            mock.patch.object(recovery, "write_status") as write,
+            contextlib.redirect_stdout(io.StringIO()),
+        ):
+            self.assertEqual(recovery.main(), 1)
+
+        status = write.call_args.args[0]
+        self.assertFalse(status["ok"])
+        self.assertEqual(status["classification"], "restart_failed")
+        self.assertTrue(recovery.cooldown_active(status, now + timedelta(minutes=1), 20))
+
+    def test_attempt_cooldown_works_with_legacy_success_timestamp(self):
+        now = datetime(2026, 11, 25, 20, tzinfo=timezone.utc)
+        self.assertTrue(recovery.cooldown_active(
+            {"lastRestartAt": now.isoformat()}, now + timedelta(minutes=1), 20))
+        self.assertTrue(recovery.cooldown_active(
+            {"lastRestartAttemptAt": now.isoformat()}, now + timedelta(minutes=1), 20))
+
+
 if __name__ == "__main__":
     unittest.main()

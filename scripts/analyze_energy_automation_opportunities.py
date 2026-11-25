@@ -40,6 +40,8 @@ def build_payload() -> dict[str, Any]:
     meter = load_json(DATA_DIR / "latest_meter_reconciliation.json")
     chargepoint = load_json(DATA_DIR / "chargepoint_sessions.json")
     rules = alarm_rules.get("rules") or []
+    home_review = load_json(DATA_DIR / "home_automation_review.json")
+    garage_rules = [rule for rule in alarm_rules.get("garageLightRules", []) if rule.get("isPaused") is False]
     child_summary = {
         item.get("period"): item
         for item in (meter.get("childSummary") or [])
@@ -95,9 +97,9 @@ def build_payload() -> dict[str, Any]:
         {
             "area": "Garage lighting",
             "priority": "medium",
-            "finding": "Home garage automations now target Garage Activity, while Alarm.com still has three active direct Garage Light 100% rules.",
-            "recommendation": "Pick one owner for instant-on. Keep Alarm.com if latency is better, but add a short auto-off/follow-up if those rules do not already restore the light.",
-            "automation": "Alarm.com direct rules or Home Garage Activity should include hold/restore behavior; avoid duplicate direct light-on rules across both systems.",
+            "finding": f"The Alarm.com capture lists {len(garage_rules)} enabled garage-light rules. The latest Apple Home review is dated {home_review.get('reviewedAt', 'unavailable')}.",
+            "recommendation": "Verify that occupancy holds the light on while anyone remains and releases it after everyone leaves. Check conflicting timers against the current controller before changing rules.",
+            "automation": "Use current observed camera-mirror rules and the deployed occupancy controller when evaluating garage shutoff.",
         },
         {
             "area": "Alarm.com unclassified load",
@@ -118,17 +120,11 @@ def build_payload() -> dict[str, Any]:
     return {
         "generatedAt": now(),
         "homeAppObserved": {
-            "automationList": [
-                "Garage Door Contact Opens -> Garage Activity",
-                "Garage Door Lock Unlocks -> Garage Activity",
-                "Garage Door Opener 2207 Opens -> Garage Activity",
-                "Garage Door Opener 2210 Opens -> Garage Activity",
-                "When Motion Detected in Garage -> Garage Activity",
-                "When First Person Arrives Home -> Garage Activity, Panel Off",
-                "When Last Person Leaves Home -> 18 accessories, thermostat setpoints 69/72",
-            ],
-            "leaveHomeAutomation": "enabled; shuts off lights/TVs and thermostats/garage temperature devices",
-            "arrivalAutomation": "enabled; does not turn on HVAC or large loads",
+            "reviewedAt": home_review.get("reviewedAt"),
+            "source": home_review.get("source"),
+            "rules": home_review.get("rules", []),
+            "coverage": home_review.get("coverage", {}),
+            "complete": home_review.get("complete", False),
         },
         "alarmComObserved": {
             "checkedAt": alarm_rules.get("checkedAt"),
@@ -154,12 +150,13 @@ def write_report(payload: dict[str, Any]) -> None:
         "",
         "## Home App Observed",
     ]
-    for item in payload["homeAppObserved"]["automationList"]:
-        lines.append(f"- {item}")
+    home = payload["homeAppObserved"]
+    lines.append(f"- Reviewed: {home.get('reviewedAt', 'unavailable')}")
+    for rule in home.get("rules", []):
+        lines.append(f"- {rule.get('trigger')} → {rule.get('target')} {rule.get('action')}, enabled={rule.get('enabled')}, window={rule.get('window')}")
     lines.extend(
         [
-            f"- Leave-home automation: {payload['homeAppObserved']['leaveHomeAutomation']}",
-            f"- Arrival automation: {payload['homeAppObserved']['arrivalAutomation']}",
+            f"- Coverage: {json.dumps(home.get('coverage', {}), ensure_ascii=False)}",
             "",
             "## Alarm.com Observed",
             "",

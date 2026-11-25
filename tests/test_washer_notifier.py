@@ -745,7 +745,8 @@ class WasherNotifierTest(unittest.TestCase):
         self.assertEqual(captured["message"], "HOMESAFE-7D3B9A21:The washer has finished.:END-7D3B9A21\n")
         self.assertEqual(event["transport"], "iphone_intercom")
 
-    def test_intercom_timeout_leaves_delivery_uncertain(self) -> None:
+    @mock.patch.object(washer_notifier, "preflight_intercom_mail", return_value="already_running")
+    def test_intercom_timeout_leaves_delivery_uncertain(self, _preflight) -> None:
         timeout = washer_notifier.subprocess.TimeoutExpired(["shortcuts", "run"], 30)
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(washer_notifier, "DATA_DIR", Path(tmp)), mock.patch.object(
@@ -760,6 +761,14 @@ class WasherNotifierTest(unittest.TestCase):
             run.assert_called_once()
             event = json.loads((Path(tmp) / "homepod_announcement_events.jsonl").read_text())
             self.assertTrue(event["uncertain"])
+
+    def test_mail_preflight_launches_closed_mail_before_relay(self):
+        with mock.patch.object(washer_notifier.subprocess, "run", side_effect=[
+            SimpleNamespace(returncode=1), SimpleNamespace(returncode=0)
+        ]) as run:
+            self.assertEqual(washer_notifier.preflight_intercom_mail(), "launch_requested")
+        self.assertEqual(run.call_args_list[1].args[0], [
+            "/usr/bin/open", "-g", "-j", "-b", "com.apple.mail"])
 
     def test_homepod_announcement_rejects_missing_targets(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

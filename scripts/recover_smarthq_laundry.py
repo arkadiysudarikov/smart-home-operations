@@ -98,7 +98,7 @@ def consecutive_stale_checks(
 
 
 def cooldown_active(previous: dict[str, Any], now: datetime, cooldown_minutes: float) -> bool:
-    restarted_at = parse_time(previous.get("lastRestartAt"))
+    restarted_at = parse_time((previous.get("lastRestartAttemptAt") or previous.get("lastRestartAt")))
     return bool(restarted_at and timedelta(0) <= now - restarted_at < timedelta(minutes=cooldown_minutes))
 
 
@@ -267,6 +267,7 @@ def main() -> int:
         "consecutiveStaleChecks": count,
         "awaitingRecovery": bool(previous.get("awaitingRecovery", False)),
         "lastRestartAt": previous.get("lastRestartAt"),
+        "lastRestartAttemptAt": previous.get("lastRestartAttemptAt"),
         **assessment,
     }
     sound = str(config.get("mac_sound", "Glass"))
@@ -305,15 +306,17 @@ def main() -> int:
         return 0
 
     if cooldown_active(previous, now, float(config.get("cooldown_minutes", 20))):
-        status["classification"] = "stale_cooldown"
+        status.update(ok=False, classification="stale_cooldown")
         write_status(status)
         print(json.dumps(status, indent=2, sort_keys=True))
-        return 0
+        return 1
 
     restart = restart_smarthq_child(int(config.get("child_bridge_port", 40893)))
     status.update(
         {
             "action": "restart_child_bridge",
+            "ok": bool(restart.get("ok")),
+            "lastRestartAttemptAt": now.isoformat(timespec="seconds"),
             "classification": "restart_started" if restart.get("ok") else "restart_failed",
             "restart": restart,
             "awaitingRecovery": bool(restart.get("ok")),
@@ -336,7 +339,7 @@ def main() -> int:
         )
     write_status(status)
     print(json.dumps(status, indent=2, sort_keys=True))
-    return 0
+    return 0 if status["ok"] else 1
 
 
 if __name__ == "__main__":
