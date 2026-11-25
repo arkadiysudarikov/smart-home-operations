@@ -19,6 +19,9 @@ REVIEWED_DEVICE_HASHES = {
     # lastOpenedAt to genuine open-door arrivals between monitor polls.
     "0.9.0": (ORIGINAL_081, PATCHED_081,
               "53e12f18023091e72e1c03e52085c592635549cab9cb5784a390abd289c064f7"),
+    # Heartbeat-only instrumentation for REST and websocket, with retained door history.
+    "0.10.1": ("70b79401689483727a9e83598b90cf43f32470b83208ea89c59b5b7fd903a367",
+               "a87bb2cee92dc89397ee817961071317740b8323ecaf4a5ec18098be219bb090"),
 }
 
 

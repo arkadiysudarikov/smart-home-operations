@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import subprocess
 import tempfile
 from contextvars import ContextVar
@@ -590,6 +591,27 @@ def homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]
         ANNOUNCEMENT_STARTED.reset(token)
 
 
+def preflight_intercom_mail() -> str:
+    """Launch Mail in the current GUI session before the send action needs it."""
+    try:
+        running = subprocess.run(
+            ["/usr/bin/pgrep", "-u", str(os.getuid()), "-x", "Mail"],
+            capture_output=True, timeout=2, check=False,
+        )
+        if running.returncode == 0:
+            return "already_running"
+        launch = subprocess.run(
+            ["/usr/bin/open", "-g", "-j", "-b", "com.apple.mail"],
+            capture_output=True, timeout=5, check=False,
+        )
+        if launch.returncode == 0:
+            return "launch_requested"
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    # The shortcut may still succeed. This preflight never tries to send mail.
+    return "unavailable"
+
+
 def _homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any]:
     from announcement_presence import allowed
     if not allowed(DATA_DIR):
@@ -616,6 +638,7 @@ def _homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any
             with tempfile.TemporaryDirectory(prefix="smart-home-intercom-") as temp_dir:
                 input_path = Path(temp_dir) / "announcement.txt"
                 input_path.write_text(encode(message) + "\n")
+                mail_preflight = preflight_intercom_mail()
                 proc = subprocess.run(
                     [
                         "/usr/bin/shortcuts",
@@ -637,6 +660,7 @@ def _homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any
                     "transport": transport,
                     "targets": targets,
                     "relayShortcut": shortcut_name,
+                    "mailPreflight": mail_preflight,
                     "error": "Mail relay timed out after 30 seconds. The message may still be queued in Mail.",
                 },
                 message,
@@ -660,6 +684,7 @@ def _homepod_announcement(message: str, config: dict[str, Any]) -> dict[str, Any
                 "transport": transport,
                 "targets": targets,
                 "relayShortcut": shortcut_name,
+                "mailPreflight": mail_preflight,
                 "error": proc.stderr.strip() or None,
             },
             message,

@@ -184,6 +184,8 @@ function recordSmartHQHeartbeat(applianceId, nickname, erd, value) {
         const prior = payload.devices[applianceId] ?? { erds: {} };
         prior.erds ??= {};
         const changed = prior.erds[erd]?.value !== value;
+        const doorOpenedAt = erd === '0x2012' && String(value).toLowerCase() === '00' && changed
+            ? now : prior.erds[erd]?.lastOpenedAt;
         prior.nickname = nickname;
         prior.lastSuccessAt = now;
         prior.lastChangedAt = changed ? now : (prior.lastChangedAt ?? now);
@@ -191,6 +193,7 @@ function recordSmartHQHeartbeat(applianceId, nickname, erd, value) {
             value,
             lastSuccessAt: now,
             lastChangedAt: changed ? now : (prior.erds[erd]?.lastChangedAt ?? now),
+            ...(doorOpenedAt ? { lastOpenedAt: doorOpenedAt } : {}),
         };
         payload.updatedAt = now;
         payload.devices[applianceId] = prior;
