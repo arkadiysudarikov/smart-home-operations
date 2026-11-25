@@ -113,6 +113,36 @@ class PatchSmartHqRemainingDurationTest(unittest.TestCase):
             env=env,
         )
 
+    def test_0101_heartbeat_keeps_door_open_time_after_close(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            device = self.make_plugin(root)[4]
+            (root / "package.json").write_text(json.dumps({"version": "0.10.1"}))
+            result = self.run_script(root, "--heartbeat-only", "--apply")
+            self.assertEqual(result.returncode, 0, result.stderr)
+            source = device.read_text()
+            start = source.index("function recordSmartHQHeartbeat")
+            end = source.index("\n}", start) + 2
+            exercise = r"""
+const { mkdirSync, readFileSync, renameSync, writeFileSync } = require('node:fs');
+const { dirname } = require('node:path');
+const SMART_HOME_HEARTBEAT_PATH = process.argv[1];
+""" + source[start:end] + r"""
+const read = () => JSON.parse(readFileSync(SMART_HOME_HEARTBEAT_PATH))
+    .devices.appliance.erds['0x2012'];
+recordSmartHQHeartbeat('appliance', 'Washer', '0x2012', '00');
+const openedAt = read().lastOpenedAt;
+if (!openedAt) throw new Error('Door open was not recorded');
+recordSmartHQHeartbeat('appliance', 'Washer', '0x2012', '01');
+const closed = read();
+if (closed.value !== '01' || closed.lastOpenedAt !== openedAt) {
+    throw new Error('Door close lost the open timestamp');
+}
+"""
+            verified = subprocess.run([str(NODE), "-e", exercise, str(root / "heartbeat.json")],
+                                      capture_output=True, text=True, timeout=10)
+            self.assertEqual(verified.returncode, 0, verified.stderr)
+
     def test_dry_run_does_not_modify_plugin_files(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             washer, oven, auth, platform, device = self.make_plugin(Path(tmp))

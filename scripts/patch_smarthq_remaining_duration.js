@@ -46,7 +46,11 @@ function main() {
   const accessToken = path.join(root, "dist/getAccessToken.js");
   const platform = path.join(root, "dist/platform.js");
   if (args.has("--heartbeat-only")) {
-    console.log(JSON.stringify({ root, applied: shouldApply, ...patchHeartbeat(device, shouldApply) }, null, 2));
+    const { version } = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+    console.log(JSON.stringify({
+      root, applied: shouldApply,
+      ...patchHeartbeat(device, shouldApply, { preserveDoorHistory: version === "0.10.1" }),
+    }, null, 2));
     return;
   }
   const washerStatus = patchFile(
@@ -144,7 +148,7 @@ function main() {
     combo: comboStatus, ...patchHeartbeat(device, shouldApply) }, null, 2));
 }
 
-function patchHeartbeat(device, shouldApply) {
+function patchHeartbeat(device, shouldApply, { preserveDoorHistory = false } = {}) {
   const before = fs.readFileSync(device, "utf8");
   const pushOriginal = `    onErdUpdate(erd, value) {
         // no live updates by default
@@ -183,14 +187,17 @@ function recordSmartHQHeartbeat(applianceId, nickname, erd, value) {
         payload.devices ??= {};
         const prior = payload.devices[applianceId] ?? { erds: {} };
         prior.erds ??= {};
-        const changed = prior.erds[erd]?.value !== value;
+        const changed = prior.erds[erd]?.value !== value;${preserveDoorHistory ? `
+        const doorOpenedAt = erd === '0x2012' && String(value).toLowerCase() === '00' && changed
+            ? now : prior.erds[erd]?.lastOpenedAt;` : ''}
         prior.nickname = nickname;
         prior.lastSuccessAt = now;
         prior.lastChangedAt = changed ? now : (prior.lastChangedAt ?? now);
         prior.erds[erd] = {
             value,
             lastSuccessAt: now,
-            lastChangedAt: changed ? now : (prior.erds[erd]?.lastChangedAt ?? now),
+            lastChangedAt: changed ? now : (prior.erds[erd]?.lastChangedAt ?? now),${preserveDoorHistory ? `
+            ...(doorOpenedAt ? { lastOpenedAt: doorOpenedAt } : {}),` : ''}
         };
         payload.updatedAt = now;
         payload.devices[applianceId] = prior;

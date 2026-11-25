@@ -714,6 +714,16 @@ class WasherNotifierTest(unittest.TestCase):
             event = json.loads((Path(tmp) / "homepod_announcement_events.jsonl").read_text())
             self.assertEqual(event["preflight"], "restorable=false;state=stopped")
 
+    def test_intercom_mail_preflight_launches_mail_only_if_closed(self) -> None:
+        with mock.patch.object(washer_notifier.subprocess, "run", side_effect=[
+            SimpleNamespace(returncode=1), SimpleNamespace(returncode=0),
+            SimpleNamespace(returncode=0),
+        ]) as run:
+            self.assertEqual(washer_notifier.preflight_intercom_mail(), "launch_requested")
+            self.assertEqual(run.call_args.args[0], ["/usr/bin/open", "-g", "-j", "-b", "com.apple.mail"])
+            self.assertEqual(washer_notifier.preflight_intercom_mail(), "already_running")
+            self.assertEqual(run.call_count, 3)
+
     def test_homepod_announcement_relays_to_iphone_intercom_without_using_music(self) -> None:
         captured: dict[str, Any] = {}
 
@@ -724,6 +734,8 @@ class WasherNotifierTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(washer_notifier, "DATA_DIR", Path(tmp)), mock.patch.object(
+                washer_notifier, "preflight_intercom_mail", return_value="already_running"
+            ), mock.patch.object(
                 washer_notifier.subprocess, "run", side_effect=run
             ):
                 result = washer_notifier.homepod_announcement(
@@ -749,6 +761,8 @@ class WasherNotifierTest(unittest.TestCase):
         timeout = washer_notifier.subprocess.TimeoutExpired(["shortcuts", "run"], 30)
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(washer_notifier, "DATA_DIR", Path(tmp)), mock.patch.object(
+                washer_notifier, "preflight_intercom_mail", return_value="already_running"
+            ), mock.patch.object(
                 washer_notifier.subprocess, "run", side_effect=timeout
             ) as run:
                 result = washer_notifier.homepod_announcement(
