@@ -3,13 +3,14 @@ import argparse
 import fcntl
 import json
 import math
+from functools import partial
 from datetime import datetime, timezone
 from pathlib import Path
 
 import energy_low as low
 from additional_announcements import load, save, stamp, daytime
 from announcement_pause import active
-from jev_laundry_review import call_jev
+from jev_laundry_review import JevBudgetUnavailable, call_jev
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = Path.home()/'Library/Application Support/SmartHomeMonitor'
@@ -91,7 +92,9 @@ def review_allowed(sample, usual):
     return {'typical'}
 
 
-def tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
+def tick(data, config, now, *, mutate=False, ask=None, deliver=None):
+    if ask is None:
+        ask = partial(call_jev, scheduled=True)
     # Serialize scheduled and interactive advice: both publish the same cache/attempt files.
     if not mutate:
         return _tick(data, config, now, mutate=False, ask=ask, deliver=deliver)
@@ -103,7 +106,7 @@ def tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
         return _tick(data, config, now, mutate=True, ask=ask, deliver=deliver)
 
 
-def _tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
+def _tick(data, config, now, *, mutate, ask, deliver):
     sample = sample_from(data, now)
     path = data/'jev_energy_state.json'
     state = load(path)
@@ -198,6 +201,8 @@ def _tick(data, config, now, *, mutate=False, ask=call_jev, deliver=None):
                     raise ValueError('Invalid or unsupported advisory answer')
                 report['advisory'] = choice
                 state['lastAdvisory'] = {'at': now_text, 'choice': choice}
+        except JevBudgetUnavailable as error:
+            report['reviewStatus'] = error.status
         except Exception as error:
             # Never print potentially credential-bearing request/exception details.
             report['status'] = 'jev_unavailable'

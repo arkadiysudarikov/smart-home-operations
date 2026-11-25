@@ -7,7 +7,9 @@ unusual combinations, and evening recap. Scheduled energy reviews
 include these questions alongside the existing low-energy advisory. On-demand
 reviews have a five-minute persistent attempt cooldown. All calls share the
 existing Keychain credential and $1 monthly local allocation; each attempt
-reserves $0.01 before transmission. Requests are limited to 8 KiB, responses to
+reserves $0.01 before transmission. Scheduled reviews stop once the shared ledger
+reaches $0.75, leaving the remaining allocation for on-demand checks. The ledger
+rolls over by UTC month. Requests are limited to 8 KiB, responses to
 64 KiB, with a 20-second network timeout and no automatic retries.
 
 ## User entry points
@@ -15,7 +17,7 @@ reserves $0.01 before transmission. Requests are limited to 8 KiB, responses to
 | Phrase | Restricted command | Behavior |
 | --- | --- | --- |
 | Why is energy high | energy | Select measured contributors, or say unknown |
-| Anything need attention | attention | Rank verified household issues |
+| Anything need attention | attention | Refresh JEV advice when eligible and rank verified household issues |
 | Any complications | complications | Same ranked household review |
 | How can I save energy | savings | Recommend a supported check; no controls |
 | Check the laundry | diagnostics | Flag positive-countdown/idle conflicts |
@@ -39,6 +41,10 @@ Unknown EV context blocks low-energy detection, not a scheduled advisory request
 the configured review cooldown remains (six hours in the deployed configuration). Missing context is never filled
 with assumed false values. Bill-average pricing is not a time-of-use schedule,
 so future cheapest-hour recommendations remain unavailable until verified rates exist.
+
+The direct attention reply falls back to locally ranked facts if a fresh review
+is unavailable or takes more than 12 seconds. It replies through Siri without
+using the announcement relay.
 
 These are backend commands; saved Shortcuts and their host must be verified
 separately. Phone sync and Siri speech recognition are not implied by a backend

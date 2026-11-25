@@ -371,9 +371,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=MODES, default="status")
     parser.add_argument("--speak", action="store_true")
+    parser.add_argument("--review", action="store_true", help="Refresh JEV before replying to an attention check")
     args = parser.parse_args()
-    if args.speak and not alerts.running_from_runtime_root():
-        raise SystemExit("Spoken briefings require deployed runtime")
+    if args.review and (args.mode != "attention" or args.speak):
+        parser.error("--review is only for direct attention replies")
+    if (args.speak or args.review) and not alerts.running_from_runtime_root():
+        raise SystemExit("Spoken briefings and JEV review require deployed runtime")
     # Clearing reminders must never wait for another briefing or speaker relay.
     if args.mode == "acknowledge" and args.speak:
         from announcement_ack import acknowledge
@@ -398,7 +401,7 @@ def main():
         from announcement_followup import request
         message = request("snooze", mutate=True)
     else:
-        if args.speak and args.mode in ('energy','complications','attention','savings','diagnostics','routine','more','status','changes','wait','laundrytime','unusual','recap'):
+        if args.review or args.speak and args.mode in ('energy','complications','attention','savings','diagnostics','routine','more','status','changes','wait','laundrytime','unusual','recap'):
             import jev_house_advisor as advisor
             # Failure, exhausted budget, or cooldown must not prevent the reply.
             try:

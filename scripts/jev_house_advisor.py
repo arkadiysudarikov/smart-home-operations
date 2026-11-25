@@ -12,7 +12,7 @@ from pathlib import Path
 
 from additional_announcements import load, save, stamp, daytime
 from energy_low import number
-from jev_laundry_review import call_jev
+from jev_laundry_review import JevBudgetUnavailable, call_jev
 
 MODEL = 'jev-1.13.0'
 ROOT = Path(__file__).resolve().parents[1]
@@ -242,6 +242,8 @@ def refresh(data, now, *, ask=call_jev, interval=300):
             response = ask(request(e))
             result = remember(data,e,response,now)
             return {'status':'reviewed','calls':1,'accepted':result['choices'],'usage':result['usage']}
+        except JevBudgetUnavailable as error:
+            return {'status':error.status,'calls':0}
         except Exception as error:
             return {'status':'unavailable','calls':0,'errorType':type(error).__name__}
 

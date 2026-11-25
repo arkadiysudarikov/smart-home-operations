@@ -13,6 +13,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 DATA = Path.home() / 'Library/Application Support/SmartHomeMonitor/data'
+ATTEMPT_COST = 10_000
+MONTHLY_LIMIT = 1_000_000
+ON_DEMAND_RESERVE = 250_000
+
+
+class JevBudgetUnavailable(RuntimeError):
+    def __init__(self, status):
+        super().__init__('Monthly allocation: ' + status)
+        self.status = status
+
+
 REQUEST = {
     'model': 'jev-1.13.0',
     'state': {'synthetic_test': True, 'cycle_active_signal': False,
@@ -30,13 +41,11 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise RuntimeError('Redirect refused')
 
 
-def call_jev(payload):
+def call_jev(payload, *, scheduled=False):
     body = json.dumps(payload, allow_nan=False).encode()
     # Up to seven structured decisions share one request and one reservation.
     if len(body) > 8192:
         raise RuntimeError('Request size exceeds approved diagnostic bound')
-    key = subprocess.run(['/usr/bin/security', 'find-generic-password', '-a', 'smart-home',
-                          '-s', 'com.arkadiy.smart-home.typesafe', '-w'], capture_output=True, check=True, timeout=5).stdout.decode().strip()
     with (DATA/'jev_budget.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         path = DATA/'jev_budget.json'
@@ -44,9 +53,15 @@ def call_jev(payload):
         ledger = json.loads(path.read_text()) if path.exists() else {}
         # Retain all month totals so clock rollback cannot reset an allocation.
         used = ledger.get(month, 0)
-        if type(used) is not int or used < 0 or used+10000 > 1000000:
-            raise RuntimeError('Monthly allocation exhausted or invalid')
-        ledger[month] = used+10000
+        if type(used) is not int or used < 0:
+            raise JevBudgetUnavailable('allocation_invalid')
+        if used + ATTEMPT_COST > MONTHLY_LIMIT:
+            raise JevBudgetUnavailable('allocation_exhausted')
+        if scheduled and used + ATTEMPT_COST > MONTHLY_LIMIT - ON_DEMAND_RESERVE:
+            raise JevBudgetUnavailable('on_demand_reserve')
+        key = subprocess.run(['/usr/bin/security', 'find-generic-password', '-a', 'smart-home',
+                              '-s', 'com.arkadiy.smart-home.typesafe', '-w'], capture_output=True, check=True, timeout=5).stdout.decode().strip()
+        ledger[month] = used + ATTEMPT_COST
         temporary = path.with_suffix('.tmp')
         temporary.write_text(json.dumps(ledger))
         temporary.chmod(0o600)
